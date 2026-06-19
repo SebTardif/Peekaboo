@@ -300,6 +300,55 @@ struct WatchCaptureSessionTests {
 
     @Test
     @MainActor
+    func `Stop request wakes transient capture backoff`() async throws {
+        let capture = StubTransientScreenCaptureService()
+        let screens = StubScreenService()
+        let output = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("watch-transient-stop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let options = WatchCaptureOptions(
+            duration: 30,
+            idleFps: 5,
+            activeFps: 5,
+            changeThresholdPercent: 100,
+            heartbeatSeconds: 0,
+            quietMsToIdle: 0,
+            maxFrames: 10,
+            maxMegabytes: nil,
+            highlightChanges: false,
+            captureFocus: .auto,
+            resolutionCap: nil,
+            diffStrategy: .fast,
+            diffBudgetMs: nil)
+        let session = WatchCaptureSession(
+            dependencies: WatchCaptureDependencies(screenCapture: capture, screenService: screens),
+            configuration: WatchCaptureConfiguration(
+                scope: WatchScope(kind: .frontmost),
+                options: options,
+                outputRoot: output,
+                autoclean: WatchAutocleanConfig(minutes: 1, managed: false)))
+
+        let task = Task { @MainActor in
+            try await session.run()
+        }
+
+        let deadline = Date().addingTimeInterval(2)
+        while capture.attemptCount == 0, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(capture.attemptCount >= 1)
+
+        let stopStarted = Date()
+        session.requestStop()
+        let result = try await task.value
+
+        #expect(result.warnings.contains { $0.code == .transientCaptureFailure })
+        #expect(Date().timeIntervalSince(stopStarted) < 1)
+    }
+
+    @Test
+    @MainActor
     func `Task cancellation wakes cadence sleep`() async throws {
         let png = Self.makePNG(size: CGSize(width: 20, height: 20))
         let capture = StubScreenCaptureService(result: png, size: CGSize(width: 20, height: 20))
@@ -468,6 +517,63 @@ struct WatchCaptureSessionTests {
 }
 
 // MARK: - Stubs
+
+@MainActor
+private final class StubTransientScreenCaptureService: ScreenCaptureServiceProtocol {
+    private(set) var attemptCount = 0
+
+    private static let transientError = NSError(
+        domain: "com.apple.ScreenCaptureKit.SCStreamErrorDomain",
+        code: -3801,
+        userInfo: [
+            NSLocalizedDescriptionKey: "The user declined TCCs for application, window, display capture",
+        ])
+
+    func captureScreen(
+        displayIndex _: Int?,
+        visualizerMode _: CaptureVisualizerMode,
+        scale _: CaptureScalePreference) async throws -> CaptureResult
+    {
+        throw Self.transientError
+    }
+
+    func captureWindow(
+        appIdentifier _: String,
+        windowIndex _: Int?,
+        visualizerMode _: CaptureVisualizerMode,
+        scale _: CaptureScalePreference) async throws -> CaptureResult
+    {
+        throw Self.transientError
+    }
+
+    func captureWindow(
+        windowID _: CGWindowID,
+        visualizerMode _: CaptureVisualizerMode,
+        scale _: CaptureScalePreference) async throws -> CaptureResult
+    {
+        throw Self.transientError
+    }
+
+    func captureFrontmost(
+        visualizerMode _: CaptureVisualizerMode,
+        scale _: CaptureScalePreference) async throws -> CaptureResult
+    {
+        self.attemptCount += 1
+        throw Self.transientError
+    }
+
+    func captureArea(
+        _: CGRect,
+        visualizerMode _: CaptureVisualizerMode,
+        scale _: CaptureScalePreference) async throws -> CaptureResult
+    {
+        throw Self.transientError
+    }
+
+    func hasScreenRecordingPermission() async -> Bool {
+        true
+    }
+}
 
 @MainActor
 private final class StubScreenCaptureService: ScreenCaptureServiceProtocol {
