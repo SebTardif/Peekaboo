@@ -329,22 +329,36 @@ struct WatchCaptureSessionTests {
                 outputRoot: output,
                 autoclean: WatchAutocleanConfig(minutes: 1, managed: false)))
 
+        let transientFailure = AsyncStream<Void>.makeStream()
+        capture.onTransientFailure = {
+            transientFailure.continuation.yield()
+        }
+
         let task = Task { @MainActor in
             try await session.run()
         }
 
-        let deadline = Date().addingTimeInterval(2)
-        while capture.attemptCount == 0, Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
+        var sawTransientFailure = false
+        for await _ in transientFailure.stream {
+            sawTransientFailure = true
+            break
         }
+        #expect(sawTransientFailure)
         #expect(capture.attemptCount >= 1)
+
+        // Ensure requestStop() lands inside the 350ms transient backoff window.
+        try await Task.sleep(nanoseconds: 15_000_000)
 
         let stopStarted = Date()
         session.requestStop()
         let result = try await task.value
+        let stopElapsed = Date().timeIntervalSince(stopStarted)
+
+        print("PROOF transient_stop_elapsed_ms=\(Int(stopElapsed * 1000))")
 
         #expect(result.warnings.contains { $0.code == .transientCaptureFailure })
-        #expect(Date().timeIntervalSince(stopStarted) < 1)
+        // Unfixed raw Task.sleep still waits ~350ms before the loop can observe stop.
+        #expect(stopElapsed < 0.08)
     }
 
     @Test
@@ -521,6 +535,7 @@ struct WatchCaptureSessionTests {
 @MainActor
 private final class StubTransientScreenCaptureService: ScreenCaptureServiceProtocol {
     private(set) var attemptCount = 0
+    var onTransientFailure: (() -> Void)?
 
     private static let transientError = NSError(
         domain: "com.apple.ScreenCaptureKit.SCStreamErrorDomain",
@@ -559,6 +574,7 @@ private final class StubTransientScreenCaptureService: ScreenCaptureServiceProto
         scale _: CaptureScalePreference) async throws -> CaptureResult
     {
         self.attemptCount += 1
+        self.onTransientFailure?()
         throw Self.transientError
     }
 
