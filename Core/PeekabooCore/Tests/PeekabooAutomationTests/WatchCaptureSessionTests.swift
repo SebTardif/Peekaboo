@@ -301,7 +301,8 @@ struct WatchCaptureSessionTests {
     @Test
     @MainActor
     func `Stop request wakes transient capture backoff`() async throws {
-        let capture = StubTransientScreenCaptureService()
+        let png = Self.makePNG(size: CGSize(width: 20, height: 20))
+        let capture = StubTransientScreenCaptureService(result: png, size: CGSize(width: 20, height: 20))
         let screens = StubScreenService()
         let output = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("watch-transient-stop-\(UUID().uuidString)", isDirectory: true)
@@ -534,6 +535,7 @@ struct WatchCaptureSessionTests {
 
 @MainActor
 private final class StubTransientScreenCaptureService: ScreenCaptureServiceProtocol {
+    private let success: StubScreenCaptureService
     private(set) var attemptCount = 0
     var onTransientFailure: (() -> Void)?
 
@@ -543,6 +545,10 @@ private final class StubTransientScreenCaptureService: ScreenCaptureServiceProto
         userInfo: [
             NSLocalizedDescriptionKey: "The user declined TCCs for application, window, display capture",
         ])
+
+    init(result: Data, size: CGSize) {
+        self.success = StubScreenCaptureService(result: result, size: size)
+    }
 
     func captureScreen(
         displayIndex _: Int?,
@@ -570,10 +576,15 @@ private final class StubTransientScreenCaptureService: ScreenCaptureServiceProto
     }
 
     func captureFrontmost(
-        visualizerMode _: CaptureVisualizerMode,
-        scale _: CaptureScalePreference) async throws -> CaptureResult
+        visualizerMode: CaptureVisualizerMode,
+        scale: CaptureScalePreference) async throws -> CaptureResult
     {
         self.attemptCount += 1
+        if self.attemptCount == 1 {
+            return try await self.success.captureFrontmost(
+                visualizerMode: visualizerMode,
+                scale: scale)
+        }
         self.onTransientFailure?()
         throw Self.transientError
     }

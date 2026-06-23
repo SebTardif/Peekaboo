@@ -3,6 +3,7 @@
 ## [3.5.3] - 2026-06-13
 
 ### Fixed
+- Watch captures now honor stop requests during transient ScreenCaptureKit retry backoff instead of waiting out the full delay. Thanks @SebTardif for #193.
 - `peekaboo app list` now excludes accessory/background processes by default, while `--include-background` restores them as documented.
 - Menu-extra clicks now reject items parked outside active displays by menu bar managers instead of moving the pointer to offscreen coordinates and reporting false success.
 - Background element/query/coordinate clicks now pin actions to the requested process and exact window, reject mismatched window/PID selectors and unverifiable snapshots, invalidate implicit latest snapshots without deleting history, and no longer require Event Synthesizing when Accessibility completes the click.
