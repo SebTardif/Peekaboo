@@ -104,6 +104,9 @@ final class SpeechRecognizer: NSObject, SFSpeechRecognizerDelegate {
     private var tachikomaAudioURL: URL?
     private var tachikomaAbortSignal: AbortSignal?
 
+    // Whisper recorder observer task (cancelled in stopListening)
+    private var recorderObserverTask: Task<Void, Never>?
+
     init(settings: PeekabooSettings) {
         self.settings = settings
         super.init()
@@ -194,6 +197,8 @@ final class SpeechRecognizer: NSObject, SFSpeechRecognizerDelegate {
 
         case .whisper:
             // Stop Whisper recording
+            self.recorderObserverTask?.cancel()
+            self.recorderObserverTask = nil
             self.audioRecorder?.stopRecording()
 
         case .tachikoma:
@@ -275,8 +280,8 @@ final class SpeechRecognizer: NSObject, SFSpeechRecognizerDelegate {
         // Start Whisper recording
         try recorder.startRecording()
 
-        // Monitor recorder state
-        Task {
+        // Monitor recorder state (handle stored so stopListening can cancel it)
+        self.recorderObserverTask = Task {
             await self.observeRecorderState()
         }
     }
