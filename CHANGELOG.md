@@ -3,6 +3,7 @@
 ## [3.5.3] - 2026-06-13
 
 ### Fixed
+- Daemon launch, socket, and shutdown polling now stop promptly when their parent task is cancelled instead of spinning until the timeout. Thanks @SebTardif for #203.
 - Public CLI, agent, MCP, and API guidance now treats runtime element IDs as opaque strings to copy exactly instead of implying role-specific ID shapes. Thanks @coygeek for #194.
 - Sparkle no longer advertises the unpublished 3.5.3 release whose public app download returns 404; the entry will return through the normal release flow when the release is published. Thanks @bcharleson for #199.
 - JSON-only `peekaboo see` runs without `--path` now keep required screenshots in snapshot storage instead of leaving files on Desktop or exposing their temporary paths. Thanks @coygeek for #196.
