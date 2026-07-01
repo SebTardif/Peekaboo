@@ -209,13 +209,13 @@ extension DialogService {
         try? await self.ensureFileDialogExpandedIfNeeded(dialog: dialog)
         self.logger.debug("Navigating via Go to Folder (Cmd+Shift+G): \(directoryPath)")
 
-        try? InputDriver.hotkey(keys: ["cmd", "shift", "g"], holdDuration: 0.05)
+        try InputDriver.hotkey(keys: ["cmd", "shift", "g"], holdDuration: 0.05)
         try await Task.sleep(nanoseconds: 250_000_000)
 
         // Best effort: re-assert focus before typing into the Go-to sheet.
         await self.ensureDialogFocus(dialog: dialog, appName: appName)
 
-        try? InputDriver.hotkey(keys: ["cmd", "a"], holdDuration: 0.05)
+        try InputDriver.hotkey(keys: ["cmd", "a"], holdDuration: 0.05)
         try await Task.sleep(nanoseconds: 75_000_000)
         try self.typeTextValue(directoryPath, delay: 5000)
         try InputDriver.tapKey(.return)
