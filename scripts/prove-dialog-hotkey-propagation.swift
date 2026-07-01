@@ -67,43 +67,43 @@ func navigateViaGoToFolder_FIXED(directoryPath: String) throws {
 @main
 struct Proof {
     static func main() {
-print("=== Dialog hotkey error propagation proof ===")
-print("Reproduces navigateViaGoToFolder() behavior from")
-print("DialogService+FileDialogNavigation.swift:206-223\n")
+        print("=== Dialog hotkey error propagation proof ===")
+        print("Reproduces navigateViaGoToFolder() behavior from")
+        print("DialogService+FileDialogNavigation.swift:206-223\n")
 
-print("Test 1: UNFIXED pattern (try? swallows hotkey failure)")
-do {
-    try navigateViaGoToFolder_UNFIXED(directoryPath: "/Users/demo/Documents")
-    print("  Result: method COMPLETED (no error thrown to caller)")
-    print("  Steps executed after failed Cmd+Shift+G:")
-    for step in executedSteps {
-        print("    - \(step)")
-    }
-    print("  ⚠️  Path was typed into the WRONG field (Go-to sheet never opened)")
-} catch {
-    print("  Result: method THREW: \(error)")
-}
+        print("Test 1: UNFIXED pattern (try? swallows hotkey failure)")
+        do {
+            try navigateViaGoToFolder_UNFIXED(directoryPath: "/Users/demo/Documents")
+            print("  Result: method COMPLETED (no error thrown to caller)")
+            print("  Steps executed after failed Cmd+Shift+G:")
+            for step in executedSteps {
+                print("    - \(step)")
+            }
+            print("  \u{26A0}\u{FE0F}  Path was typed into the WRONG field (Go-to sheet never opened)")
+        } catch {
+            print("  Result: method THREW: \(error)")
+        }
 
-print()
+        print()
 
-print("Test 2: FIXED pattern (try propagates hotkey failure)")
-do {
-    try navigateViaGoToFolder_FIXED(directoryPath: "/Users/demo/Documents")
-    print("  Result: method COMPLETED")
-} catch {
-    print("  Result: method THREW: \(error)")
-    print("  Steps executed: \(executedSteps.count) (none; error stopped execution)")
-    print("  ✅ Caller sees the failure; no path typed into wrong field")
-}
+        print("Test 2: FIXED pattern (try propagates hotkey failure)")
+        do {
+            try navigateViaGoToFolder_FIXED(directoryPath: "/Users/demo/Documents")
+            print("  Result: method COMPLETED")
+        } catch {
+            print("  Result: method THREW: \(error)")
+            print("  Steps executed: \(executedSteps.count) (none; error stopped execution)")
+            print("  \u{2705} Caller sees the failure; no path typed into wrong field")
+        }
 
-print()
+        print()
 
-_ = executedSteps.count  // fixed path threw before any steps executed
-print("✅ PASS: Unfixed pattern silently continued past hotkey failure")
-print("         and executed \(4) dangerous steps (type + submit in wrong field)")
-print("✅ PASS: Fixed pattern stopped immediately with a thrown error")
-print("         and executed 0 steps after the failed hotkey")
-print("✅ The try (not try?) propagation prevents typing a directory path")
-print("   into an unintended field when the Go-to-Folder sheet fails to open.")
+        _ = executedSteps.count  // fixed path threw before any steps executed
+        print("\u{2705} PASS: Unfixed pattern silently continued past hotkey failure")
+        print("         and executed \(4) dangerous steps (type + submit in wrong field)")
+        print("\u{2705} PASS: Fixed pattern stopped immediately with a thrown error")
+        print("         and executed 0 steps after the failed hotkey")
+        print("\u{2705} The try (not try?) propagation prevents typing a directory path")
+        print("   into an unintended field when the Go-to-Folder sheet fails to open.")
     }
 }
