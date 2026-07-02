@@ -95,13 +95,19 @@ public struct PasteTool: MCPTool {
 
             let restoreDelayMs = max(0, arguments.getInt("restore_delay_ms") ?? 150)
             var restoreResult: ClipboardReadResult?
+            var restoreFailed = false
 
             defer {
                 if restoreDelayMs > 0 {
                     usleep(useconds_t(restoreDelayMs) * 1000)
                 }
                 if priorClipboard != nil {
-                    restoreResult = try? self.context.clipboard.restore(slot: restoreSlot)
+                    do {
+                        restoreResult = try self.context.clipboard.restore(slot: restoreSlot)
+                    } catch {
+                        self.logger.error("Failed to restore clipboard: \(error.localizedDescription)")
+                        restoreFailed = true
+                    }
                 } else {
                     self.context.clipboard.clear()
                 }
@@ -120,7 +126,10 @@ public struct PasteTool: MCPTool {
             }
 
             let executionTime = Date().timeIntervalSince(startTime)
-            let message = "\(AgentDisplayTokens.Status.success) Pasted (Cmd+V) and restored clipboard " +
+            let restoreStatus = restoreFailed
+                ? "⚠️ clipboard restore failed"
+                : "restored clipboard"
+            let message = "\(AgentDisplayTokens.Status.success) Pasted (Cmd+V) and \(restoreStatus) " +
                 "in \(String(format: "%.2f", executionTime))s"
 
             let pastedObject: [String: Value] = [
