@@ -125,6 +125,11 @@ extension ImageTool {
             } else {
                 capture.imageData
             }
+            if data.isEmpty {
+                return ToolResponse.error(
+                    "Capture produced no image data and no saved file could be read",
+                    meta: meta)
+            }
             return ToolResponse.image(data: data, mimeType: "image/png", meta: meta)
         }
 
