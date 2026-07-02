@@ -2,6 +2,9 @@
 
 ## [3.5.3] - 2026-06-13
 
+### Added
+- MiniMax-M3 can now power screenshot analysis and agent runs through the global and China MiniMax routes. Thanks @Tugser for #191.
+
 ### Fixed
 - Speech recording now cancels and releases its recorder observer on stop and send, including after recorder errors. Thanks @SebTardif for #204.
 - Go-to-Folder navigation now stops before typing or submitting when a required synthetic hotkey fails. Thanks @SebTardif for #206.
