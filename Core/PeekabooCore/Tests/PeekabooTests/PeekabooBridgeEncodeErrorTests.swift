@@ -1,16 +1,18 @@
 import Foundation
-import PeekabooAutomationKit
-import PeekabooFoundation
 import Testing
 @testable import PeekabooBridge
 
 struct PeekabooBridgeEncodeErrorTests {
+    private enum EncodingFailure: Error {
+        case forced
+    }
+
     @Test
-    func `encodeError returns non-empty decodable error with default encoder`() throws {
+    func `encodeError preserves arbitrary JSON control characters`() throws {
         let envelope = PeekabooBridgeErrorEnvelope(
             code: .decodingFailed,
-            message: "Failed to decode request",
-            details: "unexpected end of file")
+            message: "Failed \"decode\" \\ \u{0000} \u{0008} \u{000C}\n",
+            details: "unexpected\tend\r")
 
         let data = PeekabooBridgeResponse.encodeError(envelope)
 
@@ -21,29 +23,48 @@ struct PeekabooBridgeEncodeErrorTests {
             return
         }
         #expect(decodedEnvelope.code == .decodingFailed)
-        #expect(decodedEnvelope.message == "Failed to decode request")
-        #expect(decodedEnvelope.details == "unexpected end of file")
+        #expect(decodedEnvelope.message == envelope.message)
+        #expect(decodedEnvelope.details == envelope.details)
     }
 
     @Test
-    func `encodeError static fallback JSON shape still decodes as error`() throws {
-        let json = Data(
-            #"{"error":{"_0":{"code":"internalError","message":"Failed to encode bridge error response","operationMayHaveCompleted":false}}}"#
-                .utf8)
-        let decoded = try JSONDecoder.peekabooBridgeDecoder().decode(PeekabooBridgeResponse.self, from: json)
+    func `encodeError uses decodable fallback when encoding throws`() throws {
+        let envelope = PeekabooBridgeErrorEnvelope(code: .decodingFailed, message: "Ignored")
+
+        let data = PeekabooBridgeResponse.encodeError(envelope) { _ in
+            throw EncodingFailure.forced
+        }
+
+        try self.expectFallback(data)
+    }
+
+    @Test
+    func `encodeError uses decodable fallback when encoding returns empty data`() throws {
+        let envelope = PeekabooBridgeErrorEnvelope(code: .decodingFailed, message: "Ignored")
+
+        let data = PeekabooBridgeResponse.encodeError(envelope) { _ in Data() }
+
+        try self.expectFallback(data)
+    }
+
+    private func expectFallback(_ data: Data) throws {
+        #expect(!data.isEmpty)
+        let decoded = try JSONDecoder.peekabooBridgeDecoder().decode(PeekabooBridgeResponse.self, from: data)
         guard case let .error(envelope) = decoded else {
-            Issue.record("Expected error response from static JSON, got \(decoded)")
+            Issue.record("Expected fallback error response, got \(decoded)")
             return
         }
         #expect(envelope.code == .internalError)
         #expect(envelope.message == "Failed to encode bridge error response")
+        #expect(envelope.details == nil)
+        #expect(!envelope.operationMayHaveCompleted)
     }
 
     @Test
     func `decodeAndHandle never returns empty data for malformed request`() async throws {
         let server = await MainActor.run {
             PeekabooBridgeServer(
-                services: PeekabooServices(),
+                services: StubServices(),
                 hostKind: .gui,
                 allowlistedTeams: [],
                 allowlistedBundles: [])
@@ -60,18 +81,5 @@ struct PeekabooBridgeEncodeErrorTests {
             return
         }
         #expect(envelope.code == .decodingFailed)
-    }
-
-    @Test
-    func `unfixed empty fallback pattern is empty when encode fails`() {
-        // Documents the pre-fix contract: `?? Data()` yields empty bytes when encode fails.
-        let unfixed: Data = (Data?.none) ?? Data()
-        #expect(unfixed.isEmpty)
-
-        let envelope = PeekabooBridgeErrorEnvelope(
-            code: .internalError,
-            message: "encode failed")
-        let fixed = PeekabooBridgeResponse.encodeError(envelope)
-        #expect(!fixed.isEmpty)
     }
 }

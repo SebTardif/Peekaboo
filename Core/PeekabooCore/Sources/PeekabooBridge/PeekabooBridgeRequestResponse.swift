@@ -225,44 +225,30 @@ public enum PeekabooBridgeResponse: Codable, Sendable {
 }
 
 extension PeekabooBridgeResponse {
+    private static let fallbackErrorData = Data(
+        #"{"error":{"_0":{"code":"internalError","message":"Failed to encode bridge error response"}}}"#.utf8)
+
     /// Encode an error envelope for the bridge wire format.
     ///
     /// Never returns empty `Data`. An empty payload cannot be decoded as
     /// `PeekabooBridgeResponse` and leaves clients with a confusing decode
     /// failure instead of the original error.
-    public static func encodeError(
+    static func encodeError(
         _ envelope: PeekabooBridgeErrorEnvelope,
         using encoder: JSONEncoder = .peekabooBridgeEncoder()) -> Data
     {
-        if let data = try? encoder.encode(error(envelope)), !data.isEmpty {
-            return data
+        self.encodeError(envelope) { response in
+            try encoder.encode(response)
         }
-
-        // Caller's encoder may be misconfigured; retry with the project default.
-        if let data = try? JSONEncoder.peekabooBridgeEncoder().encode(Self.error(envelope)), !data.isEmpty {
-            return data
-        }
-
-        // Absolute last resort: hand-built JSON that still decodes as `.error`.
-        // Swift synthesizes associated-value enums with an `_0` key for the payload.
-        let code = self.jsonEscape(envelope.code.rawValue)
-        let message = self.jsonEscape(envelope.message)
-        let detailsPart = if let details = envelope.details {
-            ",\"details\":\"\(self.jsonEscape(details))\""
-        } else {
-            ""
-        }
-        let json =
-            "{\"error\":{\"_0\":{\"code\":\"\(code)\",\"message\":\"\(message)\"\(detailsPart),\"operationMayHaveCompleted\":false}}}"
-        return Data(json.utf8)
     }
 
-    private static func jsonEscape(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
+    static func encodeError(
+        _ envelope: PeekabooBridgeErrorEnvelope,
+        encodeWith encode: (Self) throws -> Data) -> Data
+    {
+        guard let data = try? encode(.error(envelope)), !data.isEmpty else {
+            return self.fallbackErrorData
+        }
+        return data
     }
 }
