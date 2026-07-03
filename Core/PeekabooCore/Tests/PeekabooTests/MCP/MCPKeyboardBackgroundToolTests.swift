@@ -132,7 +132,13 @@ struct MCPKeyboardBackgroundToolTests {
         let applications = await MainActor.run {
             MockApplicationService(applications: [app])
         }
-        let clipboard = MockClipboardService()
+        let priorClipboard = ClipboardReadResult(
+            utiIdentifier: UTType.plainText.identifier,
+            data: Data("before".utf8),
+            textPreview: "before")
+        let clipboard = await MainActor.run {
+            MockClipboardService(current: priorClipboard)
+        }
         let context = await MCPToolTestHelpers.makeContext(
             automation: automation,
             applications: applications,
@@ -156,12 +162,71 @@ struct MCPKeyboardBackgroundToolTests {
         }
         #expect(meta["delivery_mode"] == .string("background"))
         #expect(meta["target_pid"] == .int(333))
+        #expect(meta["restore_succeeded"] == .bool(true))
+        #expect(meta["restore_error"] == .null)
+        #expect(await MainActor.run { clipboard.restoreCallCount } == 1)
+    }
+
+    @Test
+    func `Paste tool warns without inviting retry when clipboard restoration fails`() async throws {
+        let app = ServiceApplicationInfo(
+            processIdentifier: 333,
+            bundleIdentifier: "com.example.editor",
+            name: "Editor")
+        let automation = await MainActor.run { MockAutomationService(accessibilityGranted: true) }
+        let applications = await MainActor.run {
+            MockApplicationService(applications: [app])
+        }
+        let priorClipboard = ClipboardReadResult(
+            utiIdentifier: UTType.plainText.identifier,
+            data: Data("before".utf8),
+            textPreview: "before")
+        let restoreError = ClipboardServiceError.writeFailed("simulated restore failure")
+        let clipboard = await MainActor.run {
+            MockClipboardService(current: priorClipboard, restoreError: restoreError)
+        }
+        let context = await MCPToolTestHelpers.makeContext(
+            automation: automation,
+            applications: applications,
+            clipboard: clipboard)
+        let tool = PasteTool(context: context)
+
+        let response = try await tool.execute(arguments: ToolArguments(raw: [
+            "app": "Editor",
+            "text": "hello",
+            "restore_delay_ms": 0,
+        ]))
+
+        #expect(response.isError == false)
+        guard case let .text(text: message, annotations: _, _meta: _) = response.content.first else {
+            Issue.record("Expected text response")
+            return
+        }
+        #expect(message.contains(AgentDisplayTokens.Status.warning))
+        #expect(message.contains("clipboard restoration failed"))
+        #expect(message.contains("Do not retry the paste"))
+        #expect(!message.contains(AgentDisplayTokens.Status.success))
+
+        guard case let .object(meta) = response.meta else {
+            Issue.record("Expected metadata")
+            return
+        }
+        #expect(meta["restore_succeeded"] == .bool(false))
+        #expect(meta["restore_error"] == .string("Failed to write to clipboard: simulated restore failure"))
+        #expect(await MainActor.run { clipboard.restoreCallCount } == 1)
     }
 }
 
 private final class MockClipboardService: ClipboardServiceProtocol, @unchecked Sendable {
     private var current: ClipboardReadResult?
     private var slots: [String: ClipboardReadResult] = [:]
+    private let restoreError: ClipboardServiceError?
+    private(set) var restoreCallCount = 0
+
+    init(current: ClipboardReadResult? = nil, restoreError: ClipboardServiceError? = nil) {
+        self.current = current
+        self.restoreError = restoreError
+    }
 
     func get(prefer _: UTType?) throws -> ClipboardReadResult? {
         self.current
@@ -191,6 +256,10 @@ private final class MockClipboardService: ClipboardServiceProtocol, @unchecked S
     }
 
     func restore(slot: String) throws -> ClipboardReadResult {
+        self.restoreCallCount += 1
+        if let restoreError {
+            throw restoreError
+        }
         guard let saved = self.slots[slot] else {
             throw ClipboardServiceError.slotNotFound(slot)
         }
