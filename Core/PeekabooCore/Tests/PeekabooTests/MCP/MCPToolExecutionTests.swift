@@ -168,6 +168,31 @@ struct MCPToolExecutionTests {
         #expect(await MainActor.run { screenCapture.lastScale } == .native)
     }
 
+    @Test
+    func `Image tool returns MCP error for empty inline capture data`() async throws {
+        let screenCapture = await MainActor.run {
+            MockScreenCaptureService(screenRecordingGranted: true, imageData: Data())
+        }
+        let context = await MCPToolTestHelpers.makeContext(screenCapture: screenCapture)
+        let tool = ImageTool(context: context)
+        let outputPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-mcp-empty-image-\(UUID().uuidString).png")
+            .path
+        defer { try? FileManager.default.removeItem(atPath: outputPath) }
+
+        let response = try await tool.execute(arguments: ToolArguments(raw: [
+            "path": outputPath,
+            "format": "data",
+        ]))
+
+        #expect(response.isError == true)
+        guard case let .text(text: output, annotations: _, _meta: _) = response.content.first else {
+            Issue.record("Expected text error response")
+            return
+        }
+        #expect(output == "Capture produced no image data and no saved file could be read")
+    }
+
     // MARK: - List Tool Tests
 
     @Test
@@ -1353,6 +1378,7 @@ private final class MockElementActionAutomationService: MockAutomationService, E
 @MainActor
 private final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
     private let screenRecordingGranted: Bool
+    private let imageData: Data
     private(set) var captureAttemptCount = 0
     private(set) var lastWindowID: CGWindowID?
     private(set) var lastAppIdentifier: String?
@@ -1361,6 +1387,12 @@ private final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
 
     init(screenRecordingGranted: Bool) {
         self.screenRecordingGranted = screenRecordingGranted
+        self.imageData = Self.validPNGData
+    }
+
+    init(screenRecordingGranted: Bool, imageData: Data) {
+        self.screenRecordingGranted = screenRecordingGranted
+        self.imageData = imageData
     }
 
     func captureScreen(
@@ -1434,9 +1466,21 @@ private final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
 
     private func makeResult(mode: CaptureMode, window: ServiceWindowInfo? = nil) -> CaptureResult {
         CaptureResult(
-            imageData: Data(),
+            imageData: self.imageData,
             metadata: CaptureMetadata(size: .zero, mode: mode, windowInfo: window))
     }
+
+    private static let validPNGData = Data([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
+        0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+        0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+        0x44, 0xAE, 0x42, 0x60, 0x82,
+    ])
 }
 
 @MainActor

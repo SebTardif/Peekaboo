@@ -7,6 +7,7 @@
 - Kimi K2.6 and K2.7 Code can now power screenshot analysis and agent runs through Moonshot's API. Thanks @Tugser for #192.
 
 ### Fixed
+- MCP inline image capture now returns an explicit error when neither capture nor saved-file fallback contains image data, instead of reporting a successful zero-byte PNG. Thanks @SebTardif for #209.
 - Speech recording now cancels and releases its recorder observer on stop and send, including after recorder errors. Thanks @SebTardif for #204.
 - Go-to-Folder navigation now stops before typing or submitting when a required synthetic hotkey fails. Thanks @SebTardif for #206.
 - Daemon launch, socket, and shutdown polling now stop promptly when their parent task is cancelled instead of spinning until the timeout. Thanks @SebTardif for #203.

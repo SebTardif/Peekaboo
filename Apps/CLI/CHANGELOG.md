@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `peekaboo see --analyze` and `peekaboo agent` now accept Kimi K2.6 and K2.7 Code models through Moonshot's API. Thanks @Tugser for #192.
 
 ### Fixed
+- MCP inline image capture now returns an explicit error when neither capture nor saved-file fallback contains image data, instead of reporting a successful zero-byte PNG. Thanks @SebTardif for #209.
 - Public CLI, agent, MCP, and API guidance now treats runtime element IDs as opaque strings to copy exactly instead of implying role-specific ID shapes. Thanks @coygeek for #194.
 - JSON-only `peekaboo see` runs without `--path` now keep required screenshots in snapshot storage instead of leaving files on Desktop or exposing their temporary paths. Thanks @coygeek for #196.
 - Background element/query/coordinate clicks now pin actions to the requested process and exact window, reject mismatched window/PID selectors and unverifiable snapshots, invalidate implicit latest snapshots without deleting history, and no longer require Event Synthesizing when Accessibility completes the click.
