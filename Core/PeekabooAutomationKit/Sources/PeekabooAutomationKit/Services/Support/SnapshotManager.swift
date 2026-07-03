@@ -201,7 +201,7 @@ public final class SnapshotManager: SnapshotManagerProtocol {
     public func listSnapshots() async throws -> [SnapshotInfo] {
         var snapshotInfos: [SnapshotInfo] = []
 
-        for snapshotURL in self.snapshotDirectoryURLs(includingPending: false) {
+        for snapshotURL in try self.snapshotDirectoryURLs(includingPending: false) {
             let snapshotId = snapshotURL.lastPathComponent
 
             // Get snapshot metadata
@@ -247,7 +247,7 @@ public final class SnapshotManager: SnapshotManagerProtocol {
 
     public func cleanSnapshotsOlderThan(days: Int) async throws -> Int {
         let cutoffDate = Date().addingTimeInterval(-Double(days) * 24 * 3600)
-        let snapshotIDs = self.snapshotDirectoryURLs(
+        let snapshotIDs = try self.snapshotDirectoryURLs(
             includingPending: true,
             requiringSnapshotData: false).compactMap { url -> String? in
             guard let createdAt = self.snapshotCreationDate(at: url), createdAt < cutoffDate else { return nil }
@@ -262,7 +262,7 @@ public final class SnapshotManager: SnapshotManagerProtocol {
     }
 
     public func cleanAllSnapshots() async throws -> Int {
-        let snapshotIDs = self.snapshotDirectoryURLs(
+        let snapshotIDs = try self.snapshotDirectoryURLs(
             includingPending: true,
             requiringSnapshotData: false).map(\.lastPathComponent)
 

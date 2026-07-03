@@ -95,7 +95,7 @@ extension SnapshotManager {
 
     func snapshotDirectoryURLs(
         includingPending: Bool,
-        requiringSnapshotData: Bool = true) -> [URL]
+        requiringSnapshotData: Bool = true) throws -> [URL]
     {
         do {
             return try self.withImplicitLatestInvalidationLock(mode: .read) {
@@ -105,7 +105,9 @@ extension SnapshotManager {
             }
         } catch {
             self.logger.error("Failed to lock snapshot state for directory read: \(error)")
-            return []
+            // Do not return []: lock failure is not "no snapshots exist".
+            throw SnapshotError.storageError(
+                "Failed to lock snapshot state for directory read: \(error.localizedDescription)")
         }
     }
 
