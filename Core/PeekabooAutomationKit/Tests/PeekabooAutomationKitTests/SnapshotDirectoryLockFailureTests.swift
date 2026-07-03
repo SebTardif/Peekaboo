@@ -6,27 +6,31 @@ import Testing
 struct SnapshotDirectoryLockFailureTests {
     @Test
     func `listSnapshots throws when snapshot storage lock cannot be acquired`() async throws {
-        // Point storage at a nested path whose parent directories do not exist so
-        // open(O_CREAT) on the invalidation lock file fails with ENOENT.
-        let missingRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("peekaboo-missing-\(UUID().uuidString)", isDirectory: true)
-            .appendingPathComponent("nested", isDirectory: true)
-            .appendingPathComponent("snapshots", isDirectory: true)
+        let (manager, storageURL) = try self.makeManagerWithBlockedStorage()
+        defer { try? FileManager.default.removeItem(at: storageURL) }
 
-        let manager = SnapshotManager(snapshotStorageURL: missingRoot)
+        await self.expectStorageLockFailure {
+            _ = try await manager.listSnapshots()
+        }
+    }
 
-        do {
-            let snapshots = try await manager.listSnapshots()
-            Issue.record(
-                "Expected lock failure to throw, but listSnapshots returned \(snapshots.count) items (empty=\(snapshots.isEmpty))")
-        } catch let error as SnapshotError {
-            guard case let .storageError(reason) = error else {
-                Issue.record("Expected storageError, got \(error)")
-                return
-            }
-            #expect(reason.contains("Failed to lock snapshot state"))
-        } catch {
-            Issue.record("Expected SnapshotError.storageError, got \(error)")
+    @Test
+    func `cleanSnapshotsOlderThan throws when snapshot storage lock cannot be acquired`() async throws {
+        let (manager, storageURL) = try self.makeManagerWithBlockedStorage()
+        defer { try? FileManager.default.removeItem(at: storageURL) }
+
+        await self.expectStorageLockFailure {
+            _ = try await manager.cleanSnapshotsOlderThan(days: 1)
+        }
+    }
+
+    @Test
+    func `cleanAllSnapshots throws when snapshot storage lock cannot be acquired`() async throws {
+        let (manager, storageURL) = try self.makeManagerWithBlockedStorage()
+        defer { try? FileManager.default.removeItem(at: storageURL) }
+
+        await self.expectStorageLockFailure {
+            _ = try await manager.cleanAllSnapshots()
         }
     }
 
@@ -40,5 +44,29 @@ struct SnapshotDirectoryLockFailureTests {
         let manager = SnapshotManager(snapshotStorageURL: root)
         let snapshots = try await manager.listSnapshots()
         #expect(snapshots.isEmpty)
+    }
+
+    private func makeManagerWithBlockedStorage() throws -> (SnapshotManager, URL) {
+        let storageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-blocked-storage-\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: storageURL, options: .atomic)
+        return (SnapshotManager(snapshotStorageURL: storageURL), storageURL)
+    }
+
+    private func expectStorageLockFailure(
+        _ operation: () async throws -> Void) async
+    {
+        do {
+            try await operation()
+            Issue.record("Expected snapshot storage lock failure")
+        } catch let error as SnapshotError {
+            guard case let .storageError(reason) = error else {
+                Issue.record("Expected storageError, got \(error)")
+                return
+            }
+            #expect(reason.contains("Failed to lock snapshot state"))
+        } catch {
+            Issue.record("Expected SnapshotError.storageError, got \(error)")
+        }
     }
 }
