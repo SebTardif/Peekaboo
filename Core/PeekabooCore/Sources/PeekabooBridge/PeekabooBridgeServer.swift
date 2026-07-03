@@ -85,14 +85,14 @@ public final class PeekabooBridgeServer {
             return try self.encoder.encode(response)
         } catch let envelope as PeekabooBridgeErrorEnvelope {
             self.logger.error("bridge request failed: \(envelope.message, privacy: .public)")
-            return (try? self.encoder.encode(PeekabooBridgeResponse.error(envelope))) ?? Data()
+            return PeekabooBridgeResponse.encodeError(envelope, using: self.encoder)
         } catch {
             self.logger.error("bridge request decoding failed: \(error.localizedDescription, privacy: .public)")
             let envelope = PeekabooBridgeErrorEnvelope(
                 code: .decodingFailed,
                 message: "Failed to decode request",
                 details: "\(error)")
-            return (try? self.encoder.encode(PeekabooBridgeResponse.error(envelope))) ?? Data()
+            return PeekabooBridgeResponse.encodeError(envelope, using: self.encoder)
         }
     }
 

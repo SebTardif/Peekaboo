@@ -1140,8 +1140,7 @@ public final actor PeekabooBridgeHost {
                     PEEKABOO_ALLOW_UNSIGNED_SOCKET_CLIENTS=1 for local development.
                     """)
 
-                let encoder = JSONEncoder.peekabooBridgeEncoder()
-                let responseData = (try? encoder.encode(PeekabooBridgeResponse.error(envelope))) ?? Data()
+                let responseData = PeekabooBridgeResponse.encodeError(envelope)
                 try PeekabooBridgeSocketIO.writeAll(
                     fd: fd,
                     data: responseData,
