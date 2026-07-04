@@ -95,6 +95,7 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     private nonisolated(unsafe) var processIdentifier: pid_t?
     private nonisolated(unsafe) var timedOut = false
     private nonisolated(unsafe) var forceStop = false
+    private nonisolated(unsafe) var forceStopRequestedAt: Date?
     private nonisolated(unsafe) var didExit = false
 
     nonisolated func start(command: [String]) throws {
@@ -108,12 +109,14 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     /// Reaps the child without blocking forever.
     ///
     /// Uses `WNOHANG` so timeout/cancellation can observe progress. Escalates to
-    /// `SIGKILL` only at the hard `deadline` (or during the post-SIGKILL reap grace).
+    /// `SIGKILL` only after an effective hard deadline (or during the post-SIGKILL
+    /// reap grace), never immediately when timeout/cancel is first observed.
     ///
-    /// Timeout and cancellation must **not** trigger SIGKILL here: both paths already
-    /// send `SIGTERM` and schedule `SIGKILL` after 500 ms
-    /// (`terminateAfterTimeout` / `terminateProcessGroupForCancellation`).
-    /// Racing that grace would kill children that trap TERM and exit cleanly.
+    /// Timeout and cancellation send `SIGTERM` and schedule `SIGKILL` after 500 ms
+    /// (`terminateAfterTimeout` / `terminateProcessGroupForCancellation`). The wait
+    /// loop must not race that grace. For cancellation, the effective deadline is
+    /// also capped to cancelTime + ~1.6s so a long configured timeout cannot leave
+    /// the caller blocked near the original deadline if the child survives signals.
     nonisolated func waitUntilExit(deadline: Date) -> Int32 {
         guard let pid = self.currentProcessIdentifier() else { return -1 }
 
@@ -134,9 +137,12 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
             }
 
             let now = Date()
-            // Preserve TERM grace for timeout and cancellation; only the hard deadline
-            // forces wait-loop SIGKILL if the child is still alive.
-            let shouldEscalate = now >= deadline
+            // Preserve TERM grace for timeout and cancellation. Escalate only after:
+            // - the original hard deadline (timeout + margin), or
+            // - a cancel-relative hard deadline (cancel time + TERM grace + SIGKILL grace)
+            //   so a cancelled long-timeout run cannot sit until the full original timeout.
+            let effectiveDeadline = self.effectiveWaitDeadline(original: deadline)
+            let shouldEscalate = now >= effectiveDeadline
             if shouldEscalate {
                 if let started = escalationStartedAt {
                     if now.timeIntervalSince(started) >= 1.0 {
@@ -182,6 +188,18 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
         return self.forceStop
     }
 
+    /// Hard deadline used by the wait loop. On cancellation, shrink to
+    /// cancelTime + 0.5s TERM grace + 1.0s SIGKILL reap grace (+ margin).
+    private nonisolated func effectiveWaitDeadline(original: Date) -> Date {
+        self.lock.lock()
+        let forceStop = self.forceStop
+        let requestedAt = self.forceStopRequestedAt
+        self.lock.unlock()
+        guard forceStop, let requestedAt else { return original }
+        let cancelRelative = requestedAt.addingTimeInterval(1.6)
+        return min(original, cancelRelative)
+    }
+
     nonisolated func finishOutput() -> (stdout: (String, Bool), stderr: (String, Bool)) {
         let stdoutHandle = self.stdoutPipe.fileHandleForReading
         let stderrHandle = self.stderrPipe.fileHandleForReading
@@ -202,6 +220,9 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     nonisolated func terminateProcessGroupForCancellation() {
         self.lock.lock()
         self.forceStop = true
+        if self.forceStopRequestedAt == nil {
+            self.forceStopRequestedAt = Date()
+        }
         let pid = self.processIdentifier
         self.lock.unlock()
         guard let pid else { return }
