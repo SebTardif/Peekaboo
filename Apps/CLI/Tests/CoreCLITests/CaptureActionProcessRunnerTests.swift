@@ -49,8 +49,6 @@ struct CaptureActionProcessRunnerTests {
     }
 
     @Test
-
-    @Test
     func `cancellation preserves TERM grace so graceful children can exit`() async throws {
         // Same grace contract as timeout: cancel sends SIGTERM, then 500 ms before SIGKILL.
         // waitUntilExit must not SIGKILL immediately on forceStop.
