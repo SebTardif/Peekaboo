@@ -84,6 +84,7 @@ struct CaptureActionProcessRunnerTests {
         }
     }
 
+    @Test
     func `runner returns by hard deadline for long running child`() async throws {
         // Even if the child outlives normal timeout handling, waitUntilExit must not block
         // forever: the hard deadline (timeout + 2s) plus SIGKILL grace bounds the wait.
