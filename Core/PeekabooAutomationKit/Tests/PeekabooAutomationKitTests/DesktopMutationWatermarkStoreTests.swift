@@ -293,9 +293,32 @@ struct DesktopMutationWatermarkStoreTests {
             completingMutation,
             through: olderCompletionCutoff)
 
+        // Orphan recovery advances the completion generation, so preservation is still denied
+        // for a different reason than "peer still pending".
         #expect(!completion.allowsObservationPreservation)
         #expect(completion.cutoff >= beforeRecovery)
         #expect(store.effectiveWatermark() == completion.cutoff)
+    }
+
+    @Test
+    func `orphan peers are not counted as other live pending mutations`() throws {
+        let root = Self.temporaryDirectory(named: "orphan-not-live-peer")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DesktopMutationWatermarkStore(directoryURL: root)
+        let live = try store.beginMutation()
+        _ = try store.beginMutation(at: Date(), ownerProcessIdentifier: pid_t.max)
+
+        // Before the fix, hasOtherPendingMutationUnlocked set foundOtherMutation=true before
+        // resolving the orphan, so this returned true even after cleanup.
+        let hasOther = try store.hasOtherLivePendingMutation(excluding: live)
+        #expect(hasOther == false)
+
+        let pendingDirectory = root.appendingPathComponent("desktop-mutation-pending", isDirectory: true)
+        let peerFiles = try FileManager.default.contentsOfDirectory(
+            at: pendingDirectory,
+            includingPropertiesForKeys: nil)
+            .filter { $0.deletingPathExtension().lastPathComponent.lowercased() != live.id.uuidString.lowercased() }
+        #expect(peerFiles.isEmpty)
     }
 
     @Test

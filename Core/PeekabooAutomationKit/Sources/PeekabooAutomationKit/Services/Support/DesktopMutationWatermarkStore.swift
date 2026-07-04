@@ -372,6 +372,8 @@ public final class DesktopMutationWatermarkStore: @unchecked Sendable {
             at: self.pendingDirectoryURL,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles])
+        // Match `hasPendingMutationUnlocked`: only live owner processes count as pending.
+        // Orphans are recovered and must not keep blocking observation preservation.
         var foundOtherMutation = false
         for url in urls where url.standardizedFileURL != ownURL.standardizedFileURL {
             guard let record = self.readPendingRecordUnlocked(at: url) else {
@@ -382,14 +384,24 @@ public final class DesktopMutationWatermarkStore: @unchecked Sendable {
                 self.removeResolvedPendingRecordBestEffort(at: url)
                 continue
             }
-            foundOtherMutation = true
-            guard !self.processMatches(record) else { continue }
+            if self.processMatches(record) {
+                foundOtherMutation = true
+                continue
+            }
             try self.resolveOrphanedPendingRecordUnlocked(
                 record,
                 at: url,
                 recoveredAt: Date())
         }
         return foundOtherMutation
+    }
+
+    /// Whether other *live* pending mutations exist after orphan recovery (test seam).
+    /// Uses the same lock and rules as `completeMutation`.
+    func hasOtherLivePendingMutation(excluding mutation: PendingMutation) throws -> Bool {
+        try self.withLock(operation: LOCK_EX) {
+            try self.hasOtherPendingMutationUnlocked(excluding: mutation)
+        }
     }
 
     private func resolveOrphanedPendingRecordUnlocked(
