@@ -17,6 +17,24 @@ struct CaptureActionProcessRunnerTests {
     }
 
     @Test
+    func `runner returns by hard deadline for long running child`() async throws {
+        // Even if the child outlives normal timeout handling, waitUntilExit must not block
+        // forever: the hard deadline (timeout + 2s) plus SIGKILL grace bounds the wait.
+        let started = Date()
+        let result = try await CaptureActionProcessRunner.run(
+            command: ["/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done"],
+            timeoutSeconds: 0.2
+        )
+
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(result.timedOut == true)
+        #expect(result.exitCode != 0)
+        // timeout (0.2) + TERM grace (0.5) + SIGKILL grace (1.0) + margin must stay under 4s
+        #expect(elapsed < 4)
+        #expect(elapsed >= 0.2)
+    }
+
+    @Test
     func `runner drains output while retaining bounded text`() async throws {
         let result = try await CaptureActionProcessRunner.run(
             command: ["/bin/sh", "-c", "yes x | head -c 70000; yes e | head -c 70000 >&2"],

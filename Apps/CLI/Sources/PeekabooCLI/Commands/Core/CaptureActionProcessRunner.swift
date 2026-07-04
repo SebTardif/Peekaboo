@@ -94,6 +94,7 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     private let lock = NSLock()
     private nonisolated(unsafe) var processIdentifier: pid_t?
     private nonisolated(unsafe) var timedOut = false
+    private nonisolated(unsafe) var forceStop = false
     private nonisolated(unsafe) var didExit = false
 
     nonisolated func start(command: [String]) throws {
@@ -104,21 +105,47 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
         try self.spawn(executable: executable, arguments: command)
     }
 
-    nonisolated func waitUntilExit() -> Int32 {
+    /// Reaps the child without blocking forever.
+    ///
+    /// Uses `WNOHANG` so timeout/cancellation can observe progress. After the configured
+    /// deadline (or once timeout/force-stop is requested), escalates to `SIGKILL` and
+    /// returns within a short grace period even if the child cannot be reaped.
+    nonisolated func waitUntilExit(deadline: Date) -> Int32 {
         guard let pid = self.currentProcessIdentifier() else { return -1 }
 
         var status: Int32 = 0
+        var escalationStartedAt: Date?
         while true {
-            let result = Darwin.waitpid(pid, &status, 0)
+            let result = Darwin.waitpid(pid, &status, WNOHANG)
             if result == pid {
                 self.markExited()
                 return Self.exitCode(fromWaitStatus: status)
             }
-            if result == -1, errno == EINTR {
-                continue
+            if result == -1 {
+                if errno == EINTR {
+                    continue
+                }
+                self.markExited()
+                return -1
             }
-            self.markExited()
-            return -1
+
+            let now = Date()
+            let shouldEscalate = self.wasTimedOut() || self.wasForceStopped() || now >= deadline
+            if shouldEscalate {
+                if let started = escalationStartedAt {
+                    if now.timeIntervalSince(started) >= 1.0 {
+                        // Child ignored or survived SIGKILL (or is stuck in uninterruptible sleep).
+                        // Return rather than hanging the capture-action caller indefinitely.
+                        self.markExited()
+                        return 128 + SIGKILL
+                    }
+                } else {
+                    escalationStartedAt = now
+                    self.killProcessGroup(pid: pid, signal: SIGKILL)
+                }
+            }
+
+            usleep(10000)
         }
     }
 
@@ -143,6 +170,12 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
         return self.timedOut
     }
 
+    nonisolated func wasForceStopped() -> Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.forceStop
+    }
+
     nonisolated func finishOutput() -> (stdout: (String, Bool), stderr: (String, Bool)) {
         let stdoutHandle = self.stdoutPipe.fileHandleForReading
         let stderrHandle = self.stderrPipe.fileHandleForReading
@@ -161,7 +194,11 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     }
 
     nonisolated func terminateProcessGroupForCancellation() {
-        guard let pid = self.currentProcessIdentifier() else { return }
+        self.lock.lock()
+        self.forceStop = true
+        let pid = self.processIdentifier
+        self.lock.unlock()
+        guard let pid else { return }
         self.killProcessGroup(pid: pid, signal: SIGTERM)
         Task.detached {
             do {
@@ -337,7 +374,10 @@ enum CaptureActionProcessRunner {
         defer { signalForwarder.cancel() }
 
         return await withTaskCancellationHandler {
-            let waitTask = Task.detached { box.waitUntilExit() }
+            // Hard ceiling: configured timeout + TERM grace (0.5s) + SIGKILL grace (1s) + margin.
+            // Prevents indefinite hang if the child survives kill attempts.
+            let deadline = Date().addingTimeInterval(timeoutSeconds + 2.0)
+            let waitTask = Task.detached { box.waitUntilExit(deadline: deadline) }
             let timeoutTask = Task.detached { await box.terminateAfterTimeout(seconds: timeoutSeconds) }
 
             let exitCode = await waitTask.value
