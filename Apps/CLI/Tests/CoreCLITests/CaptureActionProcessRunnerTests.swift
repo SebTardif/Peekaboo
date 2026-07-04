@@ -17,6 +17,38 @@ struct CaptureActionProcessRunnerTests {
     }
 
     @Test
+    func `runner preserves TERM grace so graceful children can exit`() async throws {
+        // Child traps TERM, writes a marker, and exits 0 within the 500 ms grace window.
+        // waitUntilExit must not SIGKILL immediately when timedOut becomes true, or the
+        // trap never runs and we observe a SIGKILL exit status instead.
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("peekaboo-action-term-grace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let marker = root.appendingPathComponent("graceful-exit")
+        let started = Date()
+        let result = try await CaptureActionProcessRunner.run(
+            command: [
+                "/bin/sh",
+                "-c",
+                "trap 'touch \"$1\"; exit 0' TERM; while true; do sleep 0.05; done",
+                "sh",
+                marker.path,
+            ],
+            timeoutSeconds: 0.15
+        )
+
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(result.timedOut == true)
+        #expect(result.exitCode == 0)
+        #expect(FileManager.default.fileExists(atPath: marker.path) == true)
+        // timeout + TERM handling should finish well under hard deadline; grace is 500ms
+        #expect(elapsed < 1.5)
+        #expect(elapsed >= 0.15)
+    }
+
+    @Test
     func `runner returns by hard deadline for long running child`() async throws {
         // Even if the child outlives normal timeout handling, waitUntilExit must not block
         // forever: the hard deadline (timeout + 2s) plus SIGKILL grace bounds the wait.

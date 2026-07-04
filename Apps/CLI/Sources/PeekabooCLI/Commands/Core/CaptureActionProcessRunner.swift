@@ -107,9 +107,12 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
 
     /// Reaps the child without blocking forever.
     ///
-    /// Uses `WNOHANG` so timeout/cancellation can observe progress. After the configured
-    /// deadline (or once timeout/force-stop is requested), escalates to `SIGKILL` and
-    /// returns within a short grace period even if the child cannot be reaped.
+    /// Uses `WNOHANG` so timeout/cancellation can observe progress. Escalates to
+    /// `SIGKILL` only for cancellation (`forceStop`) or the hard `deadline`.
+    ///
+    /// Timeout alone must **not** trigger SIGKILL here: `terminateAfterTimeout`
+    /// already sends `SIGTERM` and waits 500 ms before `killTimedOutProcessGroup()`.
+    /// Racing that grace would kill children that trap TERM and exit cleanly.
     nonisolated func waitUntilExit(deadline: Date) -> Int32 {
         guard let pid = self.currentProcessIdentifier() else { return -1 }
 
@@ -130,7 +133,8 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
             }
 
             let now = Date()
-            let shouldEscalate = self.wasTimedOut() || self.wasForceStopped() || now >= deadline
+            // Preserve timeout TERM grace: do not escalate solely because timedOut is set.
+            let shouldEscalate = self.wasForceStopped() || now >= deadline
             if shouldEscalate {
                 if let started = escalationStartedAt {
                     if now.timeIntervalSince(started) >= 1.0 {
