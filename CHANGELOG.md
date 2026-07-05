@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `peekaboo capture action` now returns within a bounded interval when a child survives termination attempts, preserves graceful TERM handling for timeouts and cancellation, and eventually reaps an abandoned child. Thanks @SebTardif for #215.
+
 ## [3.6.0] - 2026-07-04
 
 ### Changed

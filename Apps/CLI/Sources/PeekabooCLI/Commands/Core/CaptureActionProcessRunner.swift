@@ -91,12 +91,17 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     private let stderrPipe = Pipe()
     private let stdoutOutput = BoundedPipeOutput()
     private let stderrOutput = BoundedPipeOutput()
+    private let signalProcessGroup: @Sendable (pid_t, Int32) -> Void
     private let lock = NSLock()
     private nonisolated(unsafe) var processIdentifier: pid_t?
     private nonisolated(unsafe) var timedOut = false
     private nonisolated(unsafe) var forceStop = false
     private nonisolated(unsafe) var forceStopRequestedAt: Date?
-    private nonisolated(unsafe) var didExit = false
+    private nonisolated(unsafe) var didFinishWaiting = false
+
+    nonisolated init(signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Void) {
+        self.signalProcessGroup = signalProcessGroup
+    }
 
     nonisolated func start(command: [String]) throws {
         guard let executable = command.first else {
@@ -124,14 +129,14 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
         while true {
             let result = Darwin.waitpid(pid, &status, WNOHANG)
             if result == pid {
-                self.markExited()
+                self.markFinishedWaiting()
                 return Self.exitCode(fromWaitStatus: status)
             }
             if result == -1 {
                 if errno == EINTR {
                     continue
                 }
-                self.markExited()
+                self.markFinishedWaiting()
                 return -1
             }
 
@@ -146,8 +151,9 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
             }
             if now >= effectiveDeadline {
                 // Child ignored or survived SIGKILL (or is stuck in uninterruptible sleep).
-                // Return rather than hanging the capture-action caller indefinitely.
-                self.markExited()
+                // Transfer reaping to an asynchronous poller before unblocking the caller.
+                self.startBackgroundReaper(pid: pid)
+                self.markFinishedWaiting()
                 return 128 + SIGKILL
             }
 
@@ -301,7 +307,7 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
     private nonisolated func requestTimeoutTermination() -> Bool {
         self.lock.lock()
         defer { self.lock.unlock() }
-        guard let pid = self.processIdentifier, !self.didExit else { return false }
+        guard let pid = self.processIdentifier, !self.didFinishWaiting else { return false }
         self.timedOut = true
         self.killProcessGroup(pid: pid, signal: SIGTERM)
         return true
@@ -313,14 +319,37 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
         return self.processIdentifier
     }
 
-    private nonisolated func markExited() {
+    private nonisolated func markFinishedWaiting() {
         self.lock.lock()
-        self.didExit = true
+        self.didFinishWaiting = true
         self.lock.unlock()
     }
 
     private nonisolated func killProcessGroup(pid: pid_t, signal: Int32) {
-        _ = Darwin.kill(-pid, signal)
+        self.signalProcessGroup(pid, signal)
+    }
+
+    private nonisolated func startBackgroundReaper(pid: pid_t) {
+        Task.detached(priority: .utility) {
+            var status: Int32 = 0
+            while true {
+                let result = Darwin.waitpid(pid, &status, WNOHANG)
+                if result == pid {
+                    return
+                }
+                if result == -1 {
+                    if errno == EINTR {
+                        continue
+                    }
+                    return
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
     }
 
     private nonisolated func drainAvailableNonBlocking(from handle: FileHandle, into output: BoundedPipeOutput) {
@@ -380,7 +409,21 @@ enum CaptureActionProcessRunner {
         command: [String],
         timeoutSeconds: TimeInterval
     ) async throws -> CaptureActionProcessResult {
-        let box = CaptureActionProcessBox()
+        try await self.run(
+            command: command,
+            timeoutSeconds: timeoutSeconds,
+            signalProcessGroup: { pid, signal in
+                _ = Darwin.kill(-pid, signal)
+            }
+        )
+    }
+
+    nonisolated static func run(
+        command: [String],
+        timeoutSeconds: TimeInterval,
+        signalProcessGroup: @escaping @Sendable (pid_t, Int32) -> Void
+    ) async throws -> CaptureActionProcessResult {
+        let box = CaptureActionProcessBox(signalProcessGroup: signalProcessGroup)
         let started = Date()
         try box.start(command: command)
         let signalForwarder = CaptureActionSignalForwarder { signalNumber in

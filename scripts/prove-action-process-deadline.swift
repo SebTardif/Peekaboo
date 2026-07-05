@@ -24,7 +24,11 @@ func spawnSleepForever() -> pid_t {
     return pid
 }
 
-func waitWithDeadline(pid: pid_t, deadline: Date) -> (code: Int32, elapsed: Double) {
+func waitWithDeadline(
+    pid: pid_t,
+    deadline: Date,
+    deliverWaitLoopKill: Bool = true) -> (code: Int32, elapsed: Double)
+{
     let started = Date()
     var status: Int32 = 0
     var didSendWaitLoopKill = false
@@ -36,7 +40,9 @@ func waitWithDeadline(pid: pid_t, deadline: Date) -> (code: Int32, elapsed: Doub
         let now = Date()
         if !didSendWaitLoopKill, now >= deadline.addingTimeInterval(-1.0) {
             didSendWaitLoopKill = true
-            kill(-pid, SIGKILL)
+            if deliverWaitLoopKill {
+                kill(-pid, SIGKILL)
+            }
         }
         if now >= deadline {
             return (128 + SIGKILL, Date().timeIntervalSince(started))
@@ -52,14 +58,17 @@ usleep(150_000)
 kill(-pid, SIGTERM)
 print("  sent SIGTERM")
 let deadline = Date().addingTimeInterval(1.6)
-let (code, elapsed) = waitWithDeadline(pid: pid, deadline: deadline)
+let (code, elapsed) = waitWithDeadline(
+    pid: pid,
+    deadline: deadline,
+    deliverWaitLoopKill: false)
 print("  fixed wait returned code=\(code) elapsed=\(String(format: "%.2f", elapsed))s")
-print("  expected: returns before final abandon deadline, not hang forever")
+print("  expected: returns by final abandon deadline, not hang forever")
 // reap if still around
 kill(-pid, SIGKILL)
 var st: Int32 = 0
 _ = waitpid(pid, &st, 0)
-let ok = elapsed < 2.5 && elapsed >= 0.5
+let ok = code == 128 + SIGKILL && elapsed < 2.5 && elapsed >= 1.5
 
 if !ok {
     print("PROOF_FAIL hang bound")

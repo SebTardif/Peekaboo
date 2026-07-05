@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import PeekabooCLI
@@ -120,21 +121,28 @@ struct CaptureActionProcessRunnerTests {
     }
 
     @Test
-    func `runner returns by hard deadline for long running child`() async throws {
-        // Even if the child outlives normal timeout handling, waitUntilExit must not block
-        // forever: timeout + TERM grace + SIGKILL reap grace + margin bounds the wait.
+    func `runner abandons deadline then eventually reaps child when signal delivery fails`() async throws {
+        let ignoredSignals = IgnoredProcessGroupSignals()
         let started = Date()
         let result = try await CaptureActionProcessRunner.run(
-            command: ["/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done"],
-            timeoutSeconds: 0.2
+            command: ["/bin/sleep", "30"],
+            timeoutSeconds: 0.1,
+            signalProcessGroup: { pid, signal in
+                ignoredSignals.record(pid: pid, signal: signal)
+            }
         )
 
         let elapsed = Date().timeIntervalSince(started)
         #expect(result.timedOut == true)
-        #expect(result.exitCode != 0)
-        // timeout (0.2) + TERM grace (0.5) + SIGKILL grace (1.0) + margin must stay under 4s
-        #expect(elapsed < 4)
-        #expect(elapsed >= 0.2)
+        #expect(result.exitCode == 128 + SIGKILL)
+        #expect(elapsed < 3)
+        #expect(elapsed >= 2)
+        #expect(ignoredSignals.signals.contains(SIGTERM))
+        #expect(ignoredSignals.signals.contains(SIGKILL))
+
+        let pid = try #require(ignoredSignals.processIdentifier)
+        _ = Darwin.kill(-pid, SIGKILL)
+        try await Self.waitUntilProcessIsGone(pid)
     }
 
     @Test
@@ -228,6 +236,17 @@ struct CaptureActionProcessRunnerTests {
         Issue.record("Timed out waiting for \(url.path)")
     }
 
+    private static func waitUntilProcessIsGone(_ pid: pid_t, timeoutSeconds: TimeInterval = 2.0) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if Darwin.kill(pid, 0) == -1, errno == ESRCH {
+                return
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        Issue.record("Timed out waiting for process \(pid) to be reaped")
+    }
+
     private static let gracefulTermHandlerScript = """
     my ($marker, $ready) = @ARGV;
     $SIG{TERM} = sub {
@@ -241,4 +260,25 @@ struct CaptureActionProcessRunnerTests {
     close($fh);
     sleep 30;
     """
+}
+
+private final class IgnoredProcessGroupSignals: @unchecked Sendable {
+    private nonisolated let lock = NSLock()
+    private nonisolated(unsafe) var recordedProcessIdentifier: pid_t?
+    private nonisolated(unsafe) var recordedSignals: [Int32] = []
+
+    nonisolated var processIdentifier: pid_t? {
+        self.lock.withLock { self.recordedProcessIdentifier }
+    }
+
+    nonisolated var signals: [Int32] {
+        self.lock.withLock { self.recordedSignals }
+    }
+
+    nonisolated func record(pid: pid_t, signal: Int32) {
+        self.lock.withLock {
+            self.recordedProcessIdentifier = pid
+            self.recordedSignals.append(signal)
+        }
+    }
 }
