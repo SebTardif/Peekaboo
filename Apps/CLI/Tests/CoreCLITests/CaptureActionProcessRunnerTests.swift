@@ -27,25 +27,27 @@ struct CaptureActionProcessRunnerTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let marker = root.appendingPathComponent("graceful-exit")
+        let ready = root.appendingPathComponent("ready")
         let started = Date()
         let result = try await CaptureActionProcessRunner.run(
             command: [
-                "/bin/sh",
-                "-c",
-                "trap 'touch \"$1\"; exit 0' TERM; while true; do sleep 0.05; done",
-                "sh",
+                "/usr/bin/perl",
+                "-e",
+                Self.gracefulTermHandlerScript,
                 marker.path,
+                ready.path,
             ],
-            timeoutSeconds: 0.15
+            timeoutSeconds: 0.5
         )
 
         let elapsed = Date().timeIntervalSince(started)
+        #expect(FileManager.default.fileExists(atPath: ready.path) == true)
         #expect(result.timedOut == true)
         #expect(result.exitCode == 0)
         #expect(FileManager.default.fileExists(atPath: marker.path) == true)
         // timeout + TERM handling should finish well under hard deadline; grace is 500ms
-        #expect(elapsed < 1.5)
-        #expect(elapsed >= 0.15)
+        #expect(elapsed < 2)
+        #expect(elapsed >= 0.5)
     }
 
     @Test
@@ -58,20 +60,21 @@ struct CaptureActionProcessRunnerTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let marker = root.appendingPathComponent("cancel-graceful-exit")
+        let ready = root.appendingPathComponent("ready")
         let task = Task {
             try await CaptureActionProcessRunner.run(
                 command: [
-                    "/bin/sh",
-                    "-c",
-                    "trap 'touch \"$1\"; exit 0' TERM; while true; do sleep 0.05; done",
-                    "sh",
+                    "/usr/bin/perl",
+                    "-e",
+                    Self.gracefulTermHandlerScript,
                     marker.path,
+                    ready.path,
                 ],
                 timeoutSeconds: 5
             )
         }
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Self.waitUntilFileExists(ready)
         task.cancel()
         let result = try? await task.value
 
@@ -85,9 +88,41 @@ struct CaptureActionProcessRunnerTests {
     }
 
     @Test
+    func `cancellation returns quickly for TERM ignoring child with long timeout`() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("peekaboo-action-cancel-ignore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let ready = root.appendingPathComponent("ready")
+        let started = Date()
+        let task = Task {
+            try await CaptureActionProcessRunner.run(
+                command: [
+                    "/bin/sh",
+                    "-c",
+                    "trap '' TERM; touch \"$1\"; while true; do sleep 1; done",
+                    "sh",
+                    ready.path
+                ],
+                timeoutSeconds: 30
+            )
+        }
+
+        try await Self.waitUntilFileExists(ready)
+        task.cancel()
+        let result = try await task.value
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(result.timedOut == false)
+        #expect(result.exitCode != 0)
+        #expect(elapsed < 2.5)
+    }
+
+    @Test
     func `runner returns by hard deadline for long running child`() async throws {
         // Even if the child outlives normal timeout handling, waitUntilExit must not block
-        // forever: the hard deadline (timeout + 2s) plus SIGKILL grace bounds the wait.
+        // forever: timeout + TERM grace + SIGKILL reap grace + margin bounds the wait.
         let started = Date()
         let result = try await CaptureActionProcessRunner.run(
             command: ["/bin/sh", "-c", "trap '' TERM; while true; do sleep 1; done"],
@@ -181,4 +216,29 @@ struct CaptureActionProcessRunnerTests {
         try await Task.sleep(nanoseconds: 1_200_000_000)
         #expect(FileManager.default.fileExists(atPath: marker.path) == false)
     }
+
+    private static func waitUntilFileExists(_ url: URL, timeoutSeconds: TimeInterval = 2.0) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        Issue.record("Timed out waiting for \(url.path)")
+    }
+
+    private static let gracefulTermHandlerScript = """
+    my ($marker, $ready) = @ARGV;
+    $SIG{TERM} = sub {
+        open(my $fh, '>', $marker) or die "marker: $!";
+        print $fh "ok\\n";
+        close($fh);
+        exit 0;
+    };
+    open(my $fh, '>', $ready) or die "ready: $!";
+    print $fh "ready\\n";
+    close($fh);
+    sleep 30;
+    """
 }

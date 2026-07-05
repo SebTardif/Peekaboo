@@ -108,20 +108,19 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
 
     /// Reaps the child without blocking forever.
     ///
-    /// Uses `WNOHANG` so timeout/cancellation can observe progress. Escalates to
-    /// `SIGKILL` only after an effective hard deadline (or during the post-SIGKILL
-    /// reap grace), never immediately when timeout/cancel is first observed.
+    /// Uses `WNOHANG` so timeout/cancellation can observe progress. The deadline is
+    /// the final abandon time, not the first SIGKILL time.
     ///
     /// Timeout and cancellation send `SIGTERM` and schedule `SIGKILL` after 500 ms
     /// (`terminateAfterTimeout` / `terminateProcessGroupForCancellation`). The wait
-    /// loop must not race that grace. For cancellation, the effective deadline is
-    /// also capped to cancelTime + ~1.6s so a long configured timeout cannot leave
-    /// the caller blocked near the original deadline if the child survives signals.
+    /// loop must not race that grace. For cancellation, the final deadline is also
+    /// capped to cancelTime + ~1.6s so a long configured timeout cannot leave the
+    /// caller blocked near the original deadline if the child survives signals.
     nonisolated func waitUntilExit(deadline: Date) -> Int32 {
         guard let pid = self.currentProcessIdentifier() else { return -1 }
 
         var status: Int32 = 0
-        var escalationStartedAt: Date?
+        var didSendWaitLoopKill = false
         while true {
             let result = Darwin.waitpid(pid, &status, WNOHANG)
             if result == pid {
@@ -137,24 +136,19 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
             }
 
             let now = Date()
-            // Preserve TERM grace for timeout and cancellation. Escalate only after:
-            // - the original hard deadline (timeout + margin), or
-            // - a cancel-relative hard deadline (cancel time + TERM grace + SIGKILL grace)
-            //   so a cancelled long-timeout run cannot sit until the full original timeout.
-            let effectiveDeadline = self.effectiveWaitDeadline(original: deadline)
-            let shouldEscalate = now >= effectiveDeadline
-            if shouldEscalate {
-                if let started = escalationStartedAt {
-                    if now.timeIntervalSince(started) >= 1.0 {
-                        // Child ignored or survived SIGKILL (or is stuck in uninterruptible sleep).
-                        // Return rather than hanging the capture-action caller indefinitely.
-                        self.markExited()
-                        return 128 + SIGKILL
-                    }
-                } else {
-                    escalationStartedAt = now
-                    self.killProcessGroup(pid: pid, signal: SIGKILL)
-                }
+            // Preserve TERM grace. The timeout/cancellation tasks send the normal SIGKILL
+            // after 500 ms; this is only a redundant last-chance kill before giving up.
+            let effectiveDeadline = self.effectiveWaitAbandonDeadline(original: deadline)
+            let waitLoopKillDeadline = effectiveDeadline.addingTimeInterval(-1.0)
+            if !didSendWaitLoopKill, now >= waitLoopKillDeadline {
+                didSendWaitLoopKill = true
+                self.killProcessGroup(pid: pid, signal: SIGKILL)
+            }
+            if now >= effectiveDeadline {
+                // Child ignored or survived SIGKILL (or is stuck in uninterruptible sleep).
+                // Return rather than hanging the capture-action caller indefinitely.
+                self.markExited()
+                return 128 + SIGKILL
             }
 
             usleep(10000)
@@ -182,15 +176,9 @@ private final class CaptureActionProcessBox: @unchecked Sendable {
         return self.timedOut
     }
 
-    nonisolated func wasForceStopped() -> Bool {
-        self.lock.lock()
-        defer { self.lock.unlock() }
-        return self.forceStop
-    }
-
-    /// Hard deadline used by the wait loop. On cancellation, shrink to
+    /// Final abandon deadline used by the wait loop. On cancellation, shrink to
     /// cancelTime + 0.5s TERM grace + 1.0s SIGKILL reap grace (+ margin).
-    private nonisolated func effectiveWaitDeadline(original: Date) -> Date {
+    private nonisolated func effectiveWaitAbandonDeadline(original: Date) -> Date {
         self.lock.lock()
         let forceStop = self.forceStop
         let requestedAt = self.forceStopRequestedAt
