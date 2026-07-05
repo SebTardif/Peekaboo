@@ -314,11 +314,10 @@ struct DesktopMutationWatermarkStoreTests {
         #expect(hasOther == false)
 
         let pendingDirectory = root.appendingPathComponent("desktop-mutation-pending", isDirectory: true)
-        let peerFiles = try FileManager.default.contentsOfDirectory(
+        let pendingFiles = try FileManager.default.contentsOfDirectory(
             at: pendingDirectory,
             includingPropertiesForKeys: nil)
-            .filter { $0.deletingPathExtension().lastPathComponent.lowercased() != live.id.uuidString.lowercased() }
-        #expect(peerFiles.isEmpty)
+        #expect(pendingFiles.count == 1)
     }
 
     @Test

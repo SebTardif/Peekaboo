@@ -1,7 +1,7 @@
 #!/usr/bin/env swift
 import Foundation
 
-// Minimal model of the pending-mutation peer scan.
+/// Minimal model of the pending-mutation peer scan.
 struct Record { let processMatches: Bool; var resolved: Bool = false }
 
 func buggyHasOther(peers: inout [Record]) -> Bool {
