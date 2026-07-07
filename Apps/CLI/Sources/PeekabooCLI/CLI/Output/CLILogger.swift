@@ -100,7 +100,16 @@ final class Logger: @unchecked Sendable {
             dict.isEmpty ? nil : dict.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
         }
 
-        guard level >= self.minimumLogLevel || (level == .verbose && self.verboseMode) else { return }
+        // All mutable logger flags are owned by `queue`. Read them under the lock so a
+        // concurrent setter cannot race with level/mode decisions.
+        let snapshot = self.queue.sync {
+            (
+                minimumLogLevel: self.minimumLogLevel,
+                verboseMode: self.verboseMode,
+                isJsonOutputMode: self.isJsonOutputMode)
+        }
+
+        guard level >= snapshot.minimumLogLevel || (level == .verbose && snapshot.verboseMode) else { return }
 
         let timestamp = self.iso8601Formatter.string(from: Date())
         let levelName = level.name
@@ -114,7 +123,7 @@ final class Logger: @unchecked Sendable {
             formattedMessage += " {\(metadataString)}"
         }
 
-        let shouldBuffer = self.isJsonOutputMode
+        let shouldBuffer = snapshot.isJsonOutputMode
 
         self.queue.async(flags: .barrier) { [formattedMessage] in
             if shouldBuffer {
@@ -155,14 +164,15 @@ final class Logger: @unchecked Sendable {
     func startTimer(_ name: String) {
         // Start a performance timer
         let timestamp = self.iso8601Formatter.string(from: Date())
-        let verboseEnabled = self.verboseMode
-        let shouldBuffer = self.isJsonOutputMode
+        let flags = self.queue.sync {
+            (verboseEnabled: self.verboseMode, shouldBuffer: self.isJsonOutputMode)
+        }
 
         self.queue.async(flags: .barrier) {
             self.performanceTimers[name] = Date()
-            if verboseEnabled {
+            if flags.verboseEnabled {
                 let message = "[\(timestamp)] VERBOSE [Performance]: Starting timer '\(name)'"
-                if shouldBuffer {
+                if flags.shouldBuffer {
                     self.debugLogs.append(message)
                 } else {
                     fputs("\(message)\n", stderr)
@@ -185,7 +195,8 @@ final class Logger: @unchecked Sendable {
         }
 
         let duration = Date().timeIntervalSince(startTime)
-        if self.verboseMode || (threshold != nil && duration > threshold!) {
+        let verboseEnabled = self.queue.sync { self.verboseMode }
+        if verboseEnabled || (threshold != nil && duration > threshold!) {
             let durationMs = Int(duration * 1000)
             self.log(
                 .verbose,
