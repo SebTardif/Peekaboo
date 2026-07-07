@@ -42,20 +42,27 @@ extension DockService {
     }
 
     /// Reject paths that are not absolute filesystem paths (defense in depth for callers).
+    ///
+    /// Returns the **exact** supplied path string (no trimming) so intentional leading/trailing
+    /// whitespace in rare valid filenames is preserved for `fileExists` and the Dock tile plist.
     static func validatedDockItemPath(_ path: String) throws -> String {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard !path.isEmpty else {
             throw PeekabooError.invalidInput("Dock path must not be empty")
         }
-        guard trimmed.hasPrefix("/") else {
+        // Reject whitespace-only input without rewriting non-empty paths that merely
+        // begin/end with spaces (those are rare but valid HFS+/APFS names).
+        if path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw PeekabooError.invalidInput("Dock path must not be empty")
+        }
+        guard path.hasPrefix("/") else {
             throw PeekabooError.invalidInput("Dock path must be an absolute filesystem path")
         }
         // Control characters have no valid use in file paths for Dock tiles and are a
         // common smuggling vector when values later appear in plists or logs.
-        if trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+        if path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
             throw PeekabooError.invalidInput("Dock path must not contain control characters")
         }
-        return trimmed
+        return path
     }
 
     /// Build the Dock tile plist fragment with XML-escaped path text.

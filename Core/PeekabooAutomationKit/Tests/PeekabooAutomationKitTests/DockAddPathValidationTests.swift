@@ -29,6 +29,17 @@ struct DockAddPathValidationTests {
     }
 
     @Test
+    func `preserves exact leading and trailing whitespace on absolute paths`() throws {
+        let withTrailing = "/tmp/App Name .app"
+        let withLeading = "/tmp/ leading.app"
+        #expect(try DockService.validatedDockItemPath(withTrailing) == withTrailing)
+        #expect(try DockService.validatedDockItemPath(withLeading) == withLeading)
+
+        let fragment = DockService.dockTilePlistFragment(forPath: withTrailing)
+        #expect(fragment.contains("<string>/tmp/App Name .app</string>"))
+    }
+
+    @Test
     func `accepts absolute paths and XML-escapes special characters`() throws {
         let path = try DockService.validatedDockItemPath("/Applications/Foo & Bar <Test>.app")
         #expect(path == "/Applications/Foo & Bar <Test>.app")
