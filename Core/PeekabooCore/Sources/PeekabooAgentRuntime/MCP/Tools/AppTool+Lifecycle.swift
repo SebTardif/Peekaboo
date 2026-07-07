@@ -196,6 +196,12 @@ extension AppToolActions {
                 return true
             }
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            // Honor parent-task cancellation (same pattern as daemon poll loops / #203).
+            // `try?` swallows CancellationError from sleep; without this guard the wait
+            // runs until the full timeout even after the caller cancelled.
+            guard !Task.isCancelled else {
+                return false
+            }
             elapsed += interval
         }
 
