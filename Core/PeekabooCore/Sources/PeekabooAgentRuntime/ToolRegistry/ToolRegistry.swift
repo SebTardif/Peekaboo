@@ -2,6 +2,7 @@ import Foundation
 import os.log
 import PeekabooAutomation
 import Tachikoma
+import OSLog
 
 /// Central registry for all Peekaboo tools
 /// This registry collects tool definitions from various tool implementation files
@@ -181,11 +182,17 @@ public enum ToolRegistry {
     public static func allTools(using services: (any PeekabooServiceProviding)? = nil) -> [PeekabooToolDefinition] {
         // Tools have been refactored into PeekabooAgentService+Tools.swift
         // We now create PeekabooToolDefinitions from the agent service
-        let resolvedServices = services ?? MainActor.assumeIsolated {
+        let resolvedServices: (any PeekabooServiceProviding)? = services ?? MainActor.assumeIsolated {
             guard let factory = self.defaultServicesFactory else {
-                fatalError("ToolRegistry default services factory not configured.")
+                Logger(subsystem: "boo.peekaboo.tools", category: "registry")
+                    .error("ToolRegistry default services factory not configured; returning no tools")
+                return nil
             }
             return factory()
+        }
+
+        guard let resolvedServices else {
+            return []
         }
 
         guard let agentService = try? PeekabooAgentService(services: resolvedServices) else {

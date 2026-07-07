@@ -1,6 +1,8 @@
 import Foundation
+import OSLog
 import MCP
 import PeekabooAutomation
+import PeekabooFoundation
 import PeekabooAutomationKit
 import TachikomaMCP
 
@@ -29,20 +31,54 @@ public struct MCPToolContext: @unchecked Sendable {
     private static var taskOverride: MCPToolContext?
     @TaskLocal
     static var snapshotObservationStartedAt: Date?
-    @MainActor
-    private static var defaultContextFactory: (() -> MCPToolContext)?
+    /// Lock-published factory so configure races do not observe a half-updated MainActor-only slot.
+    private static let defaultContextFactoryLock = NSLock()
+    nonisolated(unsafe) private static var defaultContextFactory: (() -> MCPToolContext)?
+
+    private static func loadDefaultContextFactory() -> (() -> MCPToolContext)? {
+        self.defaultContextFactoryLock.withLock { self.defaultContextFactory }
+    }
+
+    private static func storeDefaultContextFactory(_ factory: (() -> MCPToolContext)?) {
+        self.defaultContextFactoryLock.withLock { self.defaultContextFactory = factory }
+    }
 
     /// Default context backed by the configured factory closure.
+    ///
+    /// Returns a configured context when `configureDefaultContext` has run. When the
+    /// factory is missing, logs a fault and traps only after a lock re-check so a
+    /// concurrent configure on another thread is not lost to a stale read.
     public static var shared: MCPToolContext {
         if let override = self.taskOverride {
             return override
         }
-        return MainActor.assumeIsolated {
-            guard let factory = self.defaultContextFactory else {
-                fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
-            }
+        if let factory = self.loadDefaultContextFactory() {
             return factory()
         }
+        // Second look after a cooperative main-queue hop for late configuration.
+        if !Thread.isMainThread {
+            return DispatchQueue.main.sync {
+                if let factory = self.loadDefaultContextFactory() {
+                    return factory()
+                }
+                return self.unconfiguredContextTrap()
+            }
+        }
+        return self.unconfiguredContextTrap()
+    }
+
+    private static func unconfiguredContextTrap() -> MCPToolContext {
+        let message =
+            "MCPToolContext default factory not configured. Call configureDefaultContext(_:)."
+        assertionFailure(message)
+        if let factory = self.loadDefaultContextFactory() {
+            return factory()
+        }
+        Logger(subsystem: "boo.peekaboo.tools", category: "context")
+            .fault("\(message, privacy: .public)")
+        // True misconfiguration (never installed) is still unrecoverable for a non-optional API.
+        // ToolRegistry soft-fails to []; this getter has no valid empty context type.
+        preconditionFailure(message)
     }
 
     /// Temporarily override the shared context for the lifetime of `operation`.
@@ -56,10 +92,13 @@ public struct MCPToolContext: @unchecked Sendable {
     }
 
     /// Produce a fresh context using the process-wide services locator.
+    ///
+    /// - Throws: `PeekabooError.operationError` when the default factory was never configured.
     @MainActor
-    public static func makeDefault() -> MCPToolContext {
-        guard let factory = self.defaultContextFactory else {
-            fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
+    public static func makeDefault() throws -> MCPToolContext {
+        guard let factory = self.loadDefaultContextFactory() else {
+            throw PeekabooError.operationError(
+                message: "MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
         }
         return factory()
     }
@@ -67,7 +106,7 @@ public struct MCPToolContext: @unchecked Sendable {
     /// Configure the default context factory used by `shared`/`makeDefault`.
     @MainActor
     public static func configureDefaultContext(using factory: @escaping () -> MCPToolContext) {
-        self.defaultContextFactory = factory
+        self.storeDefaultContextFactory(factory)
     }
 
     public init(
