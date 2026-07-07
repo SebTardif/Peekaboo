@@ -112,6 +112,16 @@ public struct MCPToolContext: @unchecked Sendable {
         self.storeDefaultContextFactory(factory)
     }
 
+    /// Temporarily override the shared context for the lifetime of `operation`.
+    public static func withContext<T>(
+        _ context: MCPToolContext,
+        perform operation: () async throws -> T) async rethrows -> T
+    {
+        try await self.$taskOverride.withValue(context) {
+            try await operation()
+        }
+    }
+
     public init(
         automation: any UIAutomationServiceProtocol,
         menu: any MenuServiceProtocol,
