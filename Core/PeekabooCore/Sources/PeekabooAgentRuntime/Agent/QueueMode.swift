@@ -1,3 +1,4 @@
+import Foundation
 import Tachikoma
 
 /// QueueMode mirrors pi-mono's message queue behavior: send queued user messages
@@ -8,6 +9,7 @@ public enum QueueMode: String, Sendable {
 }
 
 final class AgentTurnBoundary: @unchecked Sendable {
+    private let stateLock = NSLock()
     enum Decision: Equatable {
         case continueTurn
         case stopAfterCurrentStep(reason: String)
@@ -55,6 +57,9 @@ final class AgentTurnBoundary: @unchecked Sendable {
         arguments: [String: AnyAgentToolValue] = [:]) -> Decision
     {
         let normalizedName = Self.normalized(toolName)
+
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
 
         if Self.perceiveTools.contains(normalizedName) {
             self.hasPerceived = true
