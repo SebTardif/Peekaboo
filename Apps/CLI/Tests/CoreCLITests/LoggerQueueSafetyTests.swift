@@ -3,30 +3,30 @@ import Testing
 @testable import PeekabooCLI
 
 struct LoggerQueueSafetyTests {
+    /// Exercises the lock-backed flag snapshot path used by `log` / timers.
+    /// Concurrent TaskGroup access is intentionally avoided: under the package's
+    /// default MainActor isolation, Logger APIs are MainActor-bound, so stress
+    /// concurrency would only restate isolation, not the queue race we fixed.
     @Test
-    func `concurrent level changes do not crash logger`() async {
+    @MainActor
+    func `logger flag snapshots under queue do not crash`() {
         let logger = Logger.shared
         logger.setJsonOutputMode(true)
         logger.clearDebugLogs()
         logger.setMinimumLogLevel(.debug)
 
-        await withTaskGroup(of: Void.self) { group in
-            for i in 0..<50 {
-                group.addTask {
-                    if i % 2 == 0 {
-                        logger.setVerboseMode(i % 4 == 0)
-                        logger.setMinimumLogLevel(i % 3 == 0 ? .trace : .warning)
-                    } else {
-                        logger.debug("msg-\(i)", category: "race")
-                        logger.verbose("verbose-\(i)", category: "race")
-                    }
-                }
+        for i in 0..<50 {
+            if i % 2 == 0 {
+                logger.setVerboseMode(i % 4 == 0)
+                logger.setMinimumLogLevel(i % 3 == 0 ? .trace : .warning)
+            } else {
+                logger.debug("msg-\(i)", category: "race")
+                logger.verbose("verbose-\(i)", category: "race")
             }
         }
 
         logger.flush()
-        let logs = logger.getDebugLogs()
-        #expect(!logs.isEmpty || true) // success is "did not crash / data race under TSan when enabled"
+        _ = logger.getDebugLogs()
         logger.setJsonOutputMode(false)
         logger.resetMinimumLogLevel()
         logger.clearDebugLogs()
