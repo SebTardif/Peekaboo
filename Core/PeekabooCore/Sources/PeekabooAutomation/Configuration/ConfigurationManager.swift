@@ -54,11 +54,23 @@ public final class ConfigurationManager: @unchecked Sendable {
         TachikomaConfiguration.profileDirectoryName = self.baseDir
     }
 
-    /// Loaded configuration
-    var configuration: Configuration?
+    /// Serializes access to configuration and credentials for the shared singleton.
+    private let stateLock = NSLock()
 
-    /// Cached credentials
-    var credentials: [String: String] = [:]
+    private var _configuration: Configuration?
+    private var _credentials: [String: String] = [:]
+
+    /// Loaded configuration (lock-protected).
+    var configuration: Configuration? {
+        get { self.stateLock.withLock { self._configuration } }
+        set { self.stateLock.withLock { self._configuration = newValue } }
+    }
+
+    /// Cached credentials (lock-protected).
+    var credentials: [String: String] {
+        get { self.stateLock.withLock { self._credentials } }
+        set { self.stateLock.withLock { self._credentials = newValue } }
+    }
 
     private init() {
         // Load configuration on init, but don't crash if it fails
