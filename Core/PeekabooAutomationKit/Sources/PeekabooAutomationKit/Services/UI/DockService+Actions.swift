@@ -20,34 +20,80 @@ extension DockService {
     }
 
     func addToDockImpl(path: String, persistent _: Bool = true) async throws {
+        let sanitizedPath = try DockService.validatedDockItemPath(path)
         var isDirectory: ObjCBool = false
-        _ = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        _ = FileManager.default.fileExists(atPath: sanitizedPath, isDirectory: &isDirectory)
         let isFolder = isDirectory.boolValue
         let plistKey = isFolder ? "persistent-others" : "persistent-apps"
+        let tileData = DockService.dockTilePlistFragment(forPath: sanitizedPath)
 
-        let tileData = """
+        // Invoke defaults directly (no shell) so path content cannot break out of
+        // a bash -c script. Still XML-escape the path so malformed strings cannot
+        // corrupt the Dock plist fragment.
+        try DockService.runProcess(
+            executable: "/usr/bin/defaults",
+            arguments: ["write", "com.apple.dock", plistKey, "-array-add", tileData],
+            failurePrefix: "Failed to add item to Dock")
+
+        try DockService.runProcess(
+            executable: "/usr/bin/killall",
+            arguments: ["Dock"],
+            failurePrefix: "Failed to restart Dock after adding item")
+    }
+
+    /// Reject paths that are not absolute filesystem paths (defense in depth for callers).
+    static func validatedDockItemPath(_ path: String) throws -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw PeekabooError.invalidInput("Dock path must not be empty")
+        }
+        guard trimmed.hasPrefix("/") else {
+            throw PeekabooError.invalidInput("Dock path must be an absolute filesystem path")
+        }
+        // Control characters have no valid use in file paths for Dock tiles and are a
+        // common smuggling vector when values later appear in plists or logs.
+        if trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+            throw PeekabooError.invalidInput("Dock path must not contain control characters")
+        }
+        return trimmed
+    }
+
+    /// Build the Dock tile plist fragment with XML-escaped path text.
+    static func dockTilePlistFragment(forPath path: String) -> String {
+        let escaped = xmlEscape(path)
+        return """
         <dict>
             <key>tile-data</key>
             <dict>
                 <key>file-data</key>
                 <dict>
                     <key>_CFURLString</key>
-                    <string>\(path)</string>
+                    <string>\(escaped)</string>
                     <key>_CFURLStringType</key>
                     <integer>0</integer>
                 </dict>
             </dict>
         </dict>
         """
+    }
 
-        let script = """
-        defaults write com.apple.dock \(plistKey) -array-add '\(tileData)'
-        killall Dock
-        """
+    static func xmlEscape(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
 
+    static func runProcess(
+        executable: String,
+        arguments: [String],
+        failurePrefix: String) throws
+    {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", script]
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -60,7 +106,7 @@ extension DockService {
         if process.terminationStatus != 0 {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorString = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw PeekabooError.operationError(message: "Failed to add item to Dock: \(errorString)")
+            throw PeekabooError.operationError(message: "\(failurePrefix): \(errorString)")
         }
     }
 
