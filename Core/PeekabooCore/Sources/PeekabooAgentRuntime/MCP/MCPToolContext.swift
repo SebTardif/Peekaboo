@@ -45,24 +45,28 @@ public struct MCPToolContext: @unchecked Sendable {
 
     /// Default context backed by the configured factory closure.
     ///
-    /// Returns a configured context when `configureDefaultContext` has run. When the
-    /// factory is missing, logs a fault and traps only after a lock re-check so a
-    /// concurrent configure on another thread is not lost to a stale read.
+    /// Always resolves the factory on the main actor so service-backed contexts
+    /// are not constructed off-main after a background `shared` read.
     public static var shared: MCPToolContext {
         if let override = self.taskOverride {
             return override
         }
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                self.resolveDefaultContextOnMainActor()
+            }
+        }
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                self.resolveDefaultContextOnMainActor()
+            }
+        }
+    }
+
+    @MainActor
+    private static func resolveDefaultContextOnMainActor() -> MCPToolContext {
         if let factory = self.loadDefaultContextFactory() {
             return factory()
-        }
-        // Second look after a cooperative main-queue hop for late configuration.
-        if !Thread.isMainThread {
-            return DispatchQueue.main.sync {
-                if let factory = self.loadDefaultContextFactory() {
-                    return factory()
-                }
-                return self.unconfiguredContextTrap()
-            }
         }
         return self.unconfiguredContextTrap()
     }
@@ -76,26 +80,25 @@ public struct MCPToolContext: @unchecked Sendable {
         }
         Logger(subsystem: "boo.peekaboo.tools", category: "context")
             .fault("\(message, privacy: .public)")
-        // True misconfiguration (never installed) is still unrecoverable for a non-optional API.
-        // ToolRegistry soft-fails to []; this getter has no valid empty context type.
+        // True misconfiguration (never installed) remains unrecoverable for the
+        // non-optional shared/makeDefault APIs. Prefer ToolRegistry soft-fail or
+        // `makeDefaultIfConfigured()` for recoverable startup paths.
         preconditionFailure(message)
-    }
-
-    /// Temporarily override the shared context for the lifetime of `operation`.
-    public static func withContext<T>(
-        _ context: MCPToolContext,
-        perform operation: () async throws -> T) async rethrows -> T
-    {
-        try await self.$taskOverride.withValue(context) {
-            try await operation()
-        }
     }
 
     /// Produce a fresh context using the process-wide services locator.
     ///
-    /// - Throws: `PeekabooError.operationError` when the default factory was never configured.
+    /// Source-compatible with the historical non-throwing API. When the factory is
+    /// missing this still traps after logging (same class of programming error as
+    /// before). Prefer `makeDefaultIfConfigured()` for recoverable server startup.
     @MainActor
-    public static func makeDefault() throws -> MCPToolContext {
+    public static func makeDefault() -> MCPToolContext {
+        self.resolveDefaultContextOnMainActor()
+    }
+
+    /// Recoverable variant for callers that can handle an unconfigured factory.
+    @MainActor
+    public static func makeDefaultIfConfigured() throws -> MCPToolContext {
         guard let factory = self.loadDefaultContextFactory() else {
             throw PeekabooError.operationError(
                 message: "MCPToolContext default factory not configured. Call configureDefaultContext(_:).")

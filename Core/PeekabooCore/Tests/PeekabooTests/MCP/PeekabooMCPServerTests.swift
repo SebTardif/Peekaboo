@@ -43,15 +43,15 @@ struct PeekabooMCPServerTests {
         let services = PeekabooServices()
         services.agent = nil
         services.installAgentRuntimeDefaults()
-        let firstFallbackContext = try MCPToolContext.makeDefault()
-        let secondFallbackContext = try MCPToolContext.makeDefault()
+        let firstFallbackContext = MCPToolContext.makeDefault()
+        let secondFallbackContext = MCPToolContext.makeDefault()
         let gate = MCPToolSnapshotExecutionGate()
         let agent = try PeekabooAgentService(
             services: services,
             snapshotExecutionGate: gate)
         services.agent = agent
 
-        let defaultContext = try MCPToolContext.makeDefault()
+        let defaultContext = MCPToolContext.makeDefault()
         let server = try await PeekabooMCPServer()
 
         #expect(firstFallbackContext.snapshotExecutionGate === secondFallbackContext.snapshotExecutionGate)
