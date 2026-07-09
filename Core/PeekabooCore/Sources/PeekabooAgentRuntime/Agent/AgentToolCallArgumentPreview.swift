@@ -42,8 +42,12 @@ enum AgentToolCallArgumentPreview {
             return array.compactMap { Self.redactSensitiveValues($0) }
 
         case let string as String:
-            if string.lowercased().contains("bearer ") { return "Bearer ***" }
-            if string.lowercased().contains("api_key") { return "***" }
+            if string.lowercased().contains("bearer ") {
+                return "Bearer ***"
+            }
+            if string.lowercased().contains("api_key") {
+                return "***"
+            }
             return string
 
         default:

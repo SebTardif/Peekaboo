@@ -16,11 +16,21 @@ enum AgentChatPreconditions {
     }
 
     static func firstViolation(for flags: Flags) -> String? {
-        if flags.jsonOutput { return AgentMessages.Chat.jsonDisabled }
-        if flags.quiet { return AgentMessages.Chat.quietDisabled }
-        if flags.dryRun { return AgentMessages.Chat.dryRunDisabled }
-        if flags.noCache { return AgentMessages.Chat.noCacheDisabled }
-        if flags.audio || flags.audioFileProvided { return AgentMessages.Chat.typedOnly }
+        if flags.jsonOutput {
+            return AgentMessages.Chat.jsonDisabled
+        }
+        if flags.quiet {
+            return AgentMessages.Chat.quietDisabled
+        }
+        if flags.dryRun {
+            return AgentMessages.Chat.dryRunDisabled
+        }
+        if flags.noCache {
+            return AgentMessages.Chat.noCacheDisabled
+        }
+        if flags.audio || flags.audioFileProvided {
+            return AgentMessages.Chat.typedOnly
+        }
         return nil
     }
 }

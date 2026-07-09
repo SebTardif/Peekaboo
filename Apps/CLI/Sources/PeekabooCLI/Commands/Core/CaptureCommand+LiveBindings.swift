@@ -26,7 +26,9 @@ extension CaptureLiveCommand: CommanderBindableCommand {
         self.screenIndex = try values.decodeOption("screenIndex", as: Int.self)
         self.region = values.singleOption("region")
         if let parsedFocus: LiveCaptureFocus = try values
-            .decodeOptionEnum("captureFocus") { self.captureFocus = parsedFocus }
+            .decodeOptionEnum("captureFocus") {
+            self.captureFocus = parsedFocus
+        }
         self.captureEngine = values.singleOption("captureEngine")
         self.duration = try values.decodeOption("duration", as: Double.self)
         self.idleFps = try values.decodeOption("idleFps", as: Double.self)
@@ -39,7 +41,9 @@ extension CaptureLiveCommand: CommanderBindableCommand {
         self.resolutionCap = try values.decodeOption("resolutionCap", as: Double.self)
         self.diffStrategy = values.singleOption("diffStrategy")
         self.diffBudgetMs = try values.decodeOption("diffBudgetMs", as: Int.self)
-        if values.flag("highlightChanges") { self.highlightChanges = true }
+        if values.flag("highlightChanges") {
+            self.highlightChanges = true
+        }
         self.path = values.singleOption("path")
         self.autocleanMinutes = try values.decodeOption("autocleanMinutes", as: Int.self)
         self.videoOut = values.singleOption("videoOut")

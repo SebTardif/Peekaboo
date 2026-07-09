@@ -72,7 +72,9 @@ struct ScreenCaptureFallbackRunnerTests {
             correlationId: "c2")
         { api in
             call += 1
-            if call == 1 { throw Dummy.fail }
+            if call == 1 {
+                throw Dummy.fail
+            }
             return "ok_\(api.rawValue)"
         }
 

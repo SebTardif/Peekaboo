@@ -112,17 +112,27 @@ struct ProviderStatusReporter {
         let env = ProcessInfo.processInfo.environment
         switch pid {
         case .openai:
-            if let v = env["OPENAI_API_KEY"], !v.isEmpty { return .env("OPENAI_API_KEY", v) }
+            if let v = env["OPENAI_API_KEY"], !v.isEmpty {
+                return .env("OPENAI_API_KEY", v)
+            }
         case .anthropic:
-            if let v = env["ANTHROPIC_API_KEY"], !v.isEmpty { return .env("ANTHROPIC_API_KEY", v) }
+            if let v = env["ANTHROPIC_API_KEY"], !v.isEmpty {
+                return .env("ANTHROPIC_API_KEY", v)
+            }
         case .grok:
             for k in ["GROK_API_KEY", "X_AI_API_KEY", "XAI_API_KEY"] {
-                if let v = env[k], !v.isEmpty { return .env(k, v) }
+                if let v = env[k], !v.isEmpty {
+                    return .env(k, v)
+                }
             }
         case .gemini:
-            if let v = env["GEMINI_API_KEY"], !v.isEmpty { return .env("GEMINI_API_KEY", v) }
+            if let v = env["GEMINI_API_KEY"], !v.isEmpty {
+                return .env("GEMINI_API_KEY", v)
+            }
         case .openrouter:
-            if let v = env["OPENROUTER_API_KEY"], !v.isEmpty { return .env("OPENROUTER_API_KEY", v) }
+            if let v = env["OPENROUTER_API_KEY"], !v.isEmpty {
+                return .env("OPENROUTER_API_KEY", v)
+            }
         }
         return nil
     }
@@ -132,20 +142,32 @@ struct ProviderStatusReporter {
         switch pid {
         case .openai:
             if let v = creds
-                .credentialValue(for: "OPENAI_ACCESS_TOKEN") { return .credentials("OPENAI_ACCESS_TOKEN", v) }
-            if let v = creds.credentialValue(for: "OPENAI_API_KEY") { return .credentials("OPENAI_API_KEY", v) }
+                .credentialValue(for: "OPENAI_ACCESS_TOKEN") {
+                return .credentials("OPENAI_ACCESS_TOKEN", v)
+            }
+            if let v = creds.credentialValue(for: "OPENAI_API_KEY") {
+                return .credentials("OPENAI_API_KEY", v)
+            }
         case .anthropic:
-            if let v = creds.credentialValue(for: "ANTHROPIC_ACCESS_TOKEN") { return .credentials(
-                "ANTHROPIC_ACCESS_TOKEN",
-                v
-            ) }
-            if let v = creds.credentialValue(for: "ANTHROPIC_API_KEY") { return .credentials("ANTHROPIC_API_KEY", v) }
+            if let v = creds.credentialValue(for: "ANTHROPIC_ACCESS_TOKEN") {
+                return .credentials(
+                    "ANTHROPIC_ACCESS_TOKEN",
+                    v
+                )
+            }
+            if let v = creds.credentialValue(for: "ANTHROPIC_API_KEY") {
+                return .credentials("ANTHROPIC_API_KEY", v)
+            }
         case .grok:
             for k in ["GROK_API_KEY", "X_AI_API_KEY", "XAI_API_KEY"] {
-                if let v = creds.credentialValue(for: k) { return .credentials(k, v) }
+                if let v = creds.credentialValue(for: k) {
+                    return .credentials(k, v)
+                }
             }
         case .gemini:
-            if let v = creds.credentialValue(for: "GEMINI_API_KEY") { return .credentials("GEMINI_API_KEY", v) }
+            if let v = creds.credentialValue(for: "GEMINI_API_KEY") {
+                return .credentials("GEMINI_API_KEY", v)
+            }
         case .openrouter:
             if let v = creds.credentialValue(for: "OPENROUTER_API_KEY") {
                 return .credentials("OPENROUTER_API_KEY", v)

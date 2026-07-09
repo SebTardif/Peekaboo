@@ -443,7 +443,9 @@ extension CaptureActionCommand {
     func resolveMode() throws -> LiveCaptureMode {
         if let explicit = mode {
             let normalized = explicit.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if normalized == "region" { return .area }
+            if normalized == "region" {
+                return .area
+            }
             guard let mode = LiveCaptureMode(rawValue: normalized) else {
                 throw ValidationError(
                     "Unsupported capture action mode '\(explicit)'. Use screen, window, frontmost, or area."
@@ -451,8 +453,12 @@ extension CaptureActionCommand {
             }
             return mode
         }
-        if self.region != nil { return .area }
-        if self.app != nil || self.pid != nil || self.windowTitle != nil || self.windowIndex != nil { return .window }
+        if self.region != nil {
+            return .area
+        }
+        if self.app != nil || self.pid != nil || self.windowTitle != nil || self.windowIndex != nil {
+            return .window
+        }
         return .frontmost
     }
 
@@ -640,7 +646,9 @@ extension CaptureActionCommand: CommanderBindableCommand {
         self.resolutionCap = try values.decodeOption("resolutionCap", as: Double.self)
         self.diffStrategy = values.singleOption("diffStrategy")
         self.diffBudgetMs = try values.decodeOption("diffBudgetMs", as: Int.self)
-        if values.flag("highlightChanges") { self.highlightChanges = true }
+        if values.flag("highlightChanges") {
+            self.highlightChanges = true
+        }
         self.path = values.singleOption("path")
         self.autocleanMinutes = try values.decodeOption("autocleanMinutes", as: Int.self)
         self.videoOut = values.singleOption("videoOut")

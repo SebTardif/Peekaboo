@@ -23,7 +23,9 @@ private func loadCGSHandle() -> UnsafeMutableRawPointer? {
         "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
     ]
     for path in handles {
-        if let h = dlopen(path, RTLD_NOW) { return h }
+        if let h = dlopen(path, RTLD_NOW) {
+            return h
+        }
     }
     return nil
 }

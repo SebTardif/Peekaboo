@@ -309,28 +309,48 @@ struct TypeCommandTests {
         // Test newline escape
         let newlineActions = TypeCommand.processTextWithEscapes("Line 1\\nLine 2")
         #expect(newlineActions.count == 3)
-        if case .text("Line 1") = newlineActions[0] { } else { Issue.record("Expected text 'Line 1'") }
-        if case .key(.return) = newlineActions[1] { } else { Issue.record("Expected return key") }
-        if case .text("Line 2") = newlineActions[2] { } else { Issue.record("Expected text 'Line 2'") }
+        if case .text("Line 1") = newlineActions[0] { } else {
+            Issue.record("Expected text 'Line 1'")
+        }
+        if case .key(.return) = newlineActions[1] { } else {
+            Issue.record("Expected return key")
+        }
+        if case .text("Line 2") = newlineActions[2] { } else {
+            Issue.record("Expected text 'Line 2'")
+        }
 
         // Test tab escape
         let tabActions = TypeCommand.processTextWithEscapes("Name:\\tJohn")
         #expect(tabActions.count == 3)
-        if case .text("Name:") = tabActions[0] { } else { Issue.record("Expected text 'Name:'") }
-        if case .key(.tab) = tabActions[1] { } else { Issue.record("Expected tab key") }
-        if case .text("John") = tabActions[2] { } else { Issue.record("Expected text 'John'") }
+        if case .text("Name:") = tabActions[0] { } else {
+            Issue.record("Expected text 'Name:'")
+        }
+        if case .key(.tab) = tabActions[1] { } else {
+            Issue.record("Expected tab key")
+        }
+        if case .text("John") = tabActions[2] { } else {
+            Issue.record("Expected text 'John'")
+        }
 
         // Test backspace escape
         let backspaceActions = TypeCommand.processTextWithEscapes("ABC\\b")
         #expect(backspaceActions.count == 2)
-        if case .text("ABC") = backspaceActions[0] { } else { Issue.record("Expected text 'ABC'") }
-        if case .key(.delete) = backspaceActions[1] { } else { Issue.record("Expected delete key") }
+        if case .text("ABC") = backspaceActions[0] { } else {
+            Issue.record("Expected text 'ABC'")
+        }
+        if case .key(.delete) = backspaceActions[1] { } else {
+            Issue.record("Expected delete key")
+        }
 
         // Test escape key
         let escapeActions = TypeCommand.processTextWithEscapes("Cancel\\e")
         #expect(escapeActions.count == 2)
-        if case .text("Cancel") = escapeActions[0] { } else { Issue.record("Expected text 'Cancel'") }
-        if case .key(.escape) = escapeActions[1] { } else { Issue.record("Expected escape key") }
+        if case .text("Cancel") = escapeActions[0] { } else {
+            Issue.record("Expected text 'Cancel'")
+        }
+        if case .key(.escape) = escapeActions[1] { } else {
+            Issue.record("Expected escape key")
+        }
 
         // Test literal backslash
         let backslashActions = TypeCommand.processTextWithEscapes("Path: C\\\\data")
@@ -349,15 +369,33 @@ struct TypeCommandTests {
         #expect(complexActions.count == 9)
 
         // Verify the sequence
-        if case .text("Line 1") = complexActions[0] { } else { Issue.record("Expected 'Line 1'") }
-        if case .key(.return) = complexActions[1] { } else { Issue.record("Expected return") }
-        if case .text("Line 2") = complexActions[2] { } else { Issue.record("Expected 'Line 2'") }
-        if case .key(.tab) = complexActions[3] { } else { Issue.record("Expected tab") }
-        if case .text("Tabbed") = complexActions[4] { } else { Issue.record("Expected 'Tabbed'") }
-        if case .key(.delete) = complexActions[5] { } else { Issue.record("Expected delete") }
-        if case .text("Fixed") = complexActions[6] { } else { Issue.record("Expected 'Fixed'") }
-        if case .key(.escape) = complexActions[7] { } else { Issue.record("Expected escape") }
-        if case .text("Esc\\Path") = complexActions[8] { } else { Issue.record("Expected 'Esc\\Path'") }
+        if case .text("Line 1") = complexActions[0] { } else {
+            Issue.record("Expected 'Line 1'")
+        }
+        if case .key(.return) = complexActions[1] { } else {
+            Issue.record("Expected return")
+        }
+        if case .text("Line 2") = complexActions[2] { } else {
+            Issue.record("Expected 'Line 2'")
+        }
+        if case .key(.tab) = complexActions[3] { } else {
+            Issue.record("Expected tab")
+        }
+        if case .text("Tabbed") = complexActions[4] { } else {
+            Issue.record("Expected 'Tabbed'")
+        }
+        if case .key(.delete) = complexActions[5] { } else {
+            Issue.record("Expected delete")
+        }
+        if case .text("Fixed") = complexActions[6] { } else {
+            Issue.record("Expected 'Fixed'")
+        }
+        if case .key(.escape) = complexActions[7] { } else {
+            Issue.record("Expected escape")
+        }
+        if case .text("Esc\\Path") = complexActions[8] { } else {
+            Issue.record("Expected 'Esc\\Path'")
+        }
     }
 
     @Test
@@ -373,16 +411,28 @@ struct TypeCommandTests {
         // Text ending with incomplete escape
         let incompleteEscape = TypeCommand.processTextWithEscapes("Text\\\\")
         #expect(incompleteEscape.count == 1)
-        if case .text("Text\\") = incompleteEscape[0] { } else { Issue.record("Expected 'Text\\'") }
+        if case .text("Text\\") = incompleteEscape[0] { } else {
+            Issue.record("Expected 'Text\\'")
+        }
 
         // Multiple consecutive escapes
         let consecutiveEscapes = TypeCommand.processTextWithEscapes("Text\\n\\n\\t\\t")
         #expect(consecutiveEscapes.count == 5)
-        if case .text("Text") = consecutiveEscapes[0] { } else { Issue.record("Expected 'Text'") }
-        if case .key(.return) = consecutiveEscapes[1] { } else { Issue.record("Expected return") }
-        if case .key(.return) = consecutiveEscapes[2] { } else { Issue.record("Expected return") }
-        if case .key(.tab) = consecutiveEscapes[3] { } else { Issue.record("Expected tab") }
-        if case .key(.tab) = consecutiveEscapes[4] { } else { Issue.record("Expected tab") }
+        if case .text("Text") = consecutiveEscapes[0] { } else {
+            Issue.record("Expected 'Text'")
+        }
+        if case .key(.return) = consecutiveEscapes[1] { } else {
+            Issue.record("Expected return")
+        }
+        if case .key(.return) = consecutiveEscapes[2] { } else {
+            Issue.record("Expected return")
+        }
+        if case .key(.tab) = consecutiveEscapes[3] { } else {
+            Issue.record("Expected tab")
+        }
+        if case .key(.tab) = consecutiveEscapes[4] { } else {
+            Issue.record("Expected tab")
+        }
     }
 
     @Test

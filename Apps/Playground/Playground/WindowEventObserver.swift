@@ -80,7 +80,9 @@ final class WindowEventObserver: NSObject, ObservableObject {
         window: NSWindow)
     {
         let now = CFAbsoluteTimeGetCurrent()
-        if let last = cache[key], now - last < 0.5 { return }
+        if let last = cache[key], now - last < 0.5 {
+            return
+        }
         cache[key] = now
         self.actionLogger.log(.window, message, details: self.windowDetails(window))
     }

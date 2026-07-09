@@ -14,7 +14,9 @@ struct AgentActivityView: View {
         if let session = sessionStore.currentSession {
             for message in session.messages {
                 // Skip user messages in the activity view
-                if message.role == .user { continue }
+                if message.role == .user {
+                    continue
+                }
 
                 items.append(.message(message))
             }

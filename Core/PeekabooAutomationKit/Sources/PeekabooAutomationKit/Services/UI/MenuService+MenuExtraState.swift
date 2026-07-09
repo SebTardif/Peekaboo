@@ -130,7 +130,9 @@ extension MenuService {
         {
             if self.menuExtraHasOpenMenu(menuExtra),
                let frame = self.menuExtraMenuFrame(menuExtra)
-            { return frame }
+            {
+                return frame
+            }
         }
 
         let systemMenus = (systemWide.children(strict: true) ?? []).filter { $0.isMenu() }

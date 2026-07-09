@@ -93,7 +93,9 @@ DESTINATION="${DESTINATION:-platform=macOS,arch=arm64}"
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-/tmp/peekaboo-macos-app-release}"
 RELEASE_DIR="${RELEASE_DIR:-$ROOT_DIR/release}"
 APP_NAME="${APP_NAME:-${MAC_RELEASE_APP_NAME:-Peekaboo}}"
-SIGN_IDENTITY="${MAC_RELEASE_CODESIGN_IDENTITY:-${SIGN_IDENTITY:-Developer ID Application: Peter Steinberger (Y5PE65HELJ)}}"
+EXPECTED_SIGN_IDENTITY="Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)"
+EXPECTED_TEAM_ID="FWJYW4S8P8"
+SIGN_IDENTITY="${MAC_RELEASE_CODESIGN_IDENTITY:-${SIGN_IDENTITY:-$EXPECTED_SIGN_IDENTITY}}"
 APPCAST="${APPCAST:-${MAC_RELEASE_APPCAST:-appcast.xml}}"
 APPCAST_PATH="${APPCAST_PATH:-$ROOT_DIR/$APPCAST}"
 MINIMUM_SYSTEM_VERSION="${MINIMUM_SYSTEM_VERSION:-15.0}"
@@ -318,12 +320,20 @@ verify_app_entitlements() {
 verify_developer_id_signature() {
   local bundle="$1"
   local authority
+  local team_id
 
   authority="$(codesign -dv --verbose=4 "$bundle" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
-  [[ "$authority" == Developer\ ID\ Application:* ]] || fail "$bundle is signed with '$authority'; notarization requires a Developer ID Application certificate"
+  team_id="$(codesign -dv --verbose=4 "$bundle" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)"
+  [[ "$authority" == "$EXPECTED_SIGN_IDENTITY" ]] ||
+    fail "$bundle is signed with '$authority'; expected '$EXPECTED_SIGN_IDENTITY'"
+  [[ "$team_id" == "$EXPECTED_TEAM_ID" ]] ||
+    fail "$bundle has TeamIdentifier '$team_id'; expected '$EXPECTED_TEAM_ID'"
 }
 
 if [[ -z "$VERIFY_ONLY_ZIP" ]]; then
+  if [[ "$NOTARIZE" == true && "$SIGN_IDENTITY" != "$EXPECTED_SIGN_IDENTITY" ]]; then
+    fail "official releases must use '$EXPECTED_SIGN_IDENTITY'"
+  fi
   [[ -d "$WORKSPACE" ]] || fail "Workspace not found: $WORKSPACE"
   mkdir -p "$RELEASE_DIR"
   SPARKLE_KEY_ARGS=()
@@ -359,6 +369,7 @@ verify_zip() {
   codesign --verify --deep --strict --verbose=2 "$extracted_app"
   verify_app_entitlements "$extracted_app"
   if [[ "$NOTARIZE" == true ]]; then
+    verify_developer_id_signature "$extracted_app"
     xcrun stapler validate "$extracted_app"
     assess_app_bundle "$extracted_app"
   fi

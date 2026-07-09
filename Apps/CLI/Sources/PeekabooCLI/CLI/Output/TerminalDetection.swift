@@ -187,11 +187,21 @@ enum TerminalDetector {
         // Get a human-readable description of terminal capabilities
         var features: [String] = []
 
-        if caps.isInteractive { features.append("interactive") }
-        if caps.supportsColors { features.append("colors") }
-        if caps.supportsTrueColor { features.append("truecolor") }
-        if caps.isCI { features.append("CI-environment") }
-        if caps.isPiped { features.append("piped") }
+        if caps.isInteractive {
+            features.append("interactive")
+        }
+        if caps.supportsColors {
+            features.append("colors")
+        }
+        if caps.supportsTrueColor {
+            features.append("truecolor")
+        }
+        if caps.isCI {
+            features.append("CI-environment")
+        }
+        if caps.isPiped {
+            features.append("piped")
+        }
 
         let sizeInfo = "\(caps.width)x\(caps.height)"
         let termInfo = caps.termType ?? "unknown"

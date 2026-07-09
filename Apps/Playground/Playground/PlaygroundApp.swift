@@ -151,11 +151,21 @@ struct PlaygroundApp: App {
 
     private func describeModifierFlags(_ flags: NSEvent.ModifierFlags) -> String {
         var modifiers: [String] = []
-        if flags.contains(.command) { modifiers.append("⌘ Command") }
-        if flags.contains(.shift) { modifiers.append("⇧ Shift") }
-        if flags.contains(.option) { modifiers.append("⌥ Option") }
-        if flags.contains(.control) { modifiers.append("⌃ Control") }
-        if flags.contains(.function) { modifiers.append("fn Function") }
+        if flags.contains(.command) {
+            modifiers.append("⌘ Command")
+        }
+        if flags.contains(.shift) {
+            modifiers.append("⇧ Shift")
+        }
+        if flags.contains(.option) {
+            modifiers.append("⌥ Option")
+        }
+        if flags.contains(.control) {
+            modifiers.append("⌃ Control")
+        }
+        if flags.contains(.function) {
+            modifiers.append("fn Function")
+        }
         return modifiers.isEmpty ? "Released" : modifiers.joined(separator: " + ")
     }
 

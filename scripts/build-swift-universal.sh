@@ -7,6 +7,7 @@ SWIFT_PROJECT_PATH="$PROJECT_ROOT/Apps/CLI"
 FINAL_BINARY_NAME="peekaboo"
 FINAL_BINARY_PATH="$PROJECT_ROOT/$FINAL_BINARY_NAME"
 SIGN_IDENTITY="${MAC_RELEASE_CODESIGN_IDENTITY:-${SIGN_IDENTITY:-}}"
+CODESIGN_BIN="${MAC_RELEASE_CODESIGN_BIN:-codesign}"
 CODESIGN_TIMESTAMP="${CODESIGN_TIMESTAMP:-auto}"
 
 ARM64_BINARY_TEMP="$PROJECT_ROOT/${FINAL_BINARY_NAME}-arm64"
@@ -156,7 +157,7 @@ echo "🔏 Code signing the universal binary..."
 ENTITLEMENTS_PATH="$SWIFT_PROJECT_PATH/Sources/Resources/peekaboo.entitlements"
 resolve_signing_identity
 resolve_timestamp_arg
-codesign --force --sign "$SIGN_IDENTITY" \
+"$CODESIGN_BIN" --force --sign "$SIGN_IDENTITY" \
     --options runtime \
     $TIMESTAMP_ARG \
     --identifier "boo.peekaboo.peekaboo" \
@@ -166,7 +167,7 @@ echo "✅ Signed with identity: $SIGN_IDENTITY"
 
 # Verify the signature and embedded info
 echo "🔍 Verifying code signature..."
-codesign -dv "$FINAL_BINARY_PATH.tmp" 2>&1 | grep -E "Identifier=|Signature"
+"$CODESIGN_BIN" -dv "$FINAL_BINARY_PATH.tmp" 2>&1 | grep -E "Identifier=|Signature"
 
 # Replace the old binary with the new one
 mv "$FINAL_BINARY_PATH.tmp" "$FINAL_BINARY_PATH"

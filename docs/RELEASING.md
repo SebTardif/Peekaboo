@@ -7,7 +7,9 @@ read_when:
 # Peekaboo release checklist
 
 Run from the repository root. Releases publish `@steipete/peekaboo`, universal CLI archives, checksums, and a
-Developer ID signed/notarized `Peekaboo.app` with a Sparkle appcast entry.
+OpenClaw Foundation Developer ID signed/notarized `Peekaboo.app` with a Sparkle appcast entry.
+
+The standalone CLI intentionally remains signed by the legacy `Y5PE65HELJ` release team so current CLI releases can still authenticate to pre-3.8 GUI bridge hosts. Peekaboo 3.8 and later trust both the legacy and Foundation team IDs. The release driver uses Apple's system `codesign` only for that compatibility binary because the managed helper scopes all normal signing to the Foundation-only keychain; it then verifies the CLI's exact authority and Team ID in both archives. Treat changing the CLI team as a separate compatibility migration.
 
 ## 1. Prepare
 
@@ -54,8 +56,10 @@ leave the process waiting, inspect the draft assets and notes, then answer `y` t
 be:
 
 ```text
-Developer ID Application: Peter Steinberger (Y5PE65HELJ)
+Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)
 ```
+
+The CLI artifact must report `Developer ID Application: Peter Steinberger (Y5PE65HELJ)` and Team ID `Y5PE65HELJ`; the release driver verifies this exact compatibility signer in the standalone and npm archives.
 
 After npm verification, append a `Verification` section to the draft body with the npm version page, registry tarball
 URL, integrity value, publish time, and exact CI/test proof. Keep the changelog section intact, update the draft with

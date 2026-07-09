@@ -352,7 +352,9 @@ public final class ClickService {
     {
         let requestedCGWindowID = try Self.validatedCGWindowID(requestedTargetWindowID)
         guard let targetProcessIdentifier else { return nil }
-        if case .coordinates = target { return requestedCGWindowID }
+        if case .coordinates = target {
+            return requestedCGWindowID
+        }
         guard let snapshotId else {
             if requestedCGWindowID != nil {
                 throw PeekabooError.invalidInput(
@@ -650,19 +652,41 @@ public final class ClickService {
             guard candidates.contains(where: { $0.contains(queryLower) }) else { continue }
 
             var score = 0
-            if identifier == queryLower { score += 400 }
-            if label == queryLower { score += 350 }
-            if title == queryLower { score += 300 }
-            if value == queryLower { score += 200 }
+            if identifier == queryLower {
+                score += 400
+            }
+            if label == queryLower {
+                score += 350
+            }
+            if title == queryLower {
+                score += 300
+            }
+            if value == queryLower {
+                score += 200
+            }
 
-            if identifier?.contains(queryLower) == true { score += 200 }
-            if label?.contains(queryLower) == true { score += 160 }
-            if title?.contains(queryLower) == true { score += 120 }
-            if value?.contains(queryLower) == true { score += 80 }
-            if description?.contains(queryLower) == true { score += 50 }
+            if identifier?.contains(queryLower) == true {
+                score += 200
+            }
+            if label?.contains(queryLower) == true {
+                score += 160
+            }
+            if title?.contains(queryLower) == true {
+                score += 120
+            }
+            if value?.contains(queryLower) == true {
+                score += 80
+            }
+            if description?.contains(queryLower) == true {
+                score += 50
+            }
 
-            if element.type.rawValue.lowercased() == queryLower { score += 40 }
-            if element.type == .button { score += 20 }
+            if element.type.rawValue.lowercased() == queryLower {
+                score += 40
+            }
+            if element.type == .button {
+                score += 20
+            }
 
             if score > bestScore {
                 bestScore = score

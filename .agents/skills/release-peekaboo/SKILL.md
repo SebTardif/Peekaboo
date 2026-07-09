@@ -105,7 +105,7 @@ op run --env-file "$ENVFILE" -- \
 The script builds universal CLI, npm package, signed/notarized app zip, appcast, checksums, draft GitHub release, and npm publish.
 Use a non-login shell: profile exports can replace current 1Password ASC IDs with stale values while leaving the current `.p8`, producing a misleading `401`.
 
-Notarized releases must sign with `Developer ID Application: Peter Steinberger (Y5PE65HELJ)`, not `Apple Development`. If your shell has `SIGN_IDENTITY` exported for CLI builds, override it for the release command.
+Notarized app releases must sign with `Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)`, not a personal or development identity. The tracked release manifest resolves the shared passwordless signing keychain from the `OpenClaw-Core` vault; never copy the keychain path or signing material into the repository. The standalone CLI deliberately keeps `Developer ID Application: Peter Steinberger (Y5PE65HELJ)` for compatibility with pre-3.8 GUI bridge hosts, and the release driver verifies that exact split. Do not migrate the CLI signer without a separate bridge-compatibility plan.
 
 If npm upload is slow and TOTP expires, use the stored npm token through a temp npmrc and complete npm web auth immediately when prompted with the configured TOTP. Do not create granular bypass tokens for this; if one was created by mistake, delete it before closeout.
 

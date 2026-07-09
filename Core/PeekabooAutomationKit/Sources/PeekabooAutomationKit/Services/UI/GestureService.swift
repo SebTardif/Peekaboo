@@ -232,7 +232,9 @@ public final class GestureService {
         let delay = self.stepDelay(duration: duration, steps: points.count)
         for point in points {
             try InputDriver.move(to: point)
-            if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+            if delay > 0 {
+                try await Task.sleep(nanoseconds: delay)
+            }
         }
     }
 }

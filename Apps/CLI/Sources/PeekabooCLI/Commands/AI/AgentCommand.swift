@@ -89,7 +89,7 @@ struct AgentCommand: RuntimeOptionsConfigurable {
     @Option(
         name: .long,
         help: """
-        AI model to use (for example: gpt-5.6, gpt-5.5, claude-fable-5, claude-sonnet-5, \
+        AI model to use (for example: gpt-5.5, claude-fable-5, \
         gemini-3.5-flash, grok-4.3, minimax-m2.7, minimax-cn/m2.7, \
         ollama/<model>, lmstudio/<model>, or <custom-provider>/<model>)
         """
@@ -128,10 +128,18 @@ struct AgentCommand: RuntimeOptionsConfigurable {
     /// Computed property for output mode with smart detection and progressive enhancement
     var outputMode: OutputMode {
         // Explicit user overrides first
-        if self.quiet { return .quiet }
-        if self.verbose || self.debugTerminal { return .verbose }
-        if self.simple { return .minimal }
-        if self.noColor { return .minimal }
+        if self.quiet {
+            return .quiet
+        }
+        if self.verbose || self.debugTerminal {
+            return .verbose
+        }
+        if self.simple {
+            return .minimal
+        }
+        if self.noColor {
+            return .minimal
+        }
 
         // Check for environment-based forced modes
         if let forcedMode = TerminalDetector.shouldForceOutputMode() {

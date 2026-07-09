@@ -90,7 +90,9 @@ private final class WatchCaptureStopSignal: @unchecked Sendable {
     }
 
     func wait() async {
-        if self.isRequested() { return }
+        if self.isRequested() {
+            return
+        }
 
         let id = UUID()
         await withTaskCancellationHandler {
