@@ -5,30 +5,32 @@ import PeekabooFoundation
 extension ConfigurationManager {
     /// Load configuration from a specific path
     func loadConfigurationFromPath(_ configPath: String) -> Configuration? {
-        guard FileManager.default.fileExists(atPath: configPath) else {
+        self.withStateLock {
+            guard FileManager.default.fileExists(atPath: configPath) else {
+                return nil
+            }
+
+            var expandedJSON = ""
+
+            do {
+                let data = try Data(contentsOf: URL(fileURLWithPath: configPath))
+                let jsonString = String(data: data, encoding: .utf8) ?? ""
+                let cleanedJSON = self.stripJSONComments(from: jsonString)
+                expandedJSON = self.expandEnvironmentVariables(in: cleanedJSON, preservingKeys: ["apiKey"])
+
+                if let expandedData = expandedJSON.data(using: .utf8) {
+                    let config = try JSONCoding.decoder.decode(Configuration.self, from: expandedData)
+                    self.configuration = config
+                    return config
+                }
+            } catch let error as DecodingError {
+                self.printDecodingWarning(error, expandedJSON: expandedJSON)
+            } catch {
+                self.printWarning("Failed to load configuration from \(configPath): \(error)")
+            }
+
             return nil
         }
-
-        var expandedJSON = ""
-
-        do {
-            let data = try Data(contentsOf: URL(fileURLWithPath: configPath))
-            let jsonString = String(data: data, encoding: .utf8) ?? ""
-            let cleanedJSON = self.stripJSONComments(from: jsonString)
-            expandedJSON = self.expandEnvironmentVariables(in: cleanedJSON, preservingKeys: ["apiKey"])
-
-            if let expandedData = expandedJSON.data(using: .utf8) {
-                let config = try JSONCoding.decoder.decode(Configuration.self, from: expandedData)
-                self.configuration = config
-                return config
-            }
-        } catch let error as DecodingError {
-            self.printDecodingWarning(error, expandedJSON: expandedJSON)
-        } catch {
-            self.printWarning("Failed to load configuration from \(configPath): \(error)")
-        }
-
-        return nil
     }
 
     /// Strip comments from JSONC content
