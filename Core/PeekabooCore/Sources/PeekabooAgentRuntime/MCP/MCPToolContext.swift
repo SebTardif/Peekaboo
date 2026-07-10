@@ -34,15 +34,32 @@ public struct MCPToolContext: @unchecked Sendable {
     private static var defaultContextFactory: (() -> MCPToolContext)?
 
     /// Default context backed by the configured factory closure.
+    ///
+    /// Synchronous access is main-thread only. Off-main callers must use
+    /// `sharedOnMainActor()` (async hop) or pass an explicit `MCPToolContext`.
+    /// This deliberately does **not** use `DispatchQueue.main.sync`, which can
+    /// deadlock when the main actor is waiting on the calling task.
     public static var shared: MCPToolContext {
         if let override = self.taskOverride {
             return override
+        }
+        guard Thread.isMainThread else {
+            fatalError(
+                "MCPToolContext.shared must be accessed on the main thread. "
+                    + "Use await MCPToolContext.sharedOnMainActor() or pass an explicit context.")
         }
         return MainActor.assumeIsolated {
             guard let factory = self.defaultContextFactory else {
                 fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(using:).")
             }
             return factory()
+        }
+    }
+
+    /// Resolve `shared` from any isolation without a synchronous main-queue hop.
+    public static func sharedOnMainActor() async -> MCPToolContext {
+        await MainActor.run {
+            self.shared
         }
     }
 
