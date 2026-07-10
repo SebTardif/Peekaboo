@@ -1,6 +1,7 @@
 import Foundation
 import MCP
 import PeekabooAutomation
+import PeekabooFoundation
 import PeekabooAutomationKit
 import TachikomaMCP
 
@@ -56,6 +57,9 @@ public struct MCPToolContext: @unchecked Sendable {
     }
 
     /// Produce a fresh context using the process-wide services locator.
+    ///
+    /// Unconfigured factory is a programming error and traps. For recoverable
+    /// construction (MCP server boot), use `makeDefaultIfConfigured()`.
     @MainActor
     public static func makeDefault() -> MCPToolContext {
         guard let factory = self.defaultContextFactory else {
@@ -64,10 +68,30 @@ public struct MCPToolContext: @unchecked Sendable {
         return factory()
     }
 
+    /// Recoverable default-context construction for callers that can fail open.
+    ///
+    /// Prefer this over `makeDefault()` at process/server startup so a missing
+    /// factory becomes a thrown error instead of process termination.
+    /// Does not change `ToolRegistry` or other programming-error invariants.
+    @MainActor
+    public static func makeDefaultIfConfigured() throws -> MCPToolContext {
+        guard let factory = self.defaultContextFactory else {
+            throw PeekabooError.operationError(
+                message: "MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
+        }
+        return factory()
+    }
+
     /// Configure the default context factory used by `shared`/`makeDefault`.
     @MainActor
     public static func configureDefaultContext(using factory: @escaping () -> MCPToolContext) {
         self.defaultContextFactory = factory
+    }
+
+    /// Test helper to clear the process-wide factory between cases.
+    @MainActor
+    static func resetDefaultContextFactoryForTesting() {
+        self.defaultContextFactory = nil
     }
 
     public init(

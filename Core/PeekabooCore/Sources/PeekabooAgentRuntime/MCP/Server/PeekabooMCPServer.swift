@@ -31,7 +31,7 @@ public actor PeekabooMCPServer {
     public init() async throws {
         self.logger = os.Logger(subsystem: "boo.peekaboo.mcp", category: "server")
         self.toolRegistry = await MCPToolRegistry()
-        self.toolContext = await MainActor.run { MCPToolContext.makeDefault() }
+        self.toolContext = try await MainActor.run { try MCPToolContext.makeDefaultIfConfigured() }
         self.server = Self.makeServer(name: PeekabooMCPVersion.serverName, version: PeekabooMCPVersion.current)
 
         await self.setupHandlers()

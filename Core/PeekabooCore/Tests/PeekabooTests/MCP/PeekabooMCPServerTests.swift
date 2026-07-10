@@ -1,3 +1,4 @@
+import PeekabooFoundation
 import Testing
 @testable import PeekabooAgentRuntime
 @testable import PeekabooAutomation
@@ -59,6 +60,61 @@ struct PeekabooMCPServerTests {
         #expect(defaultContext.snapshotExecutionGate === gate)
         #expect(await server.snapshotExecutionGateForTesting() === gate)
     }
+
+    @Test
+    @MainActor
+    func `makeDefaultIfConfigured throws when factory is missing`() {
+        MCPToolContext.resetDefaultContextFactoryForTesting()
+        defer { restoreDefaultFactory() }
+        do {
+            _ = try MCPToolContext.makeDefaultIfConfigured()
+            Issue.record("expected makeDefaultIfConfigured() to throw")
+        } catch let error as PeekabooError {
+            #expect(String(describing: error).contains("not configured"))
+        } catch {
+            Issue.record("unexpected error type: \(error)")
+        }
+    }
+
+    @Test
+    @MainActor
+    func `makeDefaultIfConfigured returns context after installAgentRuntimeDefaults`() throws {
+        MCPToolContext.resetDefaultContextFactoryForTesting()
+        defer { restoreDefaultFactory() }
+        let services = PeekabooServices()
+        services.installAgentRuntimeDefaults()
+        let context = try MCPToolContext.makeDefaultIfConfigured()
+        #expect(context.automation !== nil)
+    }
+
+    @Test
+    @MainActor
+    func `server init throws when default factory is unconfigured`() async {
+        MCPToolContext.resetDefaultContextFactoryForTesting()
+        defer { restoreDefaultFactory() }
+        do {
+            _ = try await PeekabooMCPServer()
+            Issue.record("expected PeekabooMCPServer() to throw when factory is unconfigured")
+        } catch {
+            // Recoverable startup path: throw instead of fatalError.
+            #expect(String(describing: error).contains("not configured")
+                || error is PeekabooError)
+        }
+    }
+
+    @Test
+    @MainActor
+    func `server init succeeds after installAgentRuntimeDefaults`() async throws {
+        MCPToolContext.resetDefaultContextFactoryForTesting()
+        defer { restoreDefaultFactory() }
+        let services = PeekabooServices()
+        services.installAgentRuntimeDefaults()
+        let server = try await PeekabooMCPServer()
+        let names = await server.registeredToolNamesForTesting()
+        #expect(!names.isEmpty)
+    }
+
+
 }
 
 @MainActor
