@@ -305,7 +305,9 @@ private final class LaunchRecordingApplicationService: StubApplicationService {
     var launchError: PeekabooError?
 
     override func launchApplication(request: ApplicationLaunchRequest) async throws -> ServiceApplicationInfo {
-        if let launchError { throw launchError }
+        if let launchError {
+            throw launchError
+        }
         self.launchRequests.append(request)
         return try await super.launchApplication(request: request)
     }

@@ -303,15 +303,23 @@ public struct PermissionsStatus: Sendable, Codable {
 
     public var missingPermissions: [String] {
         var missing: [String] = []
-        if !self.screenRecording { missing.append("Screen Recording") }
-        if !self.accessibility { missing.append("Accessibility") }
+        if !self.screenRecording {
+            missing.append("Screen Recording")
+        }
+        if !self.accessibility {
+            missing.append("Accessibility")
+        }
         return missing
     }
 
     public var missingOptionalPermissions: [String] {
         var missing: [String] = []
-        if !self.appleScript { missing.append("AppleScript") }
-        if !self.postEvent { missing.append("Event Synthesizing") }
+        if !self.appleScript {
+            missing.append("AppleScript")
+        }
+        if !self.postEvent {
+            missing.append("Event Synthesizing")
+        }
         return missing
     }
 

@@ -276,7 +276,9 @@ struct MenuExtractionTests {
                             }
                         }
                     }
-                    if foundDisabledItem { break }
+                    if foundDisabledItem {
+                        break
+                    }
                 }
 
                 #expect(foundDisabledItem, "Should find at least one disabled menu item")

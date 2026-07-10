@@ -130,10 +130,18 @@ extension PermissionCommandTests {
 
         for index in text.indices {
             let char = text[index]
-            if char == "{" { curly += 1 }
-            if char == "}" { curly -= 1 }
-            if char == "[" { square += 1 }
-            if char == "]" { square -= 1 }
+            if char == "{" {
+                curly += 1
+            }
+            if char == "}" {
+                curly -= 1
+            }
+            if char == "[" {
+                square += 1
+            }
+            if char == "]" {
+                square -= 1
+            }
 
             if curly == 0 && square == 0 && (char == "}" || char == "]") {
                 end = text.index(after: index)

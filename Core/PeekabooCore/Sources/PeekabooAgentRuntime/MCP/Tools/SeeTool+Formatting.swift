@@ -33,9 +33,15 @@ struct SeeElementTextFormatter {
     }
 
     static func primaryLabel(for element: UIElement) -> String? {
-        if let title = element.title { return title }
-        if let label = element.label { return label }
-        if let value = element.value { return "value: \(value)" }
+        if let title = element.title {
+            return title
+        }
+        if let label = element.label {
+            return label
+        }
+        if let value = element.value {
+            return "value: \(value)"
+        }
         return nil
     }
 }

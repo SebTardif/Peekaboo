@@ -277,7 +277,9 @@ extension MenuService {
         }
 
         let windowLayer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
-        if !(windowLayer == 24 || windowLayer == 25) { return nil }
+        if !(windowLayer == 24 || windowLayer == 25) {
+            return nil
+        }
 
         guard let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: Any],
               let x = boundsDict["X"] as? CGFloat,

@@ -98,8 +98,12 @@ extension DialogCommand {
                     outputSuccessCodable(data: self.makeOutput(from: result), logger: self.outputLogger)
                 } else {
                     print("✓ Handled file dialog")
-                    if let path = result.details["path"] { print("  Path: \(path)") }
-                    if let name = result.details["filename"] { print("  Name: \(name)") }
+                    if let path = result.details["path"] {
+                        print("  Path: \(path)")
+                    }
+                    if let name = result.details["filename"] {
+                        print("  Name: \(name)")
+                    }
                     print("  Action: \(result.details["button_clicked"] ?? self.select ?? "default")")
                     if let savedPath = result.details["saved_path"], result.details["saved_path_exists"] == "true" {
                         print("  Saved: \(savedPath)")

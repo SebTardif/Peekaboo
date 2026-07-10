@@ -16,6 +16,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 RELEASE_DIR="${RELEASE_DIR:-$BUILD_DIR/release}"
+MAC_RELEASE_MANIFEST="${MAC_RELEASE_MANIFEST:-$PROJECT_ROOT/.mac-release.env}"
+if [ -f "$MAC_RELEASE_MANIFEST" ]; then
+    # shellcheck source=/Users/steipete/Projects/Peekaboo/.mac-release.env
+    source "$MAC_RELEASE_MANIFEST"
+fi
+CLI_SIGN_IDENTITY="${MAC_RELEASE_CLI_CODESIGN_IDENTITY:-Developer ID Application: Peter Steinberger (Y5PE65HELJ)}"
+CLI_SIGN_TEAM_ID="${MAC_RELEASE_CLI_CODESIGN_TEAM_ID:-Y5PE65HELJ}"
+CLI_CODESIGN_BIN=/usr/bin/codesign
 
 echo -e "${BLUE}🚀 Peekaboo Release Build Script${NC}"
 
@@ -34,11 +42,20 @@ verify_binary_artifact() {
     local version_output
     local binary_size
     local lipo_output
+    local authority
+    local team_id
 
     [ -x "$binary_path" ] || fail "$label binary missing or not executable: $binary_path"
     binary_size=$(stat -f%z "$binary_path")
     (( binary_size > 1000000 )) || fail "$label binary is unexpectedly small: $binary_size bytes"
     file "$binary_path" | grep -q 'Mach-O' || fail "$label binary is not Mach-O: $binary_path"
+    codesign --verify --strict --verbose=2 "$binary_path"
+    authority=$(codesign -dv --verbose=4 "$binary_path" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+    team_id=$(codesign -dv --verbose=4 "$binary_path" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)
+    [ "$authority" = "$CLI_SIGN_IDENTITY" ] ||
+        fail "$label signer mismatch: expected '$CLI_SIGN_IDENTITY', got '$authority'"
+    [ "$team_id" = "$CLI_SIGN_TEAM_ID" ] ||
+        fail "$label TeamIdentifier mismatch: expected '$CLI_SIGN_TEAM_ID', got '$team_id'"
 
     if command -v lipo >/dev/null 2>&1; then
         lipo_output=$(lipo -info "$binary_path")
@@ -156,6 +173,7 @@ verify_release_artifacts() {
     require_command tar
     require_command shasum
     require_command file
+    require_command codesign
 
     verify_cli_tarball "$RELEASE_DIR/$CLI_TARBALL_NAME"
     verify_npm_tarball "$NPM_PACKAGE_PATH"
@@ -321,7 +339,14 @@ else
     CLI_TARBALL_NAME="peekaboo-macos-arm64.tar.gz"
 fi
 
-if ! pnpm run "$BUILD_SCRIPT"; then
+# The managed release helper scopes normal signing to the Foundation-only keychain.
+# The compatibility CLI signer intentionally remains in the legacy user release
+# keychain, so only this build invokes Apple's codesign directly. Exact authority
+# and TeamIdentifier checks below keep the split fail-closed.
+if ! /usr/bin/security find-identity -p codesigning -v 2>/dev/null | grep -Fq "\"$CLI_SIGN_IDENTITY\""; then
+    fail "required compatibility CLI signer is unavailable: $CLI_SIGN_IDENTITY"
+fi
+if ! MAC_RELEASE_CODESIGN_BIN="$CLI_CODESIGN_BIN" MAC_RELEASE_CODESIGN_IDENTITY="$CLI_SIGN_IDENTITY" pnpm run "$BUILD_SCRIPT"; then
     echo -e "${RED}❌ Swift build failed!${NC}"
     exit 1
 fi

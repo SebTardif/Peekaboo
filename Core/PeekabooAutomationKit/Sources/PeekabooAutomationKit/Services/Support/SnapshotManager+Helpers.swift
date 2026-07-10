@@ -89,7 +89,9 @@ extension SnapshotManager {
         {
             return date
         }
-        if let fallback { return fallback }
+        if let fallback {
+            return fallback
+        }
         return try? snapshotURL.resourceValues(forKeys: [.creationDateKey]).creationDate
     }
 

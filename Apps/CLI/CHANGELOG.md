@@ -5,7 +5,15 @@ All notable changes to Peekaboo CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [3.8.1] - Unreleased
+
+### Fixed
+- Adding a path to the Dock now passes the item directly to `defaults` instead of interpolating it through a shell, preventing shell metacharacters in filenames from being executed. Thanks @SebTardif for #224.
+
+## [3.8.0] - 2026-07-09
+
+### Changed
+- The standalone CLI keeps its legacy Developer ID team for compatibility with pre-3.8 GUI bridge hosts, while 3.8 hosts accept both the legacy and OpenClaw Foundation release teams during the signing transition.
 
 ## [3.7.1] - 2026-07-05
 

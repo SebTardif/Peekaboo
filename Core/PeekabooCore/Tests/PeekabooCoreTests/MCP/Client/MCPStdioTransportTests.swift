@@ -230,7 +230,9 @@ actor TestExpectation {
     }
 
     func wait(timeout: TimeInterval) async throws {
-        if self.fulfilled { return }
+        if self.fulfilled {
+            return
+        }
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {

@@ -140,7 +140,9 @@ extension ConfigurationManager {
     /// `getOpenAIAPIKey()` alone deliberately ignores OAuth tokens so they are
     /// not misclassified as `x-api-key` material.
     public func hasOpenAIAuth() -> Bool {
-        if self.getOpenAIAPIKey()?.isEmpty == false { return true }
+        if self.getOpenAIAPIKey()?.isEmpty == false {
+            return true
+        }
         return self.validOAuthAccessToken(prefix: "OPENAI") != nil
     }
 
@@ -159,7 +161,9 @@ extension ConfigurationManager {
     /// gates; `getAnthropicAPIKey()` alone deliberately ignores OAuth tokens so
     /// they are not misclassified as `x-api-key` material.
     public func hasAnthropicAuth() -> Bool {
-        if self.getAnthropicAPIKey()?.isEmpty == false { return true }
+        if self.getAnthropicAPIKey()?.isEmpty == false {
+            return true
+        }
         return self.validOAuthAccessToken(prefix: "ANTHROPIC") != nil
     }
 

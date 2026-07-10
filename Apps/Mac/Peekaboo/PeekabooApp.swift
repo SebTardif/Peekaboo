@@ -33,27 +33,41 @@ struct PeekabooApp: App {
     private func configureTachikomaWithSettings() {
         // Use TachikomaConfiguration profile-based loading (env/credentials).
         // Only override when user explicitly enters values in settings.
-        if !self.settings.openAIAPIKey.isEmpty { TachikomaConfiguration.current.setAPIKey(
-            self.settings.openAIAPIKey,
-            for: .openai) }
-        if !self.settings.anthropicAPIKey.isEmpty { TachikomaConfiguration.current.setAPIKey(
-            self.settings.anthropicAPIKey,
-            for: .anthropic) }
-        if !self.settings.grokAPIKey.isEmpty { TachikomaConfiguration.current.setAPIKey(
-            self.settings.grokAPIKey,
-            for: .grok) }
-        if !self.settings.googleAPIKey.isEmpty { TachikomaConfiguration.current.setAPIKey(
-            self.settings.googleAPIKey,
-            for: .google) }
-        if !self.settings.miniMaxAPIKey.isEmpty { TachikomaConfiguration.current.setAPIKey(
-            self.settings.miniMaxAPIKey,
-            for: .minimax) }
-        if !self.settings.miniMaxChinaAPIKey.isEmpty { TachikomaConfiguration.current.setAPIKey(
-            self.settings.miniMaxChinaAPIKey,
-            for: .minimaxCN) }
-        if self.settings.ollamaBaseURL != "http://localhost:11434" { TachikomaConfiguration.current.setBaseURL(
-            self.settings.ollamaBaseURL,
-            for: .ollama) }
+        if !self.settings.openAIAPIKey.isEmpty {
+            TachikomaConfiguration.current.setAPIKey(
+                self.settings.openAIAPIKey,
+                for: .openai)
+        }
+        if !self.settings.anthropicAPIKey.isEmpty {
+            TachikomaConfiguration.current.setAPIKey(
+                self.settings.anthropicAPIKey,
+                for: .anthropic)
+        }
+        if !self.settings.grokAPIKey.isEmpty {
+            TachikomaConfiguration.current.setAPIKey(
+                self.settings.grokAPIKey,
+                for: .grok)
+        }
+        if !self.settings.googleAPIKey.isEmpty {
+            TachikomaConfiguration.current.setAPIKey(
+                self.settings.googleAPIKey,
+                for: .google)
+        }
+        if !self.settings.miniMaxAPIKey.isEmpty {
+            TachikomaConfiguration.current.setAPIKey(
+                self.settings.miniMaxAPIKey,
+                for: .minimax)
+        }
+        if !self.settings.miniMaxChinaAPIKey.isEmpty {
+            TachikomaConfiguration.current.setAPIKey(
+                self.settings.miniMaxChinaAPIKey,
+                for: .minimaxCN)
+        }
+        if self.settings.ollamaBaseURL != "http://localhost:11434" {
+            TachikomaConfiguration.current.setBaseURL(
+                self.settings.ollamaBaseURL,
+                for: .ollama)
+        }
     }
 
     /// Load API keys from credentials file if settings are empty
@@ -532,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "boo.peekaboo.peekaboo", // CLI
             "boo.peekaboo.mac", // GUI
         ]
-        let allowlistedTeams: Set = ["Y5PE65HELJ"]
+        let allowlistedTeams = PeekabooBridgeConstants.trustedReleaseTeamIDs
 
         self.logger.info("Starting Peekaboo Bridge at \(PeekabooBridgeConstants.peekabooSocketPath, privacy: .public)")
         self.bridgeStartTask = Task { @MainActor [weak self] in

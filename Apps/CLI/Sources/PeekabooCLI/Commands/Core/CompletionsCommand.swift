@@ -116,7 +116,9 @@ extension CompletionsCommand {
 
                 guard normalized.hasPrefix(shell.rawValue) else { continue }
                 let suffix = normalized.dropFirst(shell.rawValue.count)
-                if suffix.isEmpty { return shell }
+                if suffix.isEmpty {
+                    return shell
+                }
                 let first = suffix.first!
                 if first == "-" || first == "." || first.isNumber {
                     return shell

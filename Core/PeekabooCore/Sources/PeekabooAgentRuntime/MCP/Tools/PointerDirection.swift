@@ -12,6 +12,8 @@ func pointerDirection(from start: CGPoint, to end: CGPoint) -> String? {
     let directions = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"]
     let normalized = (angle + .pi) / (2 * .pi)
     var index = Int(round(normalized * 8)) % 8
-    if index < 0 { index += 8 }
+    if index < 0 {
+        index += 8
+    }
     return directions[index]
 }

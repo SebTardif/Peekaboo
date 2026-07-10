@@ -174,7 +174,9 @@ enum MenuBarPopoverResolver {
         var info: [Int: MenuBarPopoverWindowInfo] = [:]
         for windowInfo in windowList {
             let windowId = windowInfo[kCGWindowNumber as String] as? Int ?? 0
-            if windowId == 0 { continue }
+            if windowId == 0 {
+                continue
+            }
             info[windowId] = MenuBarPopoverWindowInfo(
                 ownerName: windowInfo[kCGWindowOwnerName as String] as? String,
                 title: windowInfo[kCGWindowName as String] as? String

@@ -79,7 +79,9 @@ struct PeekabooBridgeHostUnauthorizedResponseTests {
                     written += n
                     continue
                 }
-                if n == -1, errno == EINTR { continue }
+                if n == -1, errno == EINTR {
+                    continue
+                }
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
         }
@@ -93,11 +95,17 @@ struct PeekabooBridgeHostUnauthorizedResponseTests {
             let n = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress!, $0.count) }
             if n > 0 {
                 data.append(buffer, count: n)
-                if data.count > maxBytes { throw POSIXError(.EMSGSIZE) }
+                if data.count > maxBytes {
+                    throw POSIXError(.EMSGSIZE)
+                }
                 continue
             }
-            if n == 0 { return data }
-            if errno == EINTR { continue }
+            if n == 0 {
+                return data
+            }
+            if errno == EINTR {
+                continue
+            }
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }

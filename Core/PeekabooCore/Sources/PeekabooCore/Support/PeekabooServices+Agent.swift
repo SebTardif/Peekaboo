@@ -366,11 +366,15 @@ extension PeekabooServices {
         guard let configuredDefault, let environmentModel else {
             return configuredDefault == environmentModel
         }
-        if configuredDefault == environmentModel { return true }
+        if configuredDefault == environmentModel {
+            return true
+        }
 
         let configured = LanguageModel.parse(from: configuredDefault)
         let environment = LanguageModel.parse(from: environmentModel)
-        if configured == environment { return true }
+        if configured == environment {
+            return true
+        }
 
         return Self.model(environment, matchesRawIdentifier: configuredDefault) ||
             Self.model(configured, matchesRawIdentifier: environmentModel)
@@ -426,7 +430,9 @@ extension PeekabooServices {
         isEnvironmentProvided: Bool,
         hasConfiguredProviderList: Bool) -> Bool
     {
-        if isEnvironmentProvided { return true }
+        if isEnvironmentProvided {
+            return true
+        }
         guard hasConfiguredProviderList else { return false }
         return !self.isGeneratedProviderList(providers, configuredDefault: configuredDefault)
     }

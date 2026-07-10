@@ -12,4 +12,9 @@ struct PeekabooBridgeConstantsTests {
     func `Claude socket path uses Application Support/Claude`() {
         #expect(PeekabooBridgeConstants.claudeSocketPath.hasSuffix("/Claude/bridge.sock"))
     }
+
+    @Test
+    func `Release bridge accepts legacy and Foundation signing teams`() {
+        #expect(PeekabooBridgeConstants.trustedReleaseTeamIDs == ["Y5PE65HELJ", "FWJYW4S8P8"])
+    }
 }

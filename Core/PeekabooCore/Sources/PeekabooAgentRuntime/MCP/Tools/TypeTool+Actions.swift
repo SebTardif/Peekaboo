@@ -121,11 +121,21 @@ extension TypeTool {
             return "Typed"
         }
         var actions: [String] = []
-        if let tabs = request.tabCount, tabs > 0 { actions.append("Tab×\(tabs)") }
-        if request.pressReturn { actions.append("Return") }
-        if request.pressEscape { actions.append("Escape") }
-        if request.pressDelete { actions.append("Delete") }
-        if request.clearField { actions.append("Clear Field") }
+        if let tabs = request.tabCount, tabs > 0 {
+            actions.append("Tab×\(tabs)")
+        }
+        if request.pressReturn {
+            actions.append("Return")
+        }
+        if request.pressEscape {
+            actions.append("Escape")
+        }
+        if request.pressDelete {
+            actions.append("Delete")
+        }
+        if request.clearField {
+            actions.append("Clear Field")
+        }
         return actions.isEmpty ? "Type" : actions.joined(separator: ", ")
     }
 }

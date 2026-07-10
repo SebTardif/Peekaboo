@@ -212,9 +212,15 @@ extension WindowToolFormatter {
         let fullscreen = windows.count(where: { ($0["isFullscreen"] as? Bool) == true })
 
         var states: [String] = []
-        if minimized > 0 { states.append("\(minimized) minimized") }
-        if hidden > 0 { states.append("\(hidden) hidden") }
-        if fullscreen > 0 { states.append("\(fullscreen) fullscreen") }
+        if minimized > 0 {
+            states.append("\(minimized) minimized")
+        }
+        if hidden > 0 {
+            states.append("\(hidden) hidden")
+        }
+        if fullscreen > 0 {
+            states.append("\(fullscreen) fullscreen")
+        }
 
         guard !states.isEmpty else { return }
         let summary = states.joined(separator: ", ")

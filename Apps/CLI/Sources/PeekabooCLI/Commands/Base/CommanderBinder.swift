@@ -289,7 +289,9 @@ enum CommanderCLIBinder {
     }
 
     private static func inferredImageCaptureMode(_ values: CommanderBindableValues) -> String {
-        if values.singleOption("region") != nil { return "area" }
+        if values.singleOption("region") != nil {
+            return "area"
+        }
         if values.singleOption("app") != nil ||
             values.singleOption("pid") != nil ||
             values.singleOption("windowTitle") != nil ||
@@ -301,7 +303,9 @@ enum CommanderCLIBinder {
     }
 
     private static func inferredLiveCaptureMode(_ values: CommanderBindableValues) -> String {
-        if values.singleOption("region") != nil { return "area" }
+        if values.singleOption("region") != nil {
+            return "area"
+        }
         if values.singleOption("app") != nil ||
             values.singleOption("pid") != nil ||
             values.singleOption("windowTitle") != nil ||
@@ -345,7 +349,9 @@ enum CommanderCLIBinder {
     }
 
     private static func usesBackgroundClickDelivery(_ values: CommanderBindableValues) -> Bool {
-        if values.flag("focusBackground") { return true }
+        if values.flag("focusBackground") {
+            return true
+        }
         return !values.flag("foreground") &&
             !values.flag("noAutoFocus") &&
             !values.flag("spaceSwitch") &&

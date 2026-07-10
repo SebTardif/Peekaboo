@@ -25,7 +25,11 @@ struct MainWindow: View {
     private var showErrorAlert: Binding<Bool> {
         Binding(
             get: { self.errorMessage != nil },
-            set: { if !$0 { self.errorMessage = nil } })
+            set: {
+                if !$0 {
+                    self.errorMessage = nil
+                }
+            })
     }
 
     var body: some View {

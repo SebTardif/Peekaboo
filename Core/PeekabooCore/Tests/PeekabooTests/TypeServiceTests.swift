@@ -280,8 +280,12 @@ struct TypeServiceTests {
 
         // Count expected key presses
         let expectedKeyPresses = mixedActions.count(where: { action in
-            if case .key = action { return true }
-            if case .clear = action { return true }
+            if case .key = action {
+                return true
+            }
+            if case .clear = action {
+                return true
+            }
             return false
         })
 

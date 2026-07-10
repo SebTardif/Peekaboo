@@ -100,17 +100,29 @@ public enum AIProviderParser {
         for config in configs {
             switch config.provider.lowercased() {
             case "openai":
-                if hasOpenAI { return "gpt-5.5" }
+                if hasOpenAI {
+                    return "gpt-5.5"
+                }
             case "anthropic":
-                if hasAnthropic { return "claude-opus-4-8" }
+                if hasAnthropic {
+                    return "claude-opus-4-8"
+                }
             case "google", "gemini":
-                if hasGemini { return "gemini-3.5-flash" }
+                if hasGemini {
+                    return "gemini-3.5-flash"
+                }
             case "minimax":
-                if hasMiniMax { return config.model }
+                if hasMiniMax {
+                    return config.model
+                }
             case "minimax-cn", "minimax_cn", "minimaxi":
-                if hasMiniMaxChina { return "minimax-cn/\(config.model)" }
+                if hasMiniMaxChina {
+                    return "minimax-cn/\(config.model)"
+                }
             case "ollama":
-                if hasOllama { return config.model }
+                if hasOllama {
+                    return config.model
+                }
             default:
                 break
             }

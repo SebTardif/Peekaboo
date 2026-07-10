@@ -53,7 +53,9 @@ struct AddCustomProviderView: View {
         case failure(String)
 
         var isSuccess: Bool {
-            if case .success = self { return true }
+            if case .success = self {
+                return true
+            }
             return false
         }
 

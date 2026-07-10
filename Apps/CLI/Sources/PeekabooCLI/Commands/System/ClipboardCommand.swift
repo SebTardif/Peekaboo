@@ -88,7 +88,11 @@ struct ClipboardCommand: OutputFormattable, RuntimeOptionsConfigurable {
     }
 
     private var configuration: CommandRuntime.Configuration {
-        if let runtime { runtime.configuration } else { self.runtimeOptions.makeConfiguration() }
+        if let runtime {
+            runtime.configuration
+        } else {
+            self.runtimeOptions.makeConfiguration()
+        }
     }
 
     var jsonOutput: Bool {
