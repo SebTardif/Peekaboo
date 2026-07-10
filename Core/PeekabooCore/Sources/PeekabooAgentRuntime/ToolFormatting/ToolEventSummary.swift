@@ -80,31 +80,75 @@ public struct ToolEventSummary: Codable, Sendable {
     // swiftlint:disable:next cyclomatic_complexity
     public func toMetaValue() -> Value {
         var dict: [String: Value] = [:]
-        if let targetApp { dict["target_app"] = .string(targetApp) }
-        if let windowTitle { dict["window_title"] = .string(windowTitle) }
-        if let elementRole { dict["element_role"] = .string(elementRole) }
-        if let elementLabel { dict["element_label"] = .string(elementLabel) }
-        if let elementValue { dict["element_value"] = .string(elementValue) }
-        if let actionDescription { dict["action"] = .string(actionDescription) }
+        if let targetApp {
+            dict["target_app"] = .string(targetApp)
+        }
+        if let windowTitle {
+            dict["window_title"] = .string(windowTitle)
+        }
+        if let elementRole {
+            dict["element_role"] = .string(elementRole)
+        }
+        if let elementLabel {
+            dict["element_label"] = .string(elementLabel)
+        }
+        if let elementValue {
+            dict["element_value"] = .string(elementValue)
+        }
+        if let actionDescription {
+            dict["action"] = .string(actionDescription)
+        }
         if let coordinates {
             var coords: [String: Value] = [:]
-            if let x = coordinates.x { coords["x"] = .double(x) }
-            if let y = coordinates.y { coords["y"] = .double(y) }
-            if !coords.isEmpty { dict["coordinates"] = .object(coords) }
+            if let x = coordinates.x {
+                coords["x"] = .double(x)
+            }
+            if let y = coordinates.y {
+                coords["y"] = .double(y)
+            }
+            if !coords.isEmpty {
+                dict["coordinates"] = .object(coords)
+            }
         }
-        if let pointerProfile { dict["pointer_profile"] = .string(pointerProfile) }
-        if let pointerDistance { dict["pointer_distance"] = .double(pointerDistance) }
-        if let pointerDirection { dict["pointer_direction"] = .string(pointerDirection) }
-        if let pointerDurationMs { dict["pointer_duration_ms"] = .double(pointerDurationMs) }
-        if let scrollDirection { dict["scroll_direction"] = .string(scrollDirection) }
-        if let scrollAmount { dict["scroll_amount"] = .double(scrollAmount) }
-        if let command { dict["command"] = .string(command) }
-        if let workingDirectory { dict["working_directory"] = .string(workingDirectory) }
-        if let waitDurationMs { dict["wait_duration_ms"] = .double(waitDurationMs) }
-        if let waitReason { dict["wait_reason"] = .string(waitReason) }
-        if let captureApp { dict["capture_app"] = .string(captureApp) }
-        if let captureWindow { dict["capture_window"] = .string(captureWindow) }
-        if let notes { dict["notes"] = .string(notes) }
+        if let pointerProfile {
+            dict["pointer_profile"] = .string(pointerProfile)
+        }
+        if let pointerDistance {
+            dict["pointer_distance"] = .double(pointerDistance)
+        }
+        if let pointerDirection {
+            dict["pointer_direction"] = .string(pointerDirection)
+        }
+        if let pointerDurationMs {
+            dict["pointer_duration_ms"] = .double(pointerDurationMs)
+        }
+        if let scrollDirection {
+            dict["scroll_direction"] = .string(scrollDirection)
+        }
+        if let scrollAmount {
+            dict["scroll_amount"] = .double(scrollAmount)
+        }
+        if let command {
+            dict["command"] = .string(command)
+        }
+        if let workingDirectory {
+            dict["working_directory"] = .string(workingDirectory)
+        }
+        if let waitDurationMs {
+            dict["wait_duration_ms"] = .double(waitDurationMs)
+        }
+        if let waitReason {
+            dict["wait_reason"] = .string(waitReason)
+        }
+        if let captureApp {
+            dict["capture_app"] = .string(captureApp)
+        }
+        if let captureWindow {
+            dict["capture_window"] = .string(captureWindow)
+        }
+        if let notes {
+            dict["notes"] = .string(notes)
+        }
         return .object(dict)
     }
 
@@ -174,7 +218,9 @@ public struct ToolEventSummary: Codable, Sendable {
 
         if let elementLabel {
             var segments: [String] = []
-            if let targetApp { segments.append(targetApp) }
+            if let targetApp {
+                segments.append(targetApp)
+            }
 
             var label = elementLabel
             if let elementRole {

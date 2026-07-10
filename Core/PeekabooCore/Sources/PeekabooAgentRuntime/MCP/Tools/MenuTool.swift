@@ -258,8 +258,12 @@ public struct MenuTool: MCPTool {
 
         // Add state indicators
         var indicators: [String] = []
-        if !item.isEnabled { indicators.append("disabled") }
-        if item.isChecked { indicators.append("checked") }
+        if !item.isEnabled {
+            indicators.append("disabled")
+        }
+        if item.isChecked {
+            indicators.append("checked")
+        }
 
         if !indicators.isEmpty {
             output += " [\(indicators.joined(separator: ", "))]"

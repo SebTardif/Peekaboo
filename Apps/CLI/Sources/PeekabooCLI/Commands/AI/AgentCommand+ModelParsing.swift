@@ -22,9 +22,6 @@ extension AgentCommand {
             trimmed.caseInsensitiveCompare("anthropic") == .orderedSame {
             return .anthropic(.opus48)
         }
-        if trimmed.caseInsensitiveCompare("sonnet") == .orderedSame {
-            return .anthropic(.sonnet5)
-        }
 
         if let configuration {
             switch self.parseConfiguredCustomModel(
@@ -51,9 +48,6 @@ extension AgentCommand {
         switch parsed {
         case let .openai(model):
             if Self.supportedOpenAIInputs.contains(model) {
-                if Self.gpt56Models.contains(model) {
-                    return .openai(model)
-                }
                 return .openai(.gpt55)
             }
         case let .anthropic(model):
@@ -130,9 +124,6 @@ extension AgentCommand {
     }
 
     private static let supportedOpenAIInputs: Set<LanguageModel.OpenAI> = [
-        .gpt56Sol,
-        .gpt56Terra,
-        .gpt56Luna,
         .gpt55,
         .gpt54,
         .gpt54Mini,
@@ -143,15 +134,8 @@ extension AgentCommand {
         .gpt5Nano,
     ]
 
-    private static let gpt56Models: Set<LanguageModel.OpenAI> = [
-        .gpt56Sol,
-        .gpt56Terra,
-        .gpt56Luna,
-    ]
-
     private static let supportedAnthropicInputs: Set<LanguageModel.Anthropic> = [
         .fable5,
-        .sonnet5,
         .opus48,
         .opus47,
         .opus45,

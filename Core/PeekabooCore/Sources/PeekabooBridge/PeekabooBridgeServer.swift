@@ -100,11 +100,7 @@ public final class PeekabooBridgeServer {
         _ request: PeekabooBridgeRequest,
         peer: PeekabooBridgePeer?) async throws -> PeekabooBridgeResponse
     {
-        if peer == nil, !self.allowlistedTeams.isEmpty || !self.allowlistedBundles.isEmpty {
-            throw PeekabooBridgeErrorEnvelope(
-                code: .unauthorizedClient,
-                message: "Unsigned bridge clients are not allowed for this listener")
-        }
+        try self.validatePeerAuthorization(peer)
 
         let start = Date()
         let pid = peer?.processIdentifier ?? 0
@@ -228,6 +224,39 @@ public final class PeekabooBridgeServer {
                 code: .internalError,
                 message: "Bridge operation failed",
                 details: "\(error)")
+        }
+    }
+
+    private func validatePeerAuthorization(_ peer: PeekabooBridgePeer?) throws {
+        guard !self.allowlistedTeams.isEmpty || !self.allowlistedBundles.isEmpty else { return }
+        guard let peer else {
+            throw PeekabooBridgeErrorEnvelope(
+                code: .unauthorizedClient,
+                message: "Unsigned bridge clients are not allowed for this listener")
+        }
+
+        if !self.allowlistedTeams.isEmpty {
+            guard let team = peer.teamIdentifier, self.allowlistedTeams.contains(team) else {
+                let team = peer.teamIdentifier ?? "<unknown>"
+                throw PeekabooBridgeErrorEnvelope(
+                    code: .unauthorizedClient,
+                    message: "Team \(team) is not authorized")
+            }
+        }
+
+        if !self.allowlistedBundles.isEmpty {
+            guard let bundle = peer.bundleIdentifier, self.allowlistedBundles.contains(bundle) else {
+                let bundle = peer.bundleIdentifier ?? "<unknown>"
+                throw PeekabooBridgeErrorEnvelope(
+                    code: .unauthorizedClient,
+                    message: "Bundle \(bundle) is not authorized")
+            }
+        }
+
+        if let uid = peer.userIdentifier, uid != getuid() {
+            throw PeekabooBridgeErrorEnvelope(
+                code: .unauthorizedClient,
+                message: "UID \(uid) is not authorized for this listener")
         }
     }
 

@@ -133,10 +133,18 @@ public class ElementToolFormatter: BaseToolFormatter {
 
     private func elementStateSection(_ result: [String: Any]) -> [String] {
         var states: [String] = []
-        if ToolResultExtractor.bool("enabled", from: result) == false { states.append("disabled") }
-        if ToolResultExtractor.bool("focused", from: result) == true { states.append("focused") }
-        if ToolResultExtractor.bool("selected", from: result) == true { states.append("selected") }
-        if ToolResultExtractor.bool("visible", from: result) == true { states.append("visible") }
+        if ToolResultExtractor.bool("enabled", from: result) == false {
+            states.append("disabled")
+        }
+        if ToolResultExtractor.bool("focused", from: result) == true {
+            states.append("focused")
+        }
+        if ToolResultExtractor.bool("selected", from: result) == true {
+            states.append("selected")
+        }
+        if ToolResultExtractor.bool("visible", from: result) == true {
+            states.append("visible")
+        }
         return states.isEmpty ? [] : ["• \(states.joined(separator: ", "))"]
     }
 
@@ -152,13 +160,27 @@ public class ElementToolFormatter: BaseToolFormatter {
     private func formatListElementsResult(_ result: [String: Any]) -> String {
         var sections: [String] = []
         sections.append(self.listElementCountSection(result))
-        if let breakdown = listTypeBreakdownSection(result) { sections.append(breakdown) }
-        if let states = listStateBreakdownSection(result) { sections.append(states) }
-        if let interactions = listInteractionSection(result) { sections.append(interactions) }
-        if let samples = listSamplesSection(result) { sections.append(samples) }
-        if let filter = listFilterSection(result) { sections.append(filter) }
-        if let context = listContextSection(result) { sections.append(context) }
-        if let perf = listPerformanceSection(result) { sections.append(perf) }
+        if let breakdown = listTypeBreakdownSection(result) {
+            sections.append(breakdown)
+        }
+        if let states = listStateBreakdownSection(result) {
+            sections.append(states)
+        }
+        if let interactions = listInteractionSection(result) {
+            sections.append(interactions)
+        }
+        if let samples = listSamplesSection(result) {
+            sections.append(samples)
+        }
+        if let filter = listFilterSection(result) {
+            sections.append(filter)
+        }
+        if let context = listContextSection(result) {
+            sections.append(context)
+        }
+        if let perf = listPerformanceSection(result) {
+            sections.append(perf)
+        }
         return sections.isEmpty ? "→ listed" : sections.joined(separator: " ")
     }
 
@@ -315,10 +337,18 @@ public class ElementToolFormatter: BaseToolFormatter {
         let visibleCount = elements.count(where: { ($0["visible"] as? Bool) == true })
         let focusedCount = elements.count(where: { ($0["focused"] as? Bool) == true })
         var states: [String] = []
-        if enabledCount > 0 { states.append("\(enabledCount) enabled") }
-        if disabledCount > 0 { states.append("\(disabledCount) disabled") }
-        if visibleCount > 0, visibleCount != total { states.append("\(visibleCount) visible") }
-        if focusedCount > 0 { states.append("\(focusedCount) focused") }
+        if enabledCount > 0 {
+            states.append("\(enabledCount) enabled")
+        }
+        if disabledCount > 0 {
+            states.append("\(disabledCount) disabled")
+        }
+        if visibleCount > 0, visibleCount != total {
+            states.append("\(visibleCount) visible")
+        }
+        if focusedCount > 0 {
+            states.append("\(focusedCount) focused")
+        }
         guard !states.isEmpty else { return nil }
         return "(\(states.joined(separator: ", ")))"
     }
@@ -337,8 +367,12 @@ public class ElementToolFormatter: BaseToolFormatter {
         })
         guard clickableCount > 0 || editableCount > 0 else { return nil }
         var interactive: [String] = []
-        if clickableCount > 0 { interactive.append("\(clickableCount) clickable") }
-        if editableCount > 0 { interactive.append("\(editableCount) editable") }
+        if clickableCount > 0 {
+            interactive.append("\(clickableCount) clickable")
+        }
+        if editableCount > 0 {
+            interactive.append("\(editableCount) editable")
+        }
         return "• \(interactive.joined(separator: ", "))"
     }
 

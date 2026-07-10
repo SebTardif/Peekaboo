@@ -60,10 +60,18 @@ struct KeyboardView: View {
                                     let flags = NSEvent.modifierFlags
                                     var activeModifiers: [String] = []
 
-                                    if flags.contains(.command) { activeModifiers.append("Cmd") }
-                                    if flags.contains(.shift) { activeModifiers.append("Shift") }
-                                    if flags.contains(.option) { activeModifiers.append("Option") }
-                                    if flags.contains(.control) { activeModifiers.append("Control") }
+                                    if flags.contains(.command) {
+                                        activeModifiers.append("Cmd")
+                                    }
+                                    if flags.contains(.shift) {
+                                        activeModifiers.append("Shift")
+                                    }
+                                    if flags.contains(.option) {
+                                        activeModifiers.append("Option")
+                                    }
+                                    if flags.contains(.control) {
+                                        activeModifiers.append("Control")
+                                    }
 
                                     let modifierString = activeModifiers.isEmpty ? "None" : activeModifiers
                                         .joined(separator: "+")
@@ -110,9 +118,15 @@ struct KeyboardView: View {
                             .onKeyPress { press in
                                 if press.modifiers.contains(.command) {
                                     var hotkeyParts = ["Cmd"]
-                                    if press.modifiers.contains(.shift) { hotkeyParts.append("Shift") }
-                                    if press.modifiers.contains(.option) { hotkeyParts.append("Option") }
-                                    if press.modifiers.contains(.control) { hotkeyParts.append("Control") }
+                                    if press.modifiers.contains(.shift) {
+                                        hotkeyParts.append("Shift")
+                                    }
+                                    if press.modifiers.contains(.option) {
+                                        hotkeyParts.append("Option")
+                                    }
+                                    if press.modifiers.contains(.control) {
+                                        hotkeyParts.append("Control")
+                                    }
 
                                     let keyChar = press.characters
                                     hotkeyParts.append(keyChar.uppercased())
@@ -231,10 +245,18 @@ struct KeyboardView: View {
 
         // Add modifiers
         var modifiers: [String] = []
-        if press.modifiers.contains(.command) { modifiers.append("⌘") }
-        if press.modifiers.contains(.shift) { modifiers.append("⇧") }
-        if press.modifiers.contains(.option) { modifiers.append("⌥") }
-        if press.modifiers.contains(.control) { modifiers.append("⌃") }
+        if press.modifiers.contains(.command) {
+            modifiers.append("⌘")
+        }
+        if press.modifiers.contains(.shift) {
+            modifiers.append("⇧")
+        }
+        if press.modifiers.contains(.option) {
+            modifiers.append("⌥")
+        }
+        if press.modifiers.contains(.control) {
+            modifiers.append("⌃")
+        }
 
         if !modifiers.isEmpty {
             keyDescription = modifiers.joined() + " + "
@@ -250,10 +272,18 @@ struct KeyboardView: View {
     private func recordKeyInSequence(_ press: KeyPress) {
         var keyDescription = ""
 
-        if press.modifiers.contains(.command) { keyDescription += "⌘" }
-        if press.modifiers.contains(.shift) { keyDescription += "⇧" }
-        if press.modifiers.contains(.option) { keyDescription += "⌥" }
-        if press.modifiers.contains(.control) { keyDescription += "⌃" }
+        if press.modifiers.contains(.command) {
+            keyDescription += "⌘"
+        }
+        if press.modifiers.contains(.shift) {
+            keyDescription += "⇧"
+        }
+        if press.modifiers.contains(.option) {
+            keyDescription += "⌥"
+        }
+        if press.modifiers.contains(.control) {
+            keyDescription += "⌃"
+        }
 
         if !keyDescription.isEmpty, !press.characters.isEmpty {
             keyDescription += "+"
@@ -302,10 +332,18 @@ struct ModifierStatusView: View {
         let flags = NSEvent.modifierFlags
         var newModifiers: Set<String> = []
 
-        if flags.contains(.command) { newModifiers.insert("command") }
-        if flags.contains(.shift) { newModifiers.insert("shift") }
-        if flags.contains(.option) { newModifiers.insert("option") }
-        if flags.contains(.control) { newModifiers.insert("control") }
+        if flags.contains(.command) {
+            newModifiers.insert("command")
+        }
+        if flags.contains(.shift) {
+            newModifiers.insert("shift")
+        }
+        if flags.contains(.option) {
+            newModifiers.insert("option")
+        }
+        if flags.contains(.control) {
+            newModifiers.insert("control")
+        }
 
         self.activeModifiers = newModifiers
     }
@@ -320,10 +358,18 @@ struct HotkeyButton: View {
     var body: some View {
         Button(self.label) {
             var modifierList: [String] = []
-            if self.modifiers.contains(.command) { modifierList.append("Cmd") }
-            if self.modifiers.contains(.shift) { modifierList.append("Shift") }
-            if self.modifiers.contains(.option) { modifierList.append("Option") }
-            if self.modifiers.contains(.control) { modifierList.append("Control") }
+            if self.modifiers.contains(.command) {
+                modifierList.append("Cmd")
+            }
+            if self.modifiers.contains(.shift) {
+                modifierList.append("Shift")
+            }
+            if self.modifiers.contains(.option) {
+                modifierList.append("Option")
+            }
+            if self.modifiers.contains(.control) {
+                modifierList.append("Control")
+            }
 
             let combo = modifierList.joined(separator: "+") + "+" + self.key
             self.actionLogger.log(.keyboard, "Hotkey button clicked", details: combo)

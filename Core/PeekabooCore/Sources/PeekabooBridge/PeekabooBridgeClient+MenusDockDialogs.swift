@@ -126,7 +126,9 @@ extension PeekabooBridgeClient {
         let response = try await self.send(.findDockItem(PeekabooBridgeDockFindRequest(name: name)))
         switch response {
         case let .dockItem(item):
-            if let item { return item }
+            if let item {
+                return item
+            }
             throw PeekabooBridgeErrorEnvelope(code: .notFound, message: "Dock item not found")
         case let .error(envelope): throw envelope
         default: throw PeekabooBridgeErrorEnvelope(code: .invalidRequest, message: "Unexpected dock find response")

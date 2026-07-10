@@ -8,69 +8,67 @@ struct AnimatedToolIcon: View {
     let isRunning: Bool
 
     var body: some View {
-        Group {
-            switch self.toolName {
-            case "see", "screenshot", "window_capture", "click", "dialog_click",
-                 "launch_app", "dock_launch", "quit_app", "focused":
-                // Bounce effects
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.bounce, isActive: self.isRunning)
+        switch self.toolName {
+        case "see", "screenshot", "window_capture", "click", "dialog_click",
+             "launch_app", "dock_launch", "quit_app", "focused":
+            // Bounce effects
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.bounce, isActive: self.isRunning)
 
-            case "type", "dialog_input", "hotkey", "find_element", "permissions":
-                // Pulse effects
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.pulse, isActive: self.isRunning)
+        case "type", "dialog_input", "hotkey", "find_element", "permissions":
+            // Pulse effects
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.pulse, isActive: self.isRunning)
 
-            case "scroll", "shell":
-                // Variable color effects
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.variableColor.iterative, isActive: self.isRunning)
+        case "scroll", "shell":
+            // Variable color effects
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.variableColor.iterative, isActive: self.isRunning)
 
-            case "resize_window", "move_window", "drag", "swipe", "need_more_information":
-                // Wiggle effects
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.wiggle, isActive: self.isRunning)
+        case "resize_window", "move_window", "drag", "swipe", "need_more_information":
+            // Wiggle effects
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.wiggle, isActive: self.isRunning)
 
-            case "wait", "sleep":
-                // Rotation for clock
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.rotate, isActive: self.isRunning)
+        case "wait", "sleep":
+            // Rotation for clock
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.rotate, isActive: self.isRunning)
 
-            case "list", "list_apps", "list_windows", "list_elements", "list_menus", "list_dock":
-                // Appear effect for lists
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.appear, isActive: self.isRunning)
+        case "list", "list_apps", "list_windows", "list_elements", "list_menus", "list_dock":
+            // Appear effect for lists
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.appear, isActive: self.isRunning)
 
-            case "task_completed":
-                // Success animation
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.bounce.up, isActive: self.isRunning)
+        case "task_completed":
+            // Success animation
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.bounce.up, isActive: self.isRunning)
 
-            case "menu", "menu_click":
-                // Menu selection pulse
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.pulse, isActive: self.isRunning)
+        case "menu", "menu_click":
+            // Menu selection pulse
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.pulse, isActive: self.isRunning)
 
-            case "focus_window", "space":
-                // Window focus appear
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.appear, isActive: self.isRunning)
+        case "focus_window", "space":
+            // Window focus appear
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.appear, isActive: self.isRunning)
 
-            default:
-                // Default rotation for gears
-                Image(systemName: self.symbolName)
-                    .foregroundStyle(self.iconColor)
-                    .symbolEffect(.rotate, isActive: self.isRunning)
-            }
+        default:
+            // Default rotation for gears
+            Image(systemName: self.symbolName)
+                .foregroundStyle(self.iconColor)
+                .symbolEffect(.rotate, isActive: self.isRunning)
         }
     }
 

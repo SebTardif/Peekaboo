@@ -174,7 +174,9 @@ extension AgentOutputDelegate {
                 let rendered = self.renderValue(newValue)
                 changes.append("\(key): \(rendered)")
             }
-            if changes.count >= 3 { break }
+            if changes.count >= 3 {
+                break
+            }
         }
 
         if changes.isEmpty {

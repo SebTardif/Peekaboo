@@ -3,6 +3,10 @@ import Foundation
 public enum PeekabooBridgeConstants {
     public static let socketName = "bridge.sock"
 
+    /// Release identities accepted during the OpenClaw Foundation signing migration.
+    /// Keep the legacy team while standalone CLIs must interoperate with pre-3.8 GUI hosts.
+    public static let trustedReleaseTeamIDs: Set<String> = ["Y5PE65HELJ", "FWJYW4S8P8"]
+
     /// Socket hosted by Peekaboo.app (primary host).
     public static var peekabooSocketPath: String {
         self.applicationSupportSocketPath(appDirectoryName: "Peekaboo", socketName: self.socketName)

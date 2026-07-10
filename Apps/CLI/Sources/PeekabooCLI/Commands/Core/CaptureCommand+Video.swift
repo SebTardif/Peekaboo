@@ -194,7 +194,9 @@ extension CaptureVideoCommand: CommanderBindableCommand {
         self.everyMs = try values.decodeOption("everyMs", as: Int.self)
         self.startMs = try values.decodeOption("startMs", as: Int.self)
         self.endMs = try values.decodeOption("endMs", as: Int.self)
-        if values.flag("noDiff") { self.noDiff = true }
+        if values.flag("noDiff") {
+            self.noDiff = true
+        }
         self.maxFrames = try values.decodeOption("maxFrames", as: Int.self)
         self.maxMb = try values.decodeOption("maxMb", as: Int.self)
         self.resolutionCap = try values.decodeOption("resolutionCap", as: Double.self)

@@ -87,7 +87,11 @@ extension MenuSystemToolFormatter {
 
         for item in items {
             if let enabled = item["enabled"] as? Bool {
-                if enabled { enabledCount += 1 } else { disabledCount += 1 }
+                if enabled {
+                    enabledCount += 1
+                } else {
+                    disabledCount += 1
+                }
             }
             if let shortcut = item["shortcut"] as? String, !shortcut.isEmpty {
                 hasShortcuts += 1

@@ -124,7 +124,9 @@ extension AgentCommand {
             }
 
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
+            if trimmed.isEmpty {
+                continue
+            }
             if trimmed == "/help" {
                 self.printChatHelpMenu()
                 continue
@@ -189,7 +191,9 @@ extension AgentCommand {
         let promptStream = chatUI.promptStream(initialPrompt: initialPrompt)
         for await prompt in promptStream {
             let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
+            if trimmed.isEmpty {
+                continue
+            }
             if trimmed == "/help" {
                 chatUI.showHelpMenu()
                 continue

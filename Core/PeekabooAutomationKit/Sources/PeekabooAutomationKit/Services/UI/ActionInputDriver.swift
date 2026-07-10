@@ -428,10 +428,18 @@ private struct MenuHotkeyChord: Equatable {
 
     static func modifiers(fromMenuItemModifiers modifiers: Int) -> Set<String> {
         var result: Set<String> = []
-        if modifiers & (1 << 3) == 0 { result.insert("cmd") }
-        if modifiers & (1 << 0) != 0 { result.insert("shift") }
-        if modifiers & (1 << 1) != 0 { result.insert("alt") }
-        if modifiers & (1 << 2) != 0 { result.insert("ctrl") }
+        if modifiers & (1 << 3) == 0 {
+            result.insert("cmd")
+        }
+        if modifiers & (1 << 0) != 0 {
+            result.insert("shift")
+        }
+        if modifiers & (1 << 1) != 0 {
+            result.insert("alt")
+        }
+        if modifiers & (1 << 2) != 0 {
+            result.insert("ctrl")
+        }
         return result
     }
 

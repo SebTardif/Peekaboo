@@ -137,7 +137,9 @@ extension CommanderRuntimeRouter {
                 }
                 scalars.append(contentsOf: character.lowercased())
             } else if character == " " || character == "-" {
-                if scalars.last != "-" { scalars.append("-") }
+                if scalars.last != "-" {
+                    scalars.append("-")
+                }
             } else {
                 scalars.append(character)
             }
