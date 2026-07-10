@@ -1,8 +1,8 @@
 import Foundation
 import MCP
 import PeekabooAutomation
-import PeekabooFoundation
 import PeekabooAutomationKit
+import PeekabooFoundation
 import TachikomaMCP
 
 /// Lightweight dependency container for MCP tools so they no longer reach for
@@ -40,7 +40,7 @@ public struct MCPToolContext: @unchecked Sendable {
         }
         return MainActor.assumeIsolated {
             guard let factory = self.defaultContextFactory else {
-                fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
+                fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(using:).")
             }
             return factory()
         }
@@ -63,7 +63,7 @@ public struct MCPToolContext: @unchecked Sendable {
     @MainActor
     public static func makeDefault() -> MCPToolContext {
         guard let factory = self.defaultContextFactory else {
-            fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
+            fatalError("MCPToolContext default factory not configured. Call configureDefaultContext(using:).")
         }
         return factory()
     }
@@ -77,7 +77,7 @@ public struct MCPToolContext: @unchecked Sendable {
     public static func makeDefaultIfConfigured() throws -> MCPToolContext {
         guard let factory = self.defaultContextFactory else {
             throw PeekabooError.operationError(
-                message: "MCPToolContext default factory not configured. Call configureDefaultContext(_:).")
+                message: "MCPToolContext default factory not configured. Call configureDefaultContext(using:).")
         }
         return factory()
     }
@@ -88,10 +88,16 @@ public struct MCPToolContext: @unchecked Sendable {
         self.defaultContextFactory = factory
     }
 
-    /// Test helper to clear the process-wide factory between cases.
+    /// Test helper that restores the exact process-wide factory after each case.
     @MainActor
-    static func resetDefaultContextFactoryForTesting() {
-        self.defaultContextFactory = nil
+    static func withDefaultContextFactoryForTesting<T>(
+        _ factory: (() -> MCPToolContext)?,
+        perform operation: @MainActor () async throws -> T) async rethrows -> T
+    {
+        let previousFactory = self.defaultContextFactory
+        self.defaultContextFactory = factory
+        defer { self.defaultContextFactory = previousFactory }
+        return try await operation()
     }
 
     public init(
