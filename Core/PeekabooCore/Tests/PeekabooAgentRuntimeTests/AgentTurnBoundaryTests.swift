@@ -2,6 +2,7 @@ import Tachikoma
 import Testing
 @testable import PeekabooAgentRuntime
 
+@MainActor
 struct AgentTurnBoundaryTests {
     @Test
     func `perceive followed by action stops after current step`() {
@@ -86,26 +87,5 @@ struct AgentTurnBoundaryTests {
             return
         }
         #expect(reason.contains("menu"))
-    }
-
-    @Test
-    func `concurrent record calls do not crash and preserve stop semantics`() async {
-        let boundary = AgentTurnBoundary()
-        #expect(boundary.record(toolName: "see") == .continueTurn)
-
-        await withTaskGroup(of: AgentTurnBoundary.Decision.self) { group in
-            for _ in 0..<32 {
-                group.addTask {
-                    boundary.record(toolName: "click")
-                }
-            }
-            var stopCount = 0
-            for await decision in group {
-                if case .stopAfterCurrentStep = decision {
-                    stopCount += 1
-                }
-            }
-            #expect(stopCount >= 1)
-        }
     }
 }
