@@ -92,4 +92,19 @@ struct FocusErrorMappingTests {
         let code = errorCode(for: POSIXError(.ETIMEDOUT))
         #expect(code == .TIMEOUT)
     }
+
+    @Test
+    func `clickFailed maps to INTERACTION_FAILED`() {
+        #expect(peekabooAutomationErrorCode(for: .clickFailed("miss")) == .INTERACTION_FAILED)
+    }
+
+    @Test
+    func `typeFailed maps to INTERACTION_FAILED`() {
+        #expect(peekabooAutomationErrorCode(for: .typeFailed("stuck")) == .INTERACTION_FAILED)
+    }
+
+    @Test
+    func `captureFailed maps to CAPTURE_FAILED`() {
+        #expect(peekabooAutomationErrorCode(for: .captureFailed("cam")) == .CAPTURE_FAILED)
+    }
 }

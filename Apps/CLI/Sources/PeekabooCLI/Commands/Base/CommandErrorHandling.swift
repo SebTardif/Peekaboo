@@ -145,14 +145,7 @@ extension ErrorHandlingCommand {
     }
 
     private func automationErrorCode(for error: PeekabooError) -> ErrorCode? {
-        switch error {
-        case .captureFailed, .clickFailed, .typeFailed:
-            .CAPTURE_FAILED
-        case .serviceUnavailable, .networkError, .apiError, .commandFailed, .encodingError:
-            .UNKNOWN_ERROR
-        default:
-            nil
-        }
+        peekabooAutomationErrorCode(for: error)
     }
 
     private func inputErrorCode(for error: PeekabooError) -> ErrorCode? {
@@ -222,6 +215,20 @@ extension ErrorHandlingCommand {
 
     private func mapFocusErrorToCode(_ error: FocusError) -> ErrorCode {
         errorCode(for: error)
+    }
+}
+
+
+func peekabooAutomationErrorCode(for error: PeekabooError) -> ErrorCode? {
+    switch error {
+    case .captureFailed:
+        .CAPTURE_FAILED
+    case .clickFailed, .typeFailed:
+        .INTERACTION_FAILED
+    case .serviceUnavailable, .networkError, .apiError, .commandFailed, .encodingError:
+        .UNKNOWN_ERROR
+    default:
+        nil
     }
 }
 
