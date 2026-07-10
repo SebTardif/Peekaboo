@@ -1357,4 +1357,51 @@ extension CommanderBinderTests {
         #expect(options.preferRemote == true)
         #expect(options.bridgeSocketPath == "/tmp/peekaboo.sock")
     }
+
+    @Test
+    func `Permission request commands opt out of host permission gating`() throws {
+        let parsed = ParsedValues(positional: [], options: [:], flags: [])
+        let requestOptions = try CommanderCLIBinder.makeRuntimeOptions(
+            from: parsed,
+            commandType: PermissionsCommand.RequestEventSynthesizingSubcommand.self
+        )
+        let captureOptions = try CommanderCLIBinder.makeRuntimeOptions(
+            from: parsed,
+            commandType: ImageCommand.self
+        )
+        #expect(requestOptions.requestsHostPermissionGrant)
+        #expect(!captureOptions.requestsHostPermissionGrant)
+    }
+
+    @Test
+    func `Screen capture permission is required only by capture commands`() throws {
+        let parsed = ParsedValues(positional: [], options: [:], flags: [])
+        let captureCommands: [any ParsableCommand.Type] = [
+            ImageCommand.self,
+            SeeCommand.self,
+            CaptureLiveCommand.self,
+            CaptureWatchAlias.self,
+            CaptureVideoCommand.self,
+            CaptureActionCommand.self,
+        ]
+        for commandType in captureCommands {
+            let options = try CommanderCLIBinder.makeRuntimeOptions(from: parsed, commandType: commandType)
+            #expect(options.requiresScreenCapturePermission, "Expected capture gating for \(commandType)")
+        }
+
+        // `run` is intentionally NOT gated: its script may contain only non-capture steps, and the
+        // steps are unknown at host-resolution time, so gating would push valid hosts away.
+        let nonCaptureCommands: [any ParsableCommand.Type] = [
+            ClickCommand.self,
+            ScrollCommand.self,
+            TypeCommand.self,
+            AppCommand.LaunchSubcommand.self,
+            ListCommand.AppsSubcommand.self,
+            RunCommand.self,
+        ]
+        for commandType in nonCaptureCommands {
+            let options = try CommanderCLIBinder.makeRuntimeOptions(from: parsed, commandType: commandType)
+            #expect(!options.requiresScreenCapturePermission, "Unexpected capture gating for \(commandType)")
+        }
+    }
 }
