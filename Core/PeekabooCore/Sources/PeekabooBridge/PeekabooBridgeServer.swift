@@ -220,9 +220,14 @@ public final class PeekabooBridgeServer {
                 }
             }
 
+            // Prefer the underlying error description so CLI clients do not only
+            // see a generic "Bridge operation failed" with the real text buried
+            // in details (see openclaw/Peekaboo#239).
+            let userMessage =
+                (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
             throw PeekabooBridgeErrorEnvelope(
                 code: .internalError,
-                message: "Bridge operation failed",
+                message: userMessage.isEmpty ? "Bridge operation failed" : userMessage,
                 details: "\(error)")
         }
     }

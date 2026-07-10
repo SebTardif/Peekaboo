@@ -294,7 +294,19 @@ func errorCode(for bridgeError: PeekabooBridgeErrorEnvelope) -> ErrorCode {
     case .operationNotSupported:
         .VALIDATION_ERROR
     case .notFound:
-        .UNKNOWN_ERROR
+        switch bridgeError.kind {
+        case .elementNotFound:
+            .ELEMENT_NOT_FOUND
+        case .snapshotNotFound:
+            .SNAPSHOT_NOT_FOUND
+        case .snapshotStale:
+            .SNAPSHOT_STALE
+        case .none:
+            // Unkinded notFound is commonly app/window/element misses.
+            // Prefer ELEMENT_NOT_FOUND over opaque UNKNOWN_ERROR; launch paths
+            // still override via applicationLaunchErrorCode → APP_NOT_FOUND.
+            .ELEMENT_NOT_FOUND
+        }
     case .versionMismatch, .unauthorizedClient, .decodingFailed, .internalError, .serverBusy:
         .UNKNOWN_ERROR
     }

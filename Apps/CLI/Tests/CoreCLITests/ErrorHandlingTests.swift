@@ -92,7 +92,6 @@ struct FocusErrorMappingTests {
         let code = errorCode(for: POSIXError(.ETIMEDOUT))
         #expect(code == .TIMEOUT)
     }
-
     @Test
     func `clickFailed maps to INTERACTION_FAILED`() {
         #expect(peekabooAutomationErrorCode(for: .clickFailed("miss")) == .INTERACTION_FAILED)
@@ -106,5 +105,33 @@ struct FocusErrorMappingTests {
     @Test
     func `captureFailed maps to CAPTURE_FAILED`() {
         #expect(peekabooAutomationErrorCode(for: .captureFailed("cam")) == .CAPTURE_FAILED)
+    }
+
+    @Test
+    func `bridge elementNotFound kind maps to ELEMENT_NOT_FOUND`() {
+        let envelope = PeekabooBridgeErrorEnvelope(
+            code: .notFound,
+            message: "No element",
+            kind: .elementNotFound,
+            context: "btn-1"
+        )
+        #expect(errorCode(for: envelope) == .ELEMENT_NOT_FOUND)
+    }
+
+    @Test
+    func `bridge snapshotNotFound kind maps to SNAPSHOT_NOT_FOUND`() {
+        let envelope = PeekabooBridgeErrorEnvelope(
+            code: .notFound,
+            message: "Snapshot expired",
+            kind: .snapshotNotFound,
+            context: "snap-1"
+        )
+        #expect(errorCode(for: envelope) == .SNAPSHOT_NOT_FOUND)
+    }
+
+    @Test
+    func `bridge unkinded notFound maps to UNKNOWN_ERROR`() {
+        let envelope = PeekabooBridgeErrorEnvelope(code: .notFound, message: "Dock item not found")
+        #expect(errorCode(for: envelope) == .UNKNOWN_ERROR)
     }
 }
