@@ -120,7 +120,9 @@ struct TTYCommandRunner {
         while true {
             let targetDeadline = afterFirstByteDeadline ?? primaryDeadline
             let remainingMs = Int32(max(0, ceil(targetDeadline.timeIntervalSinceNow * 1000)))
-            if remainingMs == 0 { break }
+            if remainingMs == 0 {
+                break
+            }
 
             var fds = [pollfd(fd: primaryFD, events: Int16(POLLIN), revents: 0)]
             let pollResult = fds.withUnsafeMutableBufferPointer { ptr in
@@ -163,7 +165,9 @@ struct TTYCommandRunner {
     }
 
     static func which(_ tool: String) -> String? {
-        if let path = runWhich(tool) { return path }
+        if let path = runWhich(tool) {
+            return path
+        }
         let home = NSHomeDirectory()
         let candidates = [
             "/opt/homebrew/bin/\(tool)",

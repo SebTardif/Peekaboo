@@ -12,7 +12,9 @@ public struct PeekabooBridgeProtocolVersion: Codable, Sendable, Comparable, Hash
     }
 
     public static func < (lhs: PeekabooBridgeProtocolVersion, rhs: PeekabooBridgeProtocolVersion) -> Bool {
-        if lhs.major != rhs.major { return lhs.major < rhs.major }
+        if lhs.major != rhs.major {
+            return lhs.major < rhs.major
+        }
         return lhs.minor < rhs.minor
     }
 }

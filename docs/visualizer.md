@@ -23,7 +23,7 @@ The Peekaboo Visual Feedback System provides delightful, informative visual indi
 
 ### Communication Internals
 1. **Event creation (CLI/MCP side)**  
-   - `VisualizationClient` builds a strongly typed `VisualizerEvent.Payload` (e.g., screenshot flash, click ripple).  
+   - `VisualizationClient` builds a strongly typed `VisualizerEvent.Payload` (e.g., screenshot flash, click feedback).
    - The payload is persisted via `VisualizerEventStore.persist(_:)`, which writes `<uuid>.json` to the shared VisualizerEvents directory and logs the exact path (look for `[VisualizerEventStore][VisualizerSmoke] persisted event …` in CLI output when debugging).  
    - Immediately afterwards the client posts `DistributedNotificationCenter.default().post(name: .visualizerEventDispatched, object: "<uuid>|<kind>")`. No `userInfo` data is used so the bridge remains sandbox friendly.
 2. **Notification delivery**  
@@ -50,7 +50,7 @@ MCP Server → peekaboo CLI → VisualizerEventStore → Distributed Notificatio
 | `VisualizationClient` | `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Visualizer/VisualizationClient.swift` | Runs inside CLI/MCP processes, serializes payloads, persists them, and posts distributed notifications containing the event descriptor. |
 | `VisualizerEventStore` | `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Visualizer/VisualizerEventStore.swift` | Owns the shared storage directory, defines the `VisualizerEvent` schema, and exposes helpers to persist, load, and clean up JSON envelopes. |
 | `VisualizerEventReceiver` | `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Renderer/VisualizerEventReceiver.swift` | Hosted by Peekaboo.app, listens for `boo.peekaboo.visualizer.event`, loads the referenced JSON, and forwards it to `VisualizerCoordinator`. |
-| `VisualizerCoordinator` | `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Renderer/VisualizerCoordinator.swift` | Renders SwiftUI overlays (reticles, HUD chips, comets, annotations) and honors user settings such as animation speed and per-action toggles. |
+| `VisualizerCoordinator` | `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Renderer/VisualizerCoordinator.swift` | Renders SwiftUI overlays (cursor feedback, HUD chips, swipe paths, annotations) and honors user settings such as animation speed and per-action toggles. |
 | `VisualizerDesign` | `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Views/VisualizerDesign.swift` | The shared "Ghost HUD" design language: theme tokens, motion curves, HUD chip container, keycaps, and glyph badges every animation composes from. |
 
 ## Smoke Testing
@@ -69,6 +69,7 @@ MCP Server → peekaboo CLI → VisualizerEventStore → Distributed Notificatio
 
 - `PEEKABOO_VISUAL_FEEDBACK=false` – disable the client entirely (no files, no notifications).
 - `PEEKABOO_VISUAL_SCREENSHOTS=false` – skip screenshot flash events but allow the rest.
+- `PEEKABOO_VISUAL_ELEMENT_BOXES=true|false` – opt in to (or force off) the per-element bounding boxes during `see`; they default to off and the env var beats `visualizer.elementDetectionEnabled` in `config.json`.
 - `PEEKABOO_VISUALIZER_MASK_TYPED_TEXT=true` – always mask typed characters as bullets. By default the typing HUD shows the text verbatim (that's the point of the caption); secure text fields are detected and masked automatically before the event is persisted.
 - `PEEKABOO_VISUALIZER_STDOUT=true|false` – force VisualizationClient logs to stderr regardless of bundle context.
 - `PEEKABOO_VISUALIZER_STORAGE=/path` – override the shared directory.
@@ -107,7 +108,7 @@ Peekaboo.app still respects user-facing toggles via `PeekabooSettings`; the coor
 
 ## Visual Feedback Designs — the "Ghost HUD" language
 
-All animations share one design system (`VisualizerDesign.swift`): a single violet accent (`VisualizerTheme.accent`, cyan secondary for gradients, red strictly for destructive operations), dark translucent HUD chips with hairline strokes, and a common motion vocabulary (`VisualizerMotion.pop/settle/enter/exit/glide`). Geometry over cartoons: reticles, comets, chevrons, and keycaps — no particle bursts, no clip-art cursors, no rainbow per-action colors.
+All animations share one design system (`VisualizerDesign.swift`): a single violet accent (`VisualizerTheme.accent`, cyan secondary for gradients, red strictly for destructive operations), dark translucent HUD chips with hairline strokes, and a common motion vocabulary (`VisualizerMotion.pop/settle/enter/exit/glide`). Crisp cursor glyphs, restrained trails, chevrons, and keycaps keep the feedback readable without particle bursts or rainbow per-action colors.
 
 ### Screenshot Capture 📸
 - **Effect**: Viewfinder corner brackets snap onto the captured region while a white veil flashes once
@@ -115,11 +116,11 @@ All animations share one design system (`VisualizerDesign.swift`): a single viol
 - **Coverage**: Only the captured area, not the full screen
 - **Easter egg**: Every 100th screenshot floats a 👻 up through the frame
 
-### Click Actions 🎯
-- **Single Click**: A targeting ring contracts onto the point, the center dot pops with a glow bloom, and one impact pulse expands
-- **Double Click**: Two staggered impact pulses
-- **Right Click**: Dashed contracting ring in the secondary accent, hinting at a context menu
-- **No labels**: The geometry communicates the action; there is no "Click" text
+### Click Actions 🖱️
+- **Single Click**: A small macOS-style cursor glides to the point, presses once, and emits a subtle ring at its hotspot
+- **Double Click**: The cursor presses twice with a ring for each press
+- **Right Click**: The same cursor press uses the blue secondary accent
+- **No labels**: The cursor motion communicates the action; there is no "Click" text
 
 ### Typing Feedback ⌨️
 - **Style**: A caption pill at bottom center streams the typed text verbatim with a blinking caret
@@ -133,8 +134,8 @@ All animations share one design system (`VisualizerDesign.swift`): a single viol
 - **Extra**: A small "×N" tag beneath the chip when scrolling more than one unit
 
 ### Mouse Movement 🖱️
-- **Effect**: A glowing comet head glides from start to destination, stretching a tapered gradient tail
-- **Landing**: A small ring blooms at the destination as the head arrives
+- **Effect**: A small macOS-style cursor glides from start to destination with a restrained tapered gradient trail
+- **Landing**: The cursor tip arriving at the destination is the signal; no separate landing ring is drawn
 
 ### Swipe/Drag Gestures 👆
 - **Effect**: The same comet vocabulary with a thicker stroke (button held)
@@ -165,6 +166,7 @@ All animations share one design system (`VisualizerDesign.swift`): a single viol
 - **Effect**: A macOS-style Spaces indicator chip: one dot per desktop, the active dot hops to the destination, and a "Desktop N" label updates with a direction arrow
 
 ### Element Detection (See) 👁️
+- **Default**: OFF — a box per detected control clutters the screen. Opt in via the "Element Detection Boxes" toggle in Peekaboo.app settings, `"visualizer": {"elementDetectionEnabled": true}` in `~/.peekaboo/config.json`, or `PEEKABOO_VISUAL_ELEMENT_BOXES=true` (env wins over config). The gate is sender-side: `SeeTool`/`VisualizationClient` skip emitting the event unless one of those opts in (mirroring `PEEKABOO_VISUAL_SCREENSHOTS`); the receiver renders whatever it is handed once Visual Feedback is on. The app toggle writes the same config key — and a long-running CLI/MCP process re-reads `config.json` when its modification date changes — so one switch governs both processes without a restart.
 - **Effect**: Every detected element gets an accent outline sized exactly to the control, with its opaque ID in a small HUD tag above
 - **Coordinates**: Element rects in the payload are AppKit screen coordinates. Senders convert global Accessibility bounds through `VisualizerScreenGeometry`, flipping once against `NSScreen.screens[0]` (the primary display); logical point sizes are preserved, so Retina scale is never multiplied into overlay geometry
 - **Rendering**: One overlay window per screen holds every highlight (`ElementOverlaySheetView`); degenerate and screen-filling container rects are dropped and the count is capped at 120, preferring the smallest rects
@@ -175,7 +177,7 @@ All animations share one design system (`VisualizerDesign.swift`): a single viol
 
 Agents fire actions in bursts, so the coordinator coalesces:
 
-- **Throttles** (`VisualizerCoordinator.FeedbackThrottle`): screenshot flash ≥ 1.2s apart, scroll chips ≥ 0.3s, mouse comets ≥ 0.4s and only for moves ≥ 80pt, element sheets ≥ 1.0s, watch HUD ≥ 1.0s. Throttled events report success without drawing.
+- **Throttles** (`VisualizerCoordinator.FeedbackThrottle`): screenshot flash ≥ 1.2s apart, scroll chips ≥ 0.3s, mouse cursor trails ≥ 0.4s and only for moves ≥ 80pt, element sheets ≥ 1.0s, watch HUD ≥ 1.0s. Throttled events report success without drawing.
 - **Replace slots** (`VisualizerCoordinator.OverlaySlot`): typing caption, hotkey chip, menu breadcrumb, Space indicator, app toast, watch HUD, annotated screenshot, and per-screen element sheets each keep at most one live overlay — a new event fades the previous one out in 0.12s and takes its place.
 
 ## Implementation Details
@@ -200,10 +202,12 @@ Agents fire actions in bursts, so the coordinator coalesces:
 Located in `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Views/`:
 - `VisualizerDesign.swift` - Shared theme, motion curves, HUD chip, keycap, corner brackets, glyph badge
 - `ScreenshotFlashView.swift` - Viewfinder brackets + shutter veil
-- `ClickAnimationView.swift` - Targeting reticle with impact pulses
+- `CursorGlyphView.swift` - Shared macOS-style cursor shape and rendering
+- `ClickAnimationView.swift` - Cursor glide, press, and hotspot ring
 - `TypeAnimationView.swift` - Streaming caption pill
 - `ScrollAnimationView.swift` - Flowing chevron chip
-- `MouseTrailView.swift` / `SwipePathView.swift` - Comet trails (window-local coordinates)
+- `MouseTrailView.swift` - Cursor travel with a subtle trail (window-local coordinates)
+- `SwipePathView.swift` - Drag comet with press/release rings (window-local coordinates)
 - `HotkeyOverlayView.swift` - Keycap chord display
 - ... (one file per animation type)
 
@@ -211,7 +215,7 @@ Overlay invariants worth knowing when adding animations:
 - Automation, Accessibility, Core Graphics, and capture geometry enters the visualizer in global display coordinates with an upper-left primary-display origin. `VisualizerAutomationFeedbackClient` and `SeeTool` convert it exactly once through `VisualizerScreenGeometry`; everything downstream uses global AppKit coordinates with a lower-left origin. Both spaces use logical points.
 - The flip axis is the primary/menu-bar display (`NSScreen.screens[0]`), not `NSScreen.main`, which follows keyboard focus and can change during automation.
 - `AnimationOverlayManager` wraps every animation in a flexible container so fixed-size views center on the overlay window; without it they pin to the top-leading corner and misalign by the window padding.
-- Every overlay window is inflated by a 40pt chrome margin so chip shadows and glows fade out instead of clipping at the window edge. Views that fill the window and use window-local coordinates (comets, capture flash, element sheets) pass `chromeMargin: 0` and provide their own breathing room.
+- Every overlay window is inflated by a 40pt chrome margin so chip shadows and glows fade out instead of clipping at the window edge. Views that fill the window and use window-local coordinates (cursor trails, swipe paths, capture flash, element sheets) pass `chromeMargin: 0` and provide their own breathing room.
 - Point-based views (mouse trail, swipe) receive window-local SwiftUI coordinates. `VisualizerCoordinator.windowLocalPoint(_:in:)` / `windowLocalRect(_:in:)` convert AppKit screen geometry (bottom-left origin) into flipped view coordinates.
 - Overlays that should never stack pass a `replaceKey`; the manager crossfades the previous window of the same key.
 
@@ -228,6 +232,7 @@ Overlay invariants worth knowing when adding animations:
 ```bash
 PEEKABOO_VISUAL_FEEDBACK=false            # Disable all visual feedback
 PEEKABOO_VISUAL_SCREENSHOTS=false         # Disable just screenshot flash
+PEEKABOO_VISUAL_ELEMENT_BOXES=true        # Opt in to per-element bounding boxes during `see` (off by default)
 PEEKABOO_VISUALIZER_STDOUT=true           # Force VisualizationClient logs to stderr/stdout
 PEEKABOO_VISUALIZER_STORAGE=/tmp/events   # Override the shared events directory
 PEEKABOO_VISUALIZER_APP_GROUP=group.boo   # Resolve storage inside an App Group container
@@ -260,8 +265,8 @@ PEEKABOO_VISUALIZER_FORCE_APP=true        # Pretend the CLI is running inside th
 - **Customization**: Users can adjust flash intensity
 
 ### Click Animations
-- **Variety**: Ring shape distinguishes the click type — solid for left, dashed for right, double pulse for double-click
-- **Precision**: The reticle contracts onto the exact click point, so recordings read like a targeting lock
+- **Variety**: The cursor presses once for a single click, twice for a double-click, and uses blue hotspot rings for a right-click
+- **Precision**: The cursor tip is the hotspot and lands exactly on the click point
 
 ### Typing Caption
 - **Content over chrome**: Shows the actual text being typed rather than a fake keyboard
@@ -339,10 +344,11 @@ Most importantly, it's completely optional - the CLI and MCP continue to work pe
 All per-action views exist in `Core/PeekabooVisualizer/Sources/PeekabooVisualizer/Views/` and compose the shared design system in `VisualizerDesign.swift`:
 
 - [x] `ScreenshotFlashView` — viewfinder brackets, shutter veil, 👻 easter egg (every 100th)
-- [x] `ClickAnimationView` — targeting reticle; solid/dashed/double-pulse per click type
+- [x] `CursorGlyphView` — crisp macOS-style arrow with a top-leading hotspot
+- [x] `ClickAnimationView` — cursor glide with single/double/right-button press feedback
 - [x] `TypeAnimationView` — streaming caption pill with cadence-derived pacing
 - [x] `ScrollAnimationView` — flowing chevron chip with amount tag
-- [x] `MouseTrailView` — comet trail with landing ring (window-local coordinates)
+- [x] `MouseTrailView` — cursor travel with a subtle tapered trail (window-local coordinates)
 - [x] `SwipePathView` — drag comet with press/release rings
 - [x] `HotkeyOverlayView` — keycap chord with sequenced presses
 - [x] `AppLifecycleView` — launch/quit toast with status dot

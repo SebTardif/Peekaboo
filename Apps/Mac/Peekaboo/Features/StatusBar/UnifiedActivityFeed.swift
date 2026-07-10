@@ -552,14 +552,22 @@ struct MessageActivityView: View {
     }
 
     private var contentColor: Color {
-        if self.message.content.contains(AgentDisplayTokens.Status.failure) { return .red }
-        if self.message.content.contains(AgentDisplayTokens.Status.warning) { return .orange }
+        if self.message.content.contains(AgentDisplayTokens.Status.failure) {
+            return .red
+        }
+        if self.message.content.contains(AgentDisplayTokens.Status.warning) {
+            return .orange
+        }
         return .primary
     }
 
     private var messageBackgroundColor: Color {
-        if self.message.content.contains(AgentDisplayTokens.Status.failure) { return .red.opacity(0.05) }
-        if self.message.content.contains(AgentDisplayTokens.Status.warning) { return .orange.opacity(0.05) }
+        if self.message.content.contains(AgentDisplayTokens.Status.failure) {
+            return .red.opacity(0.05)
+        }
+        if self.message.content.contains(AgentDisplayTokens.Status.warning) {
+            return .orange.opacity(0.05)
+        }
 
         switch self.message.role {
         case .user: return .blue.opacity(0.03)

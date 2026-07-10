@@ -54,11 +54,35 @@ public final class ConfigurationManager: @unchecked Sendable {
         TachikomaConfiguration.profileDirectoryName = self.baseDir
     }
 
-    /// Loaded configuration
-    var configuration: Configuration?
+    /// Serializes complete state and persistence transactions for the shared singleton.
+    ///
+    /// Recursive locking is intentional: public transactions call other lock-protected
+    /// operations while preserving one read-modify-write boundary.
+    private let stateLock = NSRecursiveLock()
 
-    /// Cached credentials
-    var credentials: [String: String] = [:]
+    private var _configuration: Configuration?
+    private var _credentials: [String: String] = [:]
+
+    /// Modification date of `config.json` when it was last read into `configuration`.
+    /// `reloadConfigurationIfChanged()` uses it to detect out-of-process edits (e.g. the
+    /// Mac app flipping a visualizer toggle) without re-parsing the file on every call.
+    private var configFileModificationDate: Date?
+
+    /// Loaded configuration (lock-protected).
+    var configuration: Configuration? {
+        get { self.withStateLock { self._configuration } }
+        set { self.withStateLock { self._configuration = newValue } }
+    }
+
+    /// Cached credentials (lock-protected).
+    var credentials: [String: String] {
+        get { self.withStateLock { self._credentials } }
+        set { self.withStateLock { self._credentials = newValue } }
+    }
+
+    func withStateLock<T>(_ body: () throws -> T) rethrows -> T {
+        try self.stateLock.withLock(body)
+    }
 
     private init() {
         // Load configuration on init, but don't crash if it fails
@@ -69,63 +93,73 @@ public final class ConfigurationManager: @unchecked Sendable {
     #if DEBUG
     /// Clear cached configuration/credentials so tests can re-seed with a different base dir.
     public func resetForTesting() {
-        self.configuration = nil
-        self.credentials = [:]
+        self.withStateLock {
+            self.configuration = nil
+            self.configFileModificationDate = nil
+            self.credentials = [:]
+        }
     }
     #endif
 
     /// Migrate from legacy configuration if needed
     public func migrateIfNeeded() throws {
-        // Allow tests or automation to disable migration to isolate temporary config roots.
-        if let disable = ProcessInfo.processInfo.environment["PEEKABOO_CONFIG_DISABLE_MIGRATION"],
-           disable.lowercased() == "1" || disable.lowercased() == "true"
-        {
-            return
+        try self.withStateLock {
+            // Allow tests or automation to disable migration to isolate temporary config roots.
+            if let disable = ProcessInfo.processInfo.environment["PEEKABOO_CONFIG_DISABLE_MIGRATION"],
+               disable.lowercased() == "1" || disable.lowercased() == "true"
+            {
+                return
+            }
+
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: Self.legacyConfigPath),
+                  !fileManager.fileExists(atPath: Self.configPath)
+            else {
+                return
+            }
+
+            try fileManager.createDirectory(
+                atPath: Self.baseDir,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+
+            try fileManager.copyItem(
+                atPath: Self.legacyConfigPath,
+                toPath: Self.configPath)
+
+            if let config = self.loadConfigurationFromPath(Self.configPath) {
+                try self.migrateHardcodedCredentials(from: config)
+            }
+
+            let migrationMessage =
+                "\(AgentDisplayTokens.Status.success) Migrated configuration from \(Self.legacyConfigPath) " +
+                "to \(Self.configPath)"
+            print(migrationMessage)
         }
-
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: Self.legacyConfigPath),
-              !fileManager.fileExists(atPath: Self.configPath)
-        else {
-            return
-        }
-
-        try fileManager.createDirectory(
-            atPath: Self.baseDir,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700])
-
-        try fileManager.copyItem(
-            atPath: Self.legacyConfigPath,
-            toPath: Self.configPath)
-
-        if let config = self.loadConfigurationFromPath(Self.configPath) {
-            try self.migrateHardcodedCredentials(from: config)
-        }
-
-        let migrationMessage =
-            "\(AgentDisplayTokens.Status.success) Migrated configuration from \(Self.legacyConfigPath) " +
-            "to \(Self.configPath)"
-        print(migrationMessage)
     }
 
     /// Load configuration from file
     public func loadConfiguration() -> Configuration? {
-        Self.configureTachikomaProfileDirectory()
-        try? self.migrateIfNeeded()
-        self.loadCredentials()
-        self.configuration = self.loadConfigurationFromPath(Self.configPath)
-        return self.configuration
+        self.withStateLock {
+            Self.configureTachikomaProfileDirectory()
+            try? self.migrateIfNeeded()
+            self.loadCredentials()
+            self.configuration = self.loadConfigurationFromPath(Self.configPath)
+            self.configFileModificationDate = Self.modificationDate(ofFileAtPath: Self.configPath)
+            return self.configuration
+        }
     }
 
     /// Get the current configuration.
     ///
     /// Returns the loaded configuration or loads it if not already loaded.
     public func getConfiguration() -> Configuration? {
-        if self.configuration == nil {
-            _ = self.loadConfiguration()
+        self.withStateLock {
+            if self.configuration == nil {
+                _ = self.loadConfiguration()
+            }
+            return self.configuration
         }
-        return self.configuration
     }
 
     private func migrateHardcodedCredentials(from config: Configuration) throws {
@@ -142,5 +176,25 @@ public final class ConfigurationManager: @unchecked Sendable {
         updatedConfig.aiProviders?.openaiApiKey = nil
         let data = try JSONCoding.encoder.encode(updatedConfig)
         try data.write(to: URL(fileURLWithPath: Self.configPath), options: .atomic)
+    }
+
+    /// Reload `config.json` only if it changed on disk since the last load.
+    ///
+    /// Long-running processes (e.g. an MCP server) cache the configuration at startup,
+    /// so a config value flipped in another process — like the Mac app writing
+    /// `visualizer.elementDetectionEnabled` — would otherwise be ignored until restart.
+    /// The steady-state cost is a single `stat`; the parse only runs when the file's
+    /// modification date actually changes, keeping this safe on hot paths like `see`.
+    public func reloadConfigurationIfChanged() {
+        self.withStateLock {
+            let currentDate = Self.modificationDate(ofFileAtPath: Self.configPath)
+            // Reload when the file appeared, disappeared, or was rewritten.
+            guard currentDate != self.configFileModificationDate else { return }
+            _ = self.loadConfiguration()
+        }
+    }
+
+    private static func modificationDate(ofFileAtPath path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
     }
 }

@@ -21,7 +21,9 @@ extension DialogService {
             let identifier = (field.attribute(identifierAttribute) ?? "").lowercased()
             let combined = "\(title) \(placeholder) \(description) \(identifier)"
 
-            if combined.contains("tags") { return 100 }
+            if combined.contains("tags") {
+                return 100
+            }
             if combined.contains("save") ||
                 combined.contains("file name") ||
                 combined.contains("filename") ||
@@ -31,7 +33,9 @@ extension DialogService {
             }
 
             let value = (field.value() as? String) ?? ""
-            if !value.isEmpty { return 10 }
+            if !value.isEmpty {
+                return 10
+            }
             return 50
         }
 
@@ -47,8 +51,12 @@ extension DialogService {
                     return (field: field, score: fieldScore(field), position: position)
                 }
                 .sorted(by: { lhs, rhs in
-                    if lhs.score != rhs.score { return lhs.score < rhs.score }
-                    if lhs.position.y != rhs.position.y { return lhs.position.y < rhs.position.y }
+                    if lhs.score != rhs.score {
+                        return lhs.score < rhs.score
+                    }
+                    if lhs.position.y != rhs.position.y {
+                        return lhs.position.y < rhs.position.y
+                    }
                     return lhs.position.x < rhs.position.x
                 })
                 .map(\.field)

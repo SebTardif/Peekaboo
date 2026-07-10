@@ -109,7 +109,9 @@ private func findGitConfigPath(startingAt path: String) -> String? {
         }
 
         let parent = directory.deletingLastPathComponent()
-        if parent.path == directory.path { return nil }
+        if parent.path == directory.path {
+            return nil
+        }
         directory = parent
     }
 }

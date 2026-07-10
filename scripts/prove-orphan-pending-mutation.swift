@@ -7,10 +7,14 @@ struct Record { let processMatches: Bool; var resolved: Bool = false }
 func buggyHasOther(peers: inout [Record]) -> Bool {
     var found = false
     for i in peers.indices {
-        if peers[i].resolved { continue }
+        if peers[i].resolved {
+            continue
+        }
         // BUG: set found before orphan resolution
         found = true
-        if peers[i].processMatches { continue }
+        if peers[i].processMatches {
+            continue
+        }
         peers[i].resolved = true // orphan recovered
     }
     return found
@@ -19,7 +23,9 @@ func buggyHasOther(peers: inout [Record]) -> Bool {
 func fixedHasOther(peers: inout [Record]) -> Bool {
     var found = false
     for i in peers.indices {
-        if peers[i].resolved { continue }
+        if peers[i].resolved {
+            continue
+        }
         if peers[i].processMatches {
             found = true
             continue

@@ -196,6 +196,12 @@ extension AppToolActions {
                 return true
             }
             try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            // `try?` swallows CancellationError from sleep. Without this guard, later
+            // sleeps return immediately and the loop hammers the application service
+            // until its synthetic timeout budget is exhausted.
+            guard !Task.isCancelled else {
+                return false
+            }
             elapsed += interval
         }
 

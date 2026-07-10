@@ -356,6 +356,58 @@ struct PeekabooBridgeTests {
     }
 
     @Test
+    func `every request rejects an unauthorized bundle even from an allowed team`() async throws {
+        let server = await MainActor.run {
+            PeekabooBridgeServer(
+                services: PeekabooServices(),
+                hostKind: .gui,
+                allowlistedTeams: ["GOODTEAM"],
+                allowlistedBundles: ["com.peekaboo.cli"])
+        }
+        let peer = PeekabooBridgePeer(
+            processIdentifier: getpid(),
+            userIdentifier: getuid(),
+            bundleIdentifier: "org.openclaw.unrelated",
+            teamIdentifier: "GOODTEAM")
+
+        let requestData = try JSONEncoder.peekabooBridgeEncoder().encode(PeekabooBridgeRequest.permissionsStatus)
+        let responseData = await server.decodeAndHandle(requestData, peer: peer)
+        let response = try self.decode(responseData)
+
+        guard case let .error(envelope) = response else {
+            Issue.record("Expected error response, got \(response)")
+            return
+        }
+        #expect(envelope.code == PeekabooBridgeErrorCode.unauthorizedClient)
+        #expect(envelope.message.contains("Bundle org.openclaw.unrelated"))
+    }
+
+    @Test
+    func `every request accepts an allowlisted bundle and team`() async throws {
+        let server = await MainActor.run {
+            PeekabooBridgeServer(
+                services: PeekabooServices(),
+                hostKind: .gui,
+                allowlistedTeams: ["GOODTEAM"],
+                allowlistedBundles: ["com.peekaboo.cli"])
+        }
+        let peer = PeekabooBridgePeer(
+            processIdentifier: getpid(),
+            userIdentifier: getuid(),
+            bundleIdentifier: "com.peekaboo.cli",
+            teamIdentifier: "GOODTEAM")
+
+        let requestData = try JSONEncoder.peekabooBridgeEncoder().encode(PeekabooBridgeRequest.permissionsStatus)
+        let responseData = await server.decodeAndHandle(requestData, peer: peer)
+        let response = try self.decode(responseData)
+
+        guard case .permissionsStatus = response else {
+            Issue.record("Expected permissions response, got \(response)")
+            return
+        }
+    }
+
+    @Test
     func `handshake rejects incompatible protocol version`() async throws {
         let server = await MainActor.run {
             PeekabooBridgeServer(

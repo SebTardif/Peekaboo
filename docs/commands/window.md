@@ -17,14 +17,20 @@ read_when:
 | `move` | Move the window to new coordinates. | `-x <int>` / `-y <int>` specify the new origin. |
 | `resize` | Adjust width/height while keeping the origin. | `-w <int>` / `--height <int>`. |
 | `set-bounds` | Set both origin and size in one go. | `--x`, `--y`, `--width`, `--height`. |
-| `list` | Shortcut for `list windows` scoped to a single app. | Same targeting flags; outputs the `list windows` payload. |
+| `list` | Lists an app's renderable windows (filtered view of `list windows`). | Same targeting flags; adds `--group-by-space`. |
 
 ## Implementation notes
 - Every action validates that at least an app, PID, or window ID is supplied; optional `--window-title` and `--window-index` disambiguate when multiple windows exist.
-- All geometry-changing commands re-fetch window info after acting (when possible) and stuff the updated bounds into the JSON payload so automated tests can assert the final rectangle.
+- `move`, `resize`, `set-bounds`, and `maximize` read the window frame back after acting; `new_bounds` in the JSON payload always reflects the frame the window actually settled at, not the requested one.
+- `move`, `resize`, and `set-bounds` also verify the achieved frame against the request. macOS accepts geometry requests and then lets the app constrain them (e.g. a SwiftUI `minWidth`/`minHeight`), so the request can be applied only partially or not at all:
+  - Partially applied (frame changed but missed the request): the command still succeeds, `requested_bounds` and a `warning` string are included in the JSON payload, and the text output prints the actual frame plus the warning.
+  - Fully ignored (frame did not change at all): the command fails with exit code 1 and error code `WINDOW_MANIPULATION_ERROR`, because reporting success would silently lie to scripts. Typical cause: shrinking a window below its minimum size when it already sits at that minimum.
+  - If the frame cannot be re-read after the operation, the command succeeds with a `warning` that the reported bounds may be stale.
+- `maximize` presses the green zoom button, which is animated, so the read-back polls until the frame stops changing (stable across two consecutive reads) before reporting; `new_bounds` is the settled frame, not a mid-animation frame. If the frame never stabilizes within the poll budget, the command still succeeds but adds a `warning` that the bounds may be approximate.
+- `maximize` is idempotent. AppKit's zoom button is a toggle (pressing it on an already-maximized window would restore the previous size), so `maximize` first checks whether the window already occupies its screen's visible frame, matched on both origin and size (screen frames are flipped into the window's coordinate space first). If it does, the zoom press is skipped: the window stays maximized and the text output prints `is already maximized`. The match is conservative — a screen-sized window that has been moved or pushed partly off-screen does not match, so `maximize` presses zoom and repositions it; and an app whose zoom target is smaller than the whole screen is never treated as "already maximized". In both cases `maximize` presses zoom rather than no-op'ing a real request.
 - `focus` routes through `WindowServiceBridge.focusWindow` and honors the global focus flags (`--space-switch` to jump Spaces, `--bring-to-current-space` to move the window instead, etc.). It logs debug output when focus fails so agents know to fall back.
 - `focus --verify` checks the frontmost app (and window ID when available) before returning success.
-- When `window list` runs, it simply calls the same helper as `peekaboo list windows` but saves you from retyping the longer command.
+- `window list` uses the same enumeration as `peekaboo list windows` (deduplicated by `window_id`, contiguous indexes) but additionally filters to renderable windows: entries on non-zero layers, smaller than 60x60, fully transparent, or excluded from the Windows menu are dropped. The surviving windows keep their canonical `index` values, so indexes shown here can have gaps yet still match `--window-index` and `list windows` output.
 
 ## Examples
 ```bash

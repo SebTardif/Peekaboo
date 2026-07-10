@@ -135,14 +135,22 @@ extension DialogService {
     }
 
     private func dialogButtonTitleMatches(_ candidate: String, requested: String) -> Bool {
-        if candidate == requested { return true }
-        if candidate.contains(requested) { return true }
+        if candidate == requested {
+            return true
+        }
+        if candidate.contains(requested) {
+            return true
+        }
 
         let normalizedCandidate = self.normalizedDialogButtonTitle(candidate)
         let normalizedRequested = self.normalizedDialogButtonTitle(requested)
 
-        if normalizedCandidate == normalizedRequested { return true }
-        if normalizedCandidate.contains(normalizedRequested) { return true }
+        if normalizedCandidate == normalizedRequested {
+            return true
+        }
+        if normalizedCandidate.contains(normalizedRequested) {
+            return true
+        }
 
         return false
     }

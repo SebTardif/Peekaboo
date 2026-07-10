@@ -12,6 +12,16 @@ enum BridgeCapabilityPolicy {
             return false
         }
 
+        // Never select a host that explicitly reports it lacks a TCC permission this command
+        // actually needs (e.g. a stale GUI host with screenRecording=false serving bridge.sock for
+        // a capture command); rejecting here lets the resolver fall through to a permissioned
+        // daemon. Only the permissions the command uses are required, so a non-capture command is
+        // not blocked by a missing Screen Recording grant. Hosts that omit the permission report
+        // entirely stay eligible for backward compatibility.
+        guard self.explicitlyMissingRemotePermissions(for: handshake, options: options).isEmpty else {
+            return false
+        }
+
         if options.requiresElementActions, !self.supportsElementActions(for: handshake) {
             return false
         }
@@ -56,6 +66,56 @@ enum BridgeCapabilityPolicy {
         }
 
         return true
+    }
+
+    /// TCC permissions the current command needs from a remote host, derived from the operations
+    /// it will use. The host's own `permissionTags` contract wins; operations without a tag fall
+    /// back to the client-side mapping so hosts that predate permission tags are still covered.
+    static func requiredRemotePermissions(
+        for handshake: PeekabooBridgeHandshakeResponse,
+        options: CommandRuntimeOptions
+    ) -> Set<PeekabooBridgePermissionKind> {
+        var required: Set<PeekabooBridgePermissionKind> = []
+        for operation in self.requiredRemoteOperations(options: options) {
+            required.formUnion(handshake.permissionTags[operation.rawValue] ?? Array(operation.requiredPermissions))
+        }
+        return required
+    }
+
+    /// Required permissions the host explicitly reports as not granted. A host that omits the
+    /// permission report (`permissions == nil`, older protocol builds) is trusted and never
+    /// rejected here; only an explicit `false` counts as missing.
+    static func explicitlyMissingRemotePermissions(
+        for handshake: PeekabooBridgeHandshakeResponse,
+        options: CommandRuntimeOptions
+    ) -> Set<PeekabooBridgePermissionKind> {
+        guard handshake.permissions != nil else { return [] }
+        return self.requiredRemotePermissions(for: handshake, options: options)
+            .subtracting(self.grantedPermissions(from: handshake.permissions))
+    }
+
+    /// Operations whose required TCC permissions the current command must find granted on a remote
+    /// host, based on declared runtime options. This is a permission gate only: capability (does the
+    /// host support the operation) is enforced separately by `supportsRemoteRequirements`. Screen
+    /// Recording is demanded ONLY for commands that actually acquire screen pixels
+    /// (`requiresScreenCapturePermission`); non-capture commands are never rejected for lacking it.
+    /// Operations that require no permission (app launch/relaunch, inventory, exact-window clicks)
+    /// are intentionally absent — they are already capability-gated and add nothing here.
+    private static func requiredRemoteOperations(options: CommandRuntimeOptions) -> [PeekabooBridgeOperation] {
+        // Permission-request commands intentionally target hosts that still lack grants.
+        guard !options.requestsHostPermissionGrant else { return [] }
+
+        var operations: [PeekabooBridgeOperation] = []
+        if options.requiresScreenCapturePermission {
+            operations.append(.captureScreen)
+        }
+        if options.requiresElementActions {
+            operations.append(contentsOf: [.setValue, .performAction])
+        }
+        if options.requiresInspectAccessibilityTree {
+            operations.append(.inspectAccessibilityTree)
+        }
+        return operations
     }
 
     static func supportsTargetedHotkeys(for handshake: PeekabooBridgeHandshakeResponse) -> Bool {
@@ -267,7 +327,7 @@ enum BridgeCapabilityPolicy {
         return requiredPermissions.subtracting(grantedPermissions)
     }
 
-    private static func missingPermissionNames(_ permissions: Set<PeekabooBridgePermissionKind>) -> [String] {
+    static func missingPermissionNames(_ permissions: Set<PeekabooBridgePermissionKind>) -> [String] {
         permissions.map(\.displayName).sorted()
     }
 

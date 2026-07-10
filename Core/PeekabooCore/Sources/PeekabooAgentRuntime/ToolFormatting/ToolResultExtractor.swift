@@ -140,17 +140,33 @@ public enum ToolResultExtractor {
     /// Extract a Double value from the result (unified)
     public static func doubleUnified(_ key: String, from result: [String: Any]) -> Double? {
         // Extract a Double value from the result (unified)
-        if let value = result[key] as? Double { return value }
-        if let value = result[key] as? Int { return Double(value) }
-        if let stringValue = string(key, from: result), let d = Double(stringValue) { return d }
+        if let value = result[key] as? Double {
+            return value
+        }
+        if let value = result[key] as? Int {
+            return Double(value)
+        }
+        if let stringValue = string(key, from: result), let d = Double(stringValue) {
+            return d
+        }
         if let wrapper = result[key] as? [String: Any] {
-            if let v = wrapper["value"] as? Double { return v }
-            if let v = wrapper["value"] as? Int { return Double(v) }
-            if let v = wrapper["value"] as? String, let d = Double(v) { return d }
+            if let v = wrapper["value"] as? Double {
+                return v
+            }
+            if let v = wrapper["value"] as? Int {
+                return Double(v)
+            }
+            if let v = wrapper["value"] as? String, let d = Double(v) {
+                return d
+            }
         }
         if let data = result["data"] as? [String: Any] {
-            if let v = data[key] as? Double { return v }
-            if let v = data[key] as? Int { return Double(v) }
+            if let v = data[key] as? Double {
+                return v
+            }
+            if let v = data[key] as? Int {
+                return Double(v)
+            }
         }
         return nil
     }

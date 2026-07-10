@@ -197,13 +197,19 @@ extension DialogService {
 
         func isDialogLike(_ window: Element) -> Bool {
             let subrole = window.subrole() ?? ""
-            if subrole == "AXDialog" || subrole == "AXSystemDialog" || subrole == "AXAlert" { return true }
+            if subrole == "AXDialog" || subrole == "AXSystemDialog" || subrole == "AXAlert" {
+                return true
+            }
 
             let roleDescription = window.attribute(Attribute<String>("AXRoleDescription")) ?? ""
-            if roleDescription.localizedCaseInsensitiveContains("dialog") { return true }
+            if roleDescription.localizedCaseInsensitiveContains("dialog") {
+                return true
+            }
 
             let identifier = window.attribute(Attribute<String>("AXIdentifier")) ?? ""
-            if identifier.contains("NSOpenPanel") || identifier.contains("NSSavePanel") { return true }
+            if identifier.contains("NSOpenPanel") || identifier.contains("NSSavePanel") {
+                return true
+            }
 
             return false
         }

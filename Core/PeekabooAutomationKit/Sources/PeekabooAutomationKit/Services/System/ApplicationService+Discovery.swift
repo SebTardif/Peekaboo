@@ -243,7 +243,9 @@ extension ApplicationService {
     @MainActor
     private func getWindowCount(for app: NSRunningApplication) -> Int {
         let cgWindows = self.windowIdentityService.getWindows(for: app)
-        if cgWindows.isEmpty { return 0 }
+        if cgWindows.isEmpty {
+            return 0
+        }
 
         let renderable = cgWindows.filter(\.isRenderable)
         return renderable.isEmpty ? cgWindows.count : renderable.count

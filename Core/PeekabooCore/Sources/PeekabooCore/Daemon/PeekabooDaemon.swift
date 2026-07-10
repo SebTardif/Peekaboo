@@ -22,7 +22,7 @@ public final class PeekabooDaemon: PeekabooConditionalDaemonControlProviding {
         public init(
             mode: PeekabooDaemonMode,
             bridgeSocketPath: String = PeekabooBridgeConstants.daemonSocketPath,
-            allowlistedTeams: Set<String> = ["Y5PE65HELJ"],
+            allowlistedTeams: Set<String> = PeekabooBridgeConstants.trustedReleaseTeamIDs,
             allowlistedBundles: Set<String> = [],
             allowedOperations: Set<PeekabooBridgeOperation> = PeekabooBridgeOperation.remoteDefaultAllowlist,
             windowTrackingEnabled: Bool = true,

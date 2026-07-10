@@ -4,23 +4,27 @@ extension ConfigurationManager {
     public func addCustomProvider(_ provider: Configuration.CustomProvider, id: String) throws {
         try self.validate(provider: provider, id: id)
 
-        var config = self.loadConfiguration() ?? Configuration()
-        if config.customProviders == nil {
-            config.customProviders = [:]
+        try self.withStateLock {
+            var config = self.loadConfiguration() ?? Configuration()
+            if config.customProviders == nil {
+                config.customProviders = [:]
+            }
+            config.customProviders?[id] = provider
+            try self.saveConfiguration(config)
+            self.configuration = config
         }
-        config.customProviders?[id] = provider
-        try self.saveConfiguration(config)
-        self.configuration = config
     }
 
     public func removeCustomProvider(id: String) throws {
-        var config = self.loadConfiguration() ?? Configuration()
-        config.customProviders?.removeValue(forKey: id)
-        if config.customProviders?.isEmpty == true {
-            config.customProviders = nil
+        try self.withStateLock {
+            var config = self.loadConfiguration() ?? Configuration()
+            config.customProviders?.removeValue(forKey: id)
+            if config.customProviders?.isEmpty == true {
+                config.customProviders = nil
+            }
+            try self.saveConfiguration(config)
+            self.configuration = config
         }
-        try self.saveConfiguration(config)
-        self.configuration = config
     }
 
     public func getCustomProvider(id: String) -> Configuration.CustomProvider? {

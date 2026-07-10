@@ -95,7 +95,9 @@ enum WatchFrameDiffer {
 
     static func computeSSIM(previous: LumaBuffer, current: LumaBuffer) -> Double {
         let count = min(previous.pixels.count, current.pixels.count)
-        if count == 0 { return 0 }
+        if count == 0 {
+            return 0
+        }
 
         var meanX: Double = 0
         var meanY: Double = 0
@@ -137,7 +139,9 @@ enum WatchFrameDiffer {
         originalSize: CGSize) -> DiffResult
     {
         let count = min(previous.pixels.count, current.pixels.count)
-        if count == 0 { return DiffResult(changePercent: 0, boundingBoxes: [], downgraded: false) }
+        if count == 0 {
+            return DiffResult(changePercent: 0, boundingBoxes: [], downgraded: false)
+        }
 
         var changed = 0
         var mask = Array(repeating: false, count: count)
@@ -150,7 +154,9 @@ enum WatchFrameDiffer {
         }
 
         let percent = (Double(changed) / Double(count)) * 100.0
-        if changed == 0 { return DiffResult(changePercent: percent, boundingBoxes: [], downgraded: false) }
+        if changed == 0 {
+            return DiffResult(changePercent: percent, boundingBoxes: [], downgraded: false)
+        }
 
         let boxes = self.extractBoundingBoxes(
             mask: mask,
@@ -180,7 +186,9 @@ enum WatchFrameDiffer {
         for y in 0..<height {
             for x in 0..<width {
                 let idx = index(x, y)
-                if !mask[idx] || visited[idx] { continue }
+                if !mask[idx] || visited[idx] {
+                    continue
+                }
 
                 var stack = [(x, y)]
                 visited[idx] = true
@@ -199,7 +207,9 @@ enum WatchFrameDiffer {
                     for (dx, dy) in directions {
                         let nx = cx + dx
                         let ny = cy + dy
-                        if nx < 0 || ny < 0 || nx >= width || ny >= height { continue }
+                        if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                            continue
+                        }
                         let nIdx = index(nx, ny)
                         if mask[nIdx], !visited[nIdx] {
                             visited[nIdx] = true
@@ -241,7 +251,9 @@ enum WatchFrameDiffer {
         var result: [CGRect] = [unionRect]
         for rect in sorted {
             guard result.count < maxBoxes else { break }
-            if rect.equalTo(unionRect) { continue }
+            if rect.equalTo(unionRect) {
+                continue
+            }
             result.append(rect)
         }
 

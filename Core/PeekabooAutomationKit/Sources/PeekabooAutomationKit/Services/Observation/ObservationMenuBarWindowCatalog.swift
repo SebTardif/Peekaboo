@@ -78,19 +78,29 @@ public enum ObservationMenuBarWindowCatalog {
         for windowInfo in windowList {
             guard let bounds = self.bounds(from: windowInfo) else { continue }
             let windowID = self.windowID(from: windowInfo[kCGWindowNumber as String])
-            if windowID == 0 { continue }
+            if windowID == 0 {
+                continue
+            }
 
-            if bounds.width < 40 || bounds.height < 40 { continue }
-            if bounds.maxX < preferredX - bandHalfWidth || bounds.minX > preferredX + bandHalfWidth { continue }
+            if bounds.width < 40 || bounds.height < 40 {
+                continue
+            }
+            if bounds.maxX < preferredX - bandHalfWidth || bounds.minX > preferredX + bandHalfWidth {
+                continue
+            }
 
             let screen = self.screenContaining(bounds: bounds, screens: screens)
             if let screen {
                 let menuBarHeight = self.menuBarHeight(for: screen)
                 let maxHeight = screen.frame.height * 0.85
-                if bounds.height > maxHeight { continue }
+                if bounds.height > maxHeight {
+                    continue
+                }
 
                 let topEdge = screen.visibleFrame.maxY
-                if bounds.maxY < topEdge - 48, bounds.minY > menuBarHeight + 48 { continue }
+                if bounds.maxY < topEdge - 48, bounds.minY > menuBarHeight + 48 {
+                    continue
+                }
             }
 
             candidates.append(ObservationMenuBarPopoverCandidate(
@@ -143,7 +153,9 @@ public enum ObservationMenuBarWindowCatalog {
         var info: [Int: ObservationMenuBarPopoverWindowInfo] = [:]
         for windowInfo in windowList {
             let windowID = Int(self.windowID(from: windowInfo[kCGWindowNumber as String]))
-            if windowID == 0 { continue }
+            if windowID == 0 {
+                continue
+            }
             info[windowID] = ObservationMenuBarPopoverWindowInfo(
                 ownerName: windowInfo[kCGWindowOwnerName as String] as? String,
                 title: windowInfo[kCGWindowName as String] as? String)

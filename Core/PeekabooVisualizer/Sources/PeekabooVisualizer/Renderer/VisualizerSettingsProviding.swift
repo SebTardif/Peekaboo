@@ -23,6 +23,9 @@ public protocol VisualizerSettingsProviding: AnyObject {
     var menuNavigationEnabled: Bool { get }
     var dialogInteractionEnabled: Bool { get }
     var spaceTransitionEnabled: Bool { get }
+    // Note: element-detection boxes are gated in the sender (SeeTool /
+    // VisualizationClient), not the renderer, so there is intentionally no
+    // `elementDetectionEnabled` member here. See `displayElementOverlays`.
     var annotatedScreenshotEnabled: Bool { get }
     var watchCaptureHUDEnabled: Bool { get }
 }

@@ -1,15 +1,32 @@
 # Changelog
 
-## Unreleased
+## [3.8.1] - Unreleased
 
-### Added
-- The agent, CLI, macOS model pickers, and session UI now support Claude Fable 5, Claude Sonnet 5, and the GPT-5.6 Sol, Terra, and Luna preview models, including their current context, output, effort, pricing, and non-streaming safety behavior.
+### Changed
+- The accessibility element boxes drawn during `peekaboo see` are off by default now; they were visual clutter on every capture. Re-enable them in Peekaboo.app under Settings › Visualizer › Element Detection Boxes, by setting `visualizer.elementDetectionEnabled` in `~/.peekaboo/config.json`, or per-run with `PEEKABOO_VISUAL_ELEMENT_BOXES=true`. The app toggle and the config file now stay in sync, and a running MCP server picks up the change without a restart.
+
+### Fixed
+- `peekaboo window resize`, `move`, and `set-bounds` now report the window's real frame and warn when the app clamps the request (for example a minimum window size); a resize that has no effect at all fails instead of reporting success. `window maximize` reports the settled frame rather than a mid-animation one, and is now idempotent instead of toggling a maximized window back down.
+- `peekaboo list windows` no longer emits the same window twice when an app has two windows with the same title, which also shifted every later `--window-index` and could target the wrong window.
+- The Visualizer's annotated-screenshot setting now persists across launches instead of silently resetting to enabled, and it finally has a toggle in Settings.
+- The CLI no longer routes commands to a bridge host that cannot satisfy the permissions those commands need. A stale Peekaboo.app holding the bridge socket without Screen Recording or Accessibility is now skipped in favor of a permissioned daemon, instead of silently failing every capture and automation call. Screen Recording is only demanded for commands that actually capture, and hosts that do not report their permissions are still accepted.
+- Canceling an app relaunch wait now stops its running-state poll immediately instead of spinning through the remaining timeout budget. Thanks @SebTardif for #230.
+- Snapshot-backed MCP actions now synchronize cached application, window, and process metadata across concurrent observation updates and action reads, preventing data races. Thanks @SebTardif for #228.
+- Adding a path to the Dock now passes the item directly to `defaults` instead of interpolating it through a shell, preventing shell metacharacters in filenames from being executed. Thanks @SebTardif for #224.
+- Concurrent credential and configuration updates now serialize the full load-mutate-persist transaction, preventing distinct updates from overwriting one another. Thanks @SebTardif for #227.
+
+## [3.8.0] - 2026-07-09
 
 ### Changed
 - The menu bar icon was redesigned as a crisp template ghost with a camera-lens belly that echoes the app icon, now rendered at proper 1x/2x/3x resolutions; it previously shipped a single blurry 18px bitmap reused for all Retina scales.
+- Peekaboo.app releases now use the OpenClaw Foundation Developer ID identity while retaining the bundle identifier and Sparkle update key; the standalone CLI keeps its legacy signing team so it remains compatible with pre-3.8 GUI bridge hosts, and 3.8 hosts trust both release teams. macOS may ask once to reconfirm protected-data access after the app signing-team migration.
 
 ### Fixed
 - The macOS Sessions window and agent popover stay unavailable while Agent mode is disabled, including Dock reopens, global shortcuts, notifications, and windows already open when the setting is turned off.
+- The GUI bridge now enforces both signing Team ID and bundle ID on every request, preventing unrelated same-team processes from borrowing Peekaboo's protected macOS permissions.
+
+### Changed
+- Clicks and mouse moves are now visualized by a small animated macOS-style cursor that glides to the target and presses (double-press for double-click, blue-tinted for right-click), replacing the targeting reticle and comet.
 
 ## [3.7.1] - 2026-07-05
 

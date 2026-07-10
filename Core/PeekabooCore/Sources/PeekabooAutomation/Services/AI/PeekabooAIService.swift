@@ -80,18 +80,14 @@ private final class PeekabooCustomProviderModel: ModelProvider, @unchecked Senda
         let inferredAnthropicCapabilities = kind == .anthropic
             ? AnthropicModelCapabilityInference.capabilities(for: resolvedModelID)
             : nil
-        let inferredGPT56Model = kind == .openai
-            ? LanguageModel.OpenAI.gpt56Model(for: resolvedModelID)
-            : nil
-        let inferredMaxOutputTokens = inferredAnthropicCapabilities?.maxOutputTokens ??
-            (inferredGPT56Model == nil ? 4096 : 128_000)
+        let inferredMaxOutputTokens = inferredAnthropicCapabilities?.maxOutputTokens ?? 4096
         let hasStreamingRefusalRisk = inferredAnthropicCapabilities.map { !$0.supportsStreaming } ??
             LanguageModel.Anthropic.hasStreamingRefusalRisk(modelId: resolvedModelID)
         self.capabilities = ModelCapabilities(
             supportsVision: supportsVision,
             supportsTools: supportsTools,
             supportsStreaming: !hasStreamingRefusalRisk,
-            contextLength: inferredAnthropicCapabilities?.contextLength ?? inferredGPT56Model?.contextLength ?? 128_000,
+            contextLength: inferredAnthropicCapabilities?.contextLength ?? 128_000,
             maxOutputTokens: maxOutputTokens ?? inferredMaxOutputTokens)
     }
 
@@ -370,36 +366,56 @@ public final class PeekabooAIService {
     {
         switch provider {
         case "openai":
-            if case .openai = loose { return loose }
+            if case .openai = loose {
+                return loose
+            }
             return .openai(.custom(modelString))
         case "anthropic":
-            if case .anthropic = loose { return loose }
+            if case .anthropic = loose {
+                return loose
+            }
             return .anthropic(.custom(modelString))
         case "google", "gemini":
-            if case .google = loose { return loose }
+            if case .google = loose {
+                return loose
+            }
             return nil
         case "minimax":
-            if case .minimax = loose { return loose }
+            if case .minimax = loose {
+                return loose
+            }
             return nil
         case "minimax-cn", "minimax_cn", "minimaxi":
-            if case .minimaxCN = loose { return loose }
+            if case .minimaxCN = loose {
+                return loose
+            }
             let parsed = LanguageModel.parse(from: "minimax-cn/\(modelString)")
-            if case .minimaxCN = parsed { return parsed }
+            if case .minimaxCN = parsed {
+                return parsed
+            }
             return nil
         case "kimi", "moonshot":
-            if case .kimi = loose { return loose }
+            if case .kimi = loose {
+                return loose
+            }
             return nil
         case "openrouter":
             return .openRouter(modelId: modelString)
         case "mistral":
-            if case .mistral = loose { return loose }
+            if case .mistral = loose {
+                return loose
+            }
             return nil
         case "groq":
-            if case .groq = loose { return loose }
+            if case .groq = loose {
+                return loose
+            }
             return nil
         case "grok", "xai":
             guard !self.isUnsupportedGrokModel(modelString) else { return nil }
-            if case .grok = loose { return loose }
+            if case .grok = loose {
+                return loose
+            }
             return .grok(.custom(modelString))
         default:
             return nil

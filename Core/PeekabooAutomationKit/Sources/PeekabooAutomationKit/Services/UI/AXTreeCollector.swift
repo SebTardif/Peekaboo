@@ -221,17 +221,23 @@ struct AXTreeCollector {
                     let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !normalized.isEmpty {
                         results.append(normalized)
-                        if results.count >= limit { break }
+                        if results.count >= limit {
+                            break
+                        }
                     }
                 }
             }
 
-            if results.count >= limit { break }
+            if results.count >= limit {
+                break
+            }
 
             let remaining = limit - results.count
             let nested = self.textualDescendants(of: child, depth: depth + 1, limit: remaining)
             results.append(contentsOf: nested)
-            if results.count >= limit { break }
+            if results.count >= limit {
+                break
+            }
         }
 
         return results

@@ -560,15 +560,33 @@ struct ClickCommand: ErrorHandlingCommand, OutputFormattable, RuntimeOptionsConf
         let identifier = element.attributes["identifier"]?.lowercased()
         let title = element.attributes["title"]?.lowercased()
         var score = 0
-        if identifier == queryLower { score += 400 }
-        if label == queryLower { score += 350 }
-        if title == queryLower { score += 300 }
-        if value == queryLower { score += 200 }
-        if identifier?.contains(queryLower) == true { score += 200 }
-        if label?.contains(queryLower) == true { score += 160 }
-        if title?.contains(queryLower) == true { score += 120 }
-        if value?.contains(queryLower) == true { score += 80 }
-        if element.type == .button { score += 20 }
+        if identifier == queryLower {
+            score += 400
+        }
+        if label == queryLower {
+            score += 350
+        }
+        if title == queryLower {
+            score += 300
+        }
+        if value == queryLower {
+            score += 200
+        }
+        if identifier?.contains(queryLower) == true {
+            score += 200
+        }
+        if label?.contains(queryLower) == true {
+            score += 160
+        }
+        if title?.contains(queryLower) == true {
+            score += 120
+        }
+        if value?.contains(queryLower) == true {
+            score += 80
+        }
+        if element.type == .button {
+            score += 20
+        }
         return score
     }
 

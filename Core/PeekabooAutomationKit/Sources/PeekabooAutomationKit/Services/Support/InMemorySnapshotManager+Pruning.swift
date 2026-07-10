@@ -8,7 +8,9 @@ extension InMemorySnapshotManager {
             self.removeEntry(forSnapshotId: id)
         }
 
-        if self.entries.count <= self.options.maxSnapshots { return }
+        if self.entries.count <= self.options.maxSnapshots {
+            return
+        }
 
         let ordered = self.entries.sorted { $0.value.lastAccessedAt < $1.value.lastAccessedAt }
         let overflow = self.entries.count - self.options.maxSnapshots
@@ -31,8 +33,12 @@ extension InMemorySnapshotManager {
 
     func screenshotCount(for snapshotData: UIAutomationSnapshot) -> Int {
         var count = 0
-        if snapshotData.screenshotPath != nil { count += 1 }
-        if let annotated = snapshotData.annotatedPath, annotated != snapshotData.screenshotPath { count += 1 }
+        if snapshotData.screenshotPath != nil {
+            count += 1
+        }
+        if let annotated = snapshotData.annotatedPath, annotated != snapshotData.screenshotPath {
+            count += 1
+        }
         return count
     }
 
