@@ -53,8 +53,51 @@ struct DockAddPathValidationTests {
     func `shell metacharacter path stays a single non-shell argument payload`() throws {
         let payload = #"/tmp/x'; touch /tmp/pwned; echo '"#
         let path = try DockService.validatedDockItemPath(payload)
-        let fragment = DockService.dockTilePlistFragment(forPath: path)
-        #expect(fragment.contains(DockService.xmlEscape(path)))
-        #expect(!fragment.contains("bash"))
+        let command = DockService.dockDefaultsWriteCommand(forPath: path, isFolder: false)
+
+        #expect(command.executable == "/usr/bin/defaults")
+        #expect(command.arguments == [
+            "write",
+            "com.apple.dock",
+            "persistent-apps",
+            "-array-add",
+            DockService.dockTilePlistFragment(forPath: path),
+        ])
+        #expect(command.executable != "/bin/bash")
+        #expect(!command.arguments.contains("-c"))
+        #expect(DockService.restartDockCommand == DockProcessCommand(
+            executable: "/usr/bin/killall",
+            arguments: ["Dock"],
+            failurePrefix: "Failed to restart Dock after adding item"))
+    }
+
+    @Test
+    func `real defaults write treats shell metacharacters as literal path data`() throws {
+        let fileManager = FileManager.default
+        let temporaryDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("peekaboo-dock-test-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryDirectory) }
+
+        let markerPath = temporaryDirectory.appendingPathComponent("shell-command-ran").path
+        let payload = "\(temporaryDirectory.path)/Probe '; touch \(markerPath); echo ' & <tag>.app"
+        let domain = temporaryDirectory.appendingPathComponent("dock-domain").path
+        let command = DockService.dockDefaultsWriteCommand(
+            forPath: payload,
+            isFolder: false,
+            domain: domain)
+
+        try DockService.runProcess(command)
+
+        #expect(!fileManager.fileExists(atPath: markerPath))
+        let plistURL = URL(fileURLWithPath: domain + ".plist")
+        let plistData = try Data(contentsOf: plistURL)
+        let plist = try PropertyListSerialization.propertyList(from: plistData, format: nil)
+        let root = try #require(plist as? [String: Any])
+        let persistentApps = try #require(root["persistent-apps"] as? [[String: Any]])
+        let tile = try #require(persistentApps.first)
+        let tileData = try #require(tile["tile-data"] as? [String: Any])
+        let fileData = try #require(tileData["file-data"] as? [String: Any])
+        #expect(fileData["_CFURLString"] as? String == payload)
     }
 }

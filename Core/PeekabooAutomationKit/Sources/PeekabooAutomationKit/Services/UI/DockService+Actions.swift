@@ -3,6 +3,12 @@ import CoreGraphics
 import Foundation
 import PeekabooFoundation
 
+struct DockProcessCommand: Equatable, Sendable {
+    let executable: String
+    let arguments: [String]
+    let failurePrefix: String
+}
+
 @MainActor
 extension DockService {
     func launchFromDockImpl(appName: String) async throws {
@@ -24,21 +30,13 @@ extension DockService {
         var isDirectory: ObjCBool = false
         _ = FileManager.default.fileExists(atPath: sanitizedPath, isDirectory: &isDirectory)
         let isFolder = isDirectory.boolValue
-        let plistKey = isFolder ? "persistent-others" : "persistent-apps"
-        let tileData = DockService.dockTilePlistFragment(forPath: sanitizedPath)
 
         // Invoke defaults directly (no shell) so path content cannot break out of
         // a bash -c script. Still XML-escape the path so malformed strings cannot
         // corrupt the Dock plist fragment.
         try DockService.runProcess(
-            executable: "/usr/bin/defaults",
-            arguments: ["write", "com.apple.dock", plistKey, "-array-add", tileData],
-            failurePrefix: "Failed to add item to Dock")
-
-        try DockService.runProcess(
-            executable: "/usr/bin/killall",
-            arguments: ["Dock"],
-            failurePrefix: "Failed to restart Dock after adding item")
+            DockService.dockDefaultsWriteCommand(forPath: sanitizedPath, isFolder: isFolder))
+        try DockService.runProcess(DockService.restartDockCommand)
     }
 
     /// Reject paths that are not absolute filesystem paths (defense in depth for callers).
@@ -67,7 +65,7 @@ extension DockService {
 
     /// Build the Dock tile plist fragment with XML-escaped path text.
     static func dockTilePlistFragment(forPath path: String) -> String {
-        let escaped = xmlEscape(path)
+        let escaped = self.xmlEscape(path)
         return """
         <dict>
             <key>tile-data</key>
@@ -93,14 +91,27 @@ extension DockService {
             .replacingOccurrences(of: "'", with: "&apos;")
     }
 
-    static func runProcess(
-        executable: String,
-        arguments: [String],
-        failurePrefix: String) throws
+    static func dockDefaultsWriteCommand(
+        forPath path: String,
+        isFolder: Bool,
+        domain: String = "com.apple.dock") -> DockProcessCommand
     {
+        let plistKey = isFolder ? "persistent-others" : "persistent-apps"
+        return DockProcessCommand(
+            executable: "/usr/bin/defaults",
+            arguments: ["write", domain, plistKey, "-array-add", self.dockTilePlistFragment(forPath: path)],
+            failurePrefix: "Failed to add item to Dock")
+    }
+
+    static let restartDockCommand = DockProcessCommand(
+        executable: "/usr/bin/killall",
+        arguments: ["Dock"],
+        failurePrefix: "Failed to restart Dock after adding item")
+
+    static func runProcess(_ command: DockProcessCommand) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
+        process.executableURL = URL(fileURLWithPath: command.executable)
+        process.arguments = command.arguments
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -113,7 +124,7 @@ extension DockService {
         if process.terminationStatus != 0 {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorString = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw PeekabooError.operationError(message: "\(failurePrefix): \(errorString)")
+            throw PeekabooError.operationError(message: "\(command.failurePrefix): \(errorString)")
         }
     }
 

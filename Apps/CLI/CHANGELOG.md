@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.8.1] - Unreleased
 
+### Fixed
+- Adding a path to the Dock now passes the item directly to `defaults` instead of interpolating it through a shell, preventing shell metacharacters in filenames from being executed. Thanks @SebTardif for #224.
+
 ## [3.8.0] - 2026-07-09
 
 ### Changed
