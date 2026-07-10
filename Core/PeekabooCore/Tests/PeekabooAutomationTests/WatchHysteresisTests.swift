@@ -81,7 +81,9 @@ struct WatchHysteresisTests {
                 lastActivityTime: lastActivity,
                 quietMs: quietMs,
                 now: now)
-            if shouldExit { active = false }
+            if shouldExit {
+                active = false
+            }
         }
 
         // Idle period with small jitter: stay idle.

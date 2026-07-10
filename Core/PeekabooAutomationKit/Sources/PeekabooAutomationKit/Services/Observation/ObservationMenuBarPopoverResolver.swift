@@ -77,12 +77,18 @@ enum ObservationMenuBarPopoverResolver {
 
         let ownerName = windowInfo[kCGWindowOwnerName as String] as? String
         let title = windowInfo[kCGWindowName as String] as? String
-        if ownerName == "Window Server", title == "Menubar" { return nil }
-        if bounds.width < 40 || bounds.height < 40 { return nil }
+        if ownerName == "Window Server", title == "Menubar" {
+            return nil
+        }
+        if bounds.width < 40 || bounds.height < 40 {
+            return nil
+        }
 
         let screen = Self.screenContaining(bounds: bounds, screens: screens)
         let menuBarHeight = Self.menuBarHeight(for: screen)
-        if layer == 24 || layer == 25, bounds.height <= menuBarHeight + 4 { return nil }
+        if layer == 24 || layer == 25, bounds.height <= menuBarHeight + 4 {
+            return nil
+        }
 
         if let screen {
             let maxHeight = screen.frame.height * 0.8

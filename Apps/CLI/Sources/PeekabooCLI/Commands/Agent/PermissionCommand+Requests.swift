@@ -44,7 +44,9 @@ extension PermissionCommand {
         @MainActor
         mutating func run(using runtime: CommandRuntime) async throws {
             self.prepare(using: runtime)
-            if await self.renderIfAlreadyGranted() { return }
+            if await self.renderIfAlreadyGranted() {
+                return
+            }
             let result = await PermissionHelpers.performInteractivePermissionRequest(using: runtime) {
                 await self.requestScreenRecordingPermission()
             }
@@ -162,7 +164,9 @@ extension PermissionCommand {
         @MainActor
         mutating func run(using runtime: CommandRuntime) async throws {
             self.prepare(using: runtime)
-            if await self.renderIfAlreadyGranted() { return }
+            if await self.renderIfAlreadyGranted() {
+                return
+            }
             let granted = await PermissionHelpers.performInteractivePermissionRequest(using: runtime) {
                 self.promptAccessibilityDialog()
             }

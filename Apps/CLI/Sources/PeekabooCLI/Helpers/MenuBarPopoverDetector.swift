@@ -37,7 +37,9 @@ enum MenuBarPopoverDetector {
         for windowInfo in windowList {
             guard let bounds = windowBounds(from: windowInfo) else { continue }
             let windowId = windowInfo[kCGWindowNumber as String] as? Int ?? 0
-            if windowId == 0 { continue }
+            if windowId == 0 {
+                continue
+            }
 
             let ownerPIDValue: pid_t = {
                 if let number = windowInfo[kCGWindowOwnerPID as String] as? NSNumber {
@@ -48,28 +50,42 @@ enum MenuBarPopoverDetector {
                 }
                 return -1
             }()
-            if let ownerPID, ownerPIDValue != ownerPID { continue }
+            if let ownerPID, ownerPIDValue != ownerPID {
+                continue
+            }
 
             let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
             let isOnScreen = windowInfo[kCGWindowIsOnscreen as String] as? Bool ?? true
             let alpha = windowInfo[kCGWindowAlpha as String] as? CGFloat ?? 1.0
-            if !isOnScreen || alpha < 0.05 { continue }
+            if !isOnScreen || alpha < 0.05 {
+                continue
+            }
 
             let ownerName = windowInfo[kCGWindowOwnerName as String] as? String ?? "Unknown"
             let title = windowInfo[kCGWindowName as String] as? String ?? ""
-            if ownerName == "Window Server", title == "Menubar" { continue }
+            if ownerName == "Window Server", title == "Menubar" {
+                continue
+            }
 
-            if bounds.width < 40 || bounds.height < 40 { continue }
+            if bounds.width < 40 || bounds.height < 40 {
+                continue
+            }
 
             let screen = self.screenContainingWindow(bounds: bounds, screens: screens)
             let menuBarHeight = menuBarHeight(for: screen)
-            if layer == 24 || layer == 25, bounds.height <= menuBarHeight + 4 { continue }
+            if layer == 24 || layer == 25, bounds.height <= menuBarHeight + 4 {
+                continue
+            }
 
             if let screen {
                 let maxHeight = screen.frame.height * 0.8
-                if bounds.height > maxHeight { continue }
+                if bounds.height > maxHeight {
+                    continue
+                }
 
-                if !self.isNearMenuBar(bounds: bounds, screen: screen, menuBarHeight: menuBarHeight) { continue }
+                if !self.isNearMenuBar(bounds: bounds, screen: screen, menuBarHeight: menuBarHeight) {
+                    continue
+                }
             }
 
             candidates.append(

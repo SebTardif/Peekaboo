@@ -132,8 +132,12 @@ enum LabelPlacementGeometry {
             positions.sort { a, b in
                 let aIsVertical = a.type == .externalAbove || a.type == .externalBelow
                 let bIsVertical = b.type == .externalAbove || b.type == .externalBelow
-                if aIsVertical, !bIsVertical { return true }
-                if !aIsVertical, bIsVertical { return false }
+                if aIsVertical, !bIsVertical {
+                    return true
+                }
+                if !aIsVertical, bIsVertical {
+                    return false
+                }
                 return a.index < b.index
             }
         }

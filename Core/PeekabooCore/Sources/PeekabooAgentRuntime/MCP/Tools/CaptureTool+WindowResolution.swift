@@ -85,7 +85,9 @@ enum CaptureToolWindowResolver {
     }
 
     private static func hasExplicitApplication(app: String?, pid: Int?) -> Bool {
-        if pid != nil { return true }
+        if pid != nil {
+            return true
+        }
         return !(app?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 }

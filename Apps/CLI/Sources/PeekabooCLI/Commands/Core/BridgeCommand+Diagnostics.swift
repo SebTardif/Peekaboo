@@ -187,7 +187,9 @@ struct BridgeDiagnostics {
         runtimeCandidateSocketPaths runtimePaths: [String],
         hasExplicitSocket: Bool
     ) -> [String] {
-        if hasExplicitSocket { return runtimePaths }
+        if hasExplicitSocket {
+            return runtimePaths
+        }
         let additionalPaths = [
             PeekabooBridgeConstants.peekabooSocketPath,
             PeekabooBridgeConstants.claudeSocketPath,

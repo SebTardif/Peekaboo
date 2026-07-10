@@ -72,9 +72,15 @@ extension ConfigCommand {
                 print("[ok] Configuration is valid.")
                 print()
                 print("Detected sections:")
-                if config.aiProviders != nil { print("  ✓ AI Providers") }
-                if config.defaults != nil { print("  ✓ Defaults") }
-                if config.logging != nil { print("  ✓ Logging") }
+                if config.aiProviders != nil {
+                    print("  ✓ AI Providers")
+                }
+                if config.defaults != nil {
+                    print("  ✓ Defaults")
+                }
+                if config.logging != nil {
+                    print("  ✓ Logging")
+                }
             }
         }
     }

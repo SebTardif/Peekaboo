@@ -31,7 +31,11 @@ extension PeekabooAgentService {
     {
         guard case let .array(requiredValues) = schemaDict["required"] else { return [] }
         let declaredRequired = requiredValues.compactMap { value in
-            if case let .string(str) = value { str } else { nil }
+            if case let .string(str) = value {
+                str
+            } else {
+                nil
+            }
         }
         return declaredRequired.filter { properties[$0] != nil }
     }
@@ -72,7 +76,11 @@ extension PeekabooAgentService {
     private func enumValues(from value: Value?) -> [String]? {
         guard case let .array(enumArray) = value else { return nil }
         let values = enumArray.compactMap { element -> String? in
-            if case let .string(str) = element { str } else { nil }
+            if case let .string(str) = element {
+                str
+            } else {
+                nil
+            }
         }
         return values.isEmpty ? nil : values
     }

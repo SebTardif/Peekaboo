@@ -54,8 +54,12 @@ func cgsMenuBarWindowIDs(onScreen: Bool = false, activeSpace: Bool = false) -> [
 
     let cid = mainConn()
     var opts: CGSWindowListOption = .menuBarItems
-    if onScreen { opts.insert(.onScreen) }
-    if activeSpace { opts.insert(.activeSpace) }
+    if onScreen {
+        opts.insert(.onScreen)
+    }
+    if activeSpace {
+        opts.insert(.activeSpace)
+    }
 
     guard let raw = copyWin(cid, 0, opts.rawValue) as? [UInt32] else {
         return []
@@ -99,7 +103,9 @@ func cgsProcessMenuBarWindowIDs(onScreenOnly: Bool = true) -> [CGWindowID] {
 
     var windowCount: Int32 = 0
     _ = getCount(mainConn(), 0, &windowCount)
-    if windowCount <= 0 { return [] }
+    if windowCount <= 0 {
+        return []
+    }
 
     var list = [CGWindowID](repeating: 0, count: Int(windowCount))
     var realCount: Int32 = 0

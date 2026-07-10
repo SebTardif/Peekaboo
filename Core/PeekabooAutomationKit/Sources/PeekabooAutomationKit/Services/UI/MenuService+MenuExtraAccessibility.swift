@@ -23,7 +23,9 @@ extension MenuService {
         }
 
         func collectElements(from element: Element, depth: Int = 0, limit: Int = 6) -> [Element] {
-            if depth > limit { return [] }
+            if depth > limit {
+                return []
+            }
             var results: [Element] = []
             element.setMessagingTimeout(timeout)
             if let children = element.children(strict: true) {
@@ -246,7 +248,9 @@ extension MenuService {
         ]
 
         func collectElements(from element: Element, depth: Int = 0, limit: Int = 4) -> [Element] {
-            if depth > limit { return [] }
+            if depth > limit {
+                return []
+            }
             var list: [Element] = []
             element.setMessagingTimeout(timeout)
             if let children = element.children(strict: true) {
@@ -267,7 +271,9 @@ extension MenuService {
                 let role = extra.role() ?? ""
                 let subrole = extra.subrole() ?? ""
                 let isStatusLike = role == "AXStatusItem" || subrole == "AXStatusItem" || subrole == "AXMenuExtra"
-                if !isStatusLike { continue }
+                if !isStatusLike {
+                    continue
+                }
 
                 let baseTitle = extra.title() ?? extra.help() ?? extra.descriptionText() ?? ""
                 let identifier = extra.identifier()
@@ -290,7 +296,9 @@ extension MenuService {
 
                 let position = extra.position() ?? .zero
                 // Restrict to top-of-screen positions to avoid stray elements.
-                if !self.isLikelyMenuBarAXPosition(position) { continue }
+                if !self.isLikelyMenuBarAXPosition(position) {
+                    continue
+                }
 
                 // Avoid duplicating children of a status item: require that this element itself is status-like.
                 let childrenRoles = (extra.children(strict: true) ?? []).compactMap { $0.role() }
@@ -336,7 +344,9 @@ extension MenuService {
             let role = hit.role() ?? ""
             let subrole = hit.subrole() ?? ""
             let isStatusLike = role == "AXStatusItem" || subrole == "AXStatusItem" || subrole == "AXMenuExtra"
-            if !isStatusLike { return extra }
+            if !isStatusLike {
+                return extra
+            }
 
             let hitTitle = sanitizedMenuText(hit.identifier())
                 ?? sanitizedMenuText(hit.help())

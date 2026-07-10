@@ -18,15 +18,21 @@ enum CaptureToolArgumentResolver {
         hasWindowTarget: Bool) throws -> CaptureMode
     {
         if let normalized = self.normalized(rawValue) {
-            if normalized == "region" { return .area }
+            if normalized == "region" {
+                return .area
+            }
             guard let mode = CaptureMode(rawValue: normalized) else {
                 throw PeekabooError.invalidInput(
                     "Unsupported capture mode '\(rawValue ?? "")'. Use screen, window, frontmost, or area.")
             }
             return mode
         }
-        if hasRegion { return .area }
-        if hasWindowTarget { return .window }
+        if hasRegion {
+            return .area
+        }
+        if hasWindowTarget {
+            return .window
+        }
         return .frontmost
     }
 

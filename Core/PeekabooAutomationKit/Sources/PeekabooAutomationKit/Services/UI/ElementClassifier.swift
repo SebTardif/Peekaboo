@@ -114,14 +114,30 @@ import PeekabooFoundation
         var attributes: [String: String] = [:]
 
         attributes["role"] = input.role
-        if let title = input.title { attributes["title"] = title }
-        if let description = input.description { attributes["description"] = description }
-        if let help = input.help { attributes["help"] = help }
-        if let roleDescription = input.roleDescription { attributes["roleDescription"] = roleDescription }
-        if let identifier = input.identifier { attributes["identifier"] = identifier }
-        if input.isActionable { attributes["isActionable"] = "true" }
-        if let shortcut = input.keyboardShortcut { attributes["keyboardShortcut"] = shortcut }
-        if let placeholder = input.placeholder { attributes["placeholder"] = placeholder }
+        if let title = input.title {
+            attributes["title"] = title
+        }
+        if let description = input.description {
+            attributes["description"] = description
+        }
+        if let help = input.help {
+            attributes["help"] = help
+        }
+        if let roleDescription = input.roleDescription {
+            attributes["roleDescription"] = roleDescription
+        }
+        if let identifier = input.identifier {
+            attributes["identifier"] = identifier
+        }
+        if input.isActionable {
+            attributes["isActionable"] = "true"
+        }
+        if let shortcut = input.keyboardShortcut {
+            attributes["keyboardShortcut"] = shortcut
+        }
+        if let placeholder = input.placeholder {
+            attributes["placeholder"] = placeholder
+        }
 
         return attributes
     }

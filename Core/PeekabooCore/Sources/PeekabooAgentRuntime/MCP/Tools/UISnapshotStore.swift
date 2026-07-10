@@ -1,17 +1,23 @@
 import Foundation
+import os
 import PeekabooAutomation
 import PeekabooAutomationKit
 
 actor UISnapshot {
+    private struct TargetCache: Sendable {
+        var applicationName: String?
+        var windowTitle: String?
+        var applicationProcessId: Int32?
+    }
+
     let id: String
     private(set) var screenshotPath: String?
     private(set) var screenshotMetadata: CaptureMetadata?
     private(set) var uiElements: [UIElement] = []
     private(set) var createdAt: Date
     private(set) var lastAccessedAt: Date
-    private(set) nonisolated(unsafe) var cachedApplicationName: String?
-    private(set) nonisolated(unsafe) var cachedWindowTitle: String?
-    private(set) nonisolated(unsafe) var cachedApplicationProcessId: Int32?
+    /// Cache readable from any isolation domain without `nonisolated(unsafe)` stored properties.
+    private let targetCache = OSAllocatedUnfairLock(initialState: TargetCache())
 
     init(id: String = UUID().uuidString, createdAt: Date = Date()) {
         self.id = id
@@ -22,9 +28,11 @@ actor UISnapshot {
     func setScreenshot(path: String, metadata: CaptureMetadata) {
         self.screenshotPath = path
         self.screenshotMetadata = metadata
-        self.cachedApplicationName = metadata.applicationInfo?.name
-        self.cachedWindowTitle = metadata.windowInfo?.title
-        self.cachedApplicationProcessId = metadata.applicationInfo.map { Int32($0.processIdentifier) }
+        self.targetCache.withLock {
+            $0.applicationName = metadata.applicationInfo?.name
+            $0.windowTitle = metadata.windowInfo?.title
+            $0.applicationProcessId = metadata.applicationInfo.map { Int32($0.processIdentifier) }
+        }
         self.lastAccessedAt = Date()
     }
 
@@ -34,9 +42,11 @@ actor UISnapshot {
     }
 
     func setTargetMetadata(from context: WindowContext?) {
-        self.cachedApplicationName = context?.applicationName
-        self.cachedWindowTitle = context?.windowTitle
-        self.cachedApplicationProcessId = context?.applicationProcessId
+        self.targetCache.withLock {
+            $0.applicationName = context?.applicationName
+            $0.windowTitle = context?.windowTitle
+            $0.applicationProcessId = context?.applicationProcessId
+        }
         self.lastAccessedAt = Date()
     }
 
@@ -45,15 +55,15 @@ actor UISnapshot {
     }
 
     nonisolated var applicationName: String? {
-        self.cachedApplicationName
+        self.targetCache.withLock { $0.applicationName }
     }
 
     nonisolated var windowTitle: String? {
-        self.cachedWindowTitle
+        self.targetCache.withLock { $0.windowTitle }
     }
 
     nonisolated var applicationProcessId: Int32? {
-        self.cachedApplicationProcessId
+        self.targetCache.withLock { $0.applicationProcessId }
     }
 }
 

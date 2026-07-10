@@ -54,7 +54,9 @@ extension CaptureLiveCommand {
     func resolveMode() throws -> LiveCaptureMode {
         if let explicit = self.mode {
             let normalized = explicit.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if normalized == "region" { return .area }
+            if normalized == "region" {
+                return .area
+            }
             guard let mode = LiveCaptureMode(rawValue: normalized) else {
                 throw ValidationError(
                     "Unsupported capture live mode '\(explicit)'. Use screen, window, frontmost, or area."
@@ -62,8 +64,12 @@ extension CaptureLiveCommand {
             }
             return mode
         }
-        if self.region != nil { return .area }
-        if self.app != nil || self.pid != nil || self.windowTitle != nil || self.windowIndex != nil { return .window }
+        if self.region != nil {
+            return .area
+        }
+        if self.app != nil || self.pid != nil || self.windowTitle != nil || self.windowIndex != nil {
+            return .window
+        }
         return .frontmost
     }
 

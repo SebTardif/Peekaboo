@@ -96,11 +96,21 @@ extension ProcessService {
     private func typedHotkeyParameters(from dict: [String: String]) -> ProcessCommandParameters? {
         guard let key = dict["key"] else { return nil }
         var modifiers: [String] = []
-        if dict["cmd"] == "true" || dict["command"] == "true" { modifiers.append("command") }
-        if dict["shift"] == "true" { modifiers.append("shift") }
-        if dict["control"] == "true" || dict["ctrl"] == "true" { modifiers.append("control") }
-        if dict["option"] == "true" || dict["alt"] == "true" { modifiers.append("option") }
-        if dict["fn"] == "true" || dict["function"] == "true" { modifiers.append("function") }
+        if dict["cmd"] == "true" || dict["command"] == "true" {
+            modifiers.append("command")
+        }
+        if dict["shift"] == "true" {
+            modifiers.append("shift")
+        }
+        if dict["control"] == "true" || dict["ctrl"] == "true" {
+            modifiers.append("control")
+        }
+        if dict["option"] == "true" || dict["alt"] == "true" {
+            modifiers.append("option")
+        }
+        if dict["fn"] == "true" || dict["function"] == "true" {
+            modifiers.append("function")
+        }
         if let modifierList = dict["modifiers"] {
             modifiers.append(contentsOf: self.parseModifierList(modifierList))
         }
@@ -163,11 +173,21 @@ extension ProcessService {
         }
 
         var modifiers: [String] = []
-        if dict["cmd"] == "true" || dict["command"] == "true" { modifiers.append("command") }
-        if dict["shift"] == "true" { modifiers.append("shift") }
-        if dict["control"] == "true" || dict["ctrl"] == "true" { modifiers.append("control") }
-        if dict["option"] == "true" || dict["alt"] == "true" { modifiers.append("option") }
-        if dict["fn"] == "true" || dict["function"] == "true" { modifiers.append("function") }
+        if dict["cmd"] == "true" || dict["command"] == "true" {
+            modifiers.append("command")
+        }
+        if dict["shift"] == "true" {
+            modifiers.append("shift")
+        }
+        if dict["control"] == "true" || dict["ctrl"] == "true" {
+            modifiers.append("control")
+        }
+        if dict["option"] == "true" || dict["alt"] == "true" {
+            modifiers.append("option")
+        }
+        if dict["fn"] == "true" || dict["function"] == "true" {
+            modifiers.append("function")
+        }
         if let modifierList = dict["modifiers"] {
             modifiers.append(contentsOf: self.parseModifierList(modifierList))
         }

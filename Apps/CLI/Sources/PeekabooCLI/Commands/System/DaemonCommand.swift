@@ -138,7 +138,9 @@ struct DaemonControlClient {
     }
 
     private static func isProcessAlive(_ pid: pid_t) -> Bool {
-        if kill(pid, 0) == 0 { return true }
+        if kill(pid, 0) == 0 {
+            return true
+        }
         return errno != ESRCH
     }
 

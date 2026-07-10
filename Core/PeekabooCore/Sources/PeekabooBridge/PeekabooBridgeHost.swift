@@ -116,7 +116,7 @@ public final actor PeekabooBridgeHost {
         socketPath: String = PeekabooBridgeConstants.peekabooSocketPath,
         server: PeekabooBridgeServer,
         maxMessageBytes: Int = 64 * 1024 * 1024,
-        allowedTeamIDs: Set<String> = ["Y5PE65HELJ"],
+        allowedTeamIDs: Set<String> = PeekabooBridgeConstants.trustedReleaseTeamIDs,
         requestTimeoutSec: TimeInterval = PeekabooBridgeConstants.defaultRequestTimeoutSeconds)
     {
         self.socketPath = socketPath
@@ -407,7 +407,9 @@ public final actor PeekabooBridgeHost {
     {
         guard let status = self.socketStatus(path: path) else {
             let code = errno
-            if code == ENOENT { return nil }
+            if code == ENOENT {
+                return nil
+            }
             throw PeekabooBridgeHostError.systemCallFailed(
                 operation: "lstat",
                 path: path,
@@ -570,7 +572,9 @@ public final actor PeekabooBridgeHost {
     {
         guard self.socketStatus(path: path) != nil else {
             let code = errno
-            if code == ENOENT { return true }
+            if code == ENOENT {
+                return true
+            }
             throw PeekabooBridgeHostError.systemCallFailed(
                 operation: "lstat",
                 path: path,
@@ -595,7 +599,9 @@ public final actor PeekabooBridgeHost {
             UInt32(RENAME_SWAP))
         guard swapResult == 0 else {
             let code = errno
-            if code == ENOENT { return true }
+            if code == ENOENT {
+                return true
+            }
             throw PeekabooBridgeHostError.systemCallFailed(
                 operation: "renameatx_np",
                 path: path,
@@ -758,7 +764,9 @@ public final actor PeekabooBridgeHost {
         var sawIncompleteRecord = false
         let records = contents.split(separator: "\n", omittingEmptySubsequences: false)
         for (index, record) in records.enumerated() {
-            if record.isEmpty { continue }
+            if record.isEmpty {
+                continue
+            }
             if let identity = self.parseLeaseIdentity(record) {
                 lastIdentity = identity
                 continue
@@ -1086,8 +1094,12 @@ public final actor PeekabooBridgeHost {
             var len = socklen_t(MemoryLayout<sockaddr>.size)
             let client = accept(listenFD, &addr, &len)
             if client < 0 {
-                if errno == EINTR { continue }
-                if errno == EBADF || errno == EINVAL { return }
+                if errno == EINTR {
+                    continue
+                }
+                if errno == EBADF || errno == EINVAL {
+                    return
+                }
                 self.logger.error("accept failed: \(errno, privacy: .public)")
                 try? await Task.sleep(nanoseconds: 50_000_000)
                 continue

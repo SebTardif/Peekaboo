@@ -53,17 +53,35 @@ extension TypeService {
             guard candidates.contains(where: { $0.contains(queryLower) }) else { continue }
 
             var score = 0
-            if identifier == queryLower { score += 400 }
-            if label == queryLower { score += 300 }
-            if value == queryLower { score += 200 }
+            if identifier == queryLower {
+                score += 400
+            }
+            if label == queryLower {
+                score += 300
+            }
+            if value == queryLower {
+                score += 200
+            }
 
-            if identifier?.contains(queryLower) == true { score += 200 }
-            if label?.contains(queryLower) == true { score += 150 }
-            if value?.contains(queryLower) == true { score += 100 }
-            if description?.contains(queryLower) == true { score += 60 }
-            if placeholder?.contains(queryLower) == true { score += 40 }
+            if identifier?.contains(queryLower) == true {
+                score += 200
+            }
+            if label?.contains(queryLower) == true {
+                score += 150
+            }
+            if value?.contains(queryLower) == true {
+                score += 100
+            }
+            if description?.contains(queryLower) == true {
+                score += 60
+            }
+            if placeholder?.contains(queryLower) == true {
+                score += 40
+            }
 
-            if element.type == .textField { score += 25 }
+            if element.type == .textField {
+                score += 25
+            }
 
             if score > bestScore {
                 bestScore = score

@@ -145,7 +145,9 @@ struct MoveWindowSubcommand: ApplicationResolvable, ErrorHandlingCommand, Output
                 outputSuccessCodable(data: data, logger: self.logger)
             } else {
                 var message = "✓ Moved window '\(windowInfo.title)' to Space \(spaceNum)"
-                if self.follow { message += " (and switched to it)" }
+                if self.follow {
+                    message += " (and switched to it)"
+                }
                 print(message)
             }
         } catch {

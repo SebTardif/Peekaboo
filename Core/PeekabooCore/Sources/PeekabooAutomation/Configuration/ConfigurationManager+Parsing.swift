@@ -156,15 +156,23 @@ private struct JSONCommentStripper {
             let char = self.characters[self.index]
             let next = self.peek()
 
-            if self.handleEscape(char) { continue }
-            if self.handleQuote(char) { continue }
+            if self.handleEscape(char) {
+                continue
+            }
+            if self.handleQuote(char) {
+                continue
+            }
             if self.inString {
                 self.append(char)
                 self.advance()
                 continue
             }
-            if self.handleCommentStart(char, next) { continue }
-            if self.handleCommentEnd(char, next) { continue }
+            if self.handleCommentStart(char, next) {
+                continue
+            }
+            if self.handleCommentEnd(char, next) {
+                continue
+            }
             self.appendIfNeeded(char)
             self.advance()
         }

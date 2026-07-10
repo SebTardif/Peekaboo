@@ -50,7 +50,9 @@ final class Permissions {
     }
 
     func setIncludeOptionalPermissions(_ enabled: Bool) {
-        if self.includeOptionalPermissions == enabled { return }
+        if self.includeOptionalPermissions == enabled {
+            return
+        }
         self.includeOptionalPermissions = enabled
         self.lastOptionalCheck = nil
     }
@@ -140,7 +142,9 @@ final class Permissions {
     }
 
     private func check(force: Bool) {
-        if self.isChecking { return }
+        if self.isChecking {
+            return
+        }
 
         let now = Date()
         if !force, let lastCheck, now.timeIntervalSince(lastCheck) < self.minimumCheckInterval {

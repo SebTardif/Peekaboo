@@ -134,10 +134,14 @@ final class AgentChatEventDelegate: AgentEventDelegate {
                 let rendered = self.renderValue(newValue)
                 changes.append("\(key): \(rendered)")
             }
-            if changes.count >= 3 { break }
+            if changes.count >= 3 {
+                break
+            }
         }
 
-        if changes.isEmpty { return nil }
+        if changes.isEmpty {
+            return nil
+        }
         return changes.joined(separator: ", ")
     }
 

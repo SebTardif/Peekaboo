@@ -269,8 +269,12 @@ extension MenuExtraInfo {
 
     private static func titleQuality(for title: String?) -> Int {
         guard let title else { return 0 }
-        if isPlaceholderMenuTitle(title) { return 0 }
-        if title.count <= 2 { return 1 }
+        if isPlaceholderMenuTitle(title) {
+            return 0
+        }
+        if title.count <= 2 {
+            return 1
+        }
         if title.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
             return 2
         }

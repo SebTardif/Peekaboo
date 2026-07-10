@@ -56,8 +56,12 @@ extension WatchCaptureSession {
         while true {
             let now = Date()
             let elapsedNs = Self.elapsedNanoseconds(since: timing.start, now: now)
-            if self.shouldEndSession(elapsedNs: elapsedNs, durationNs: timing.durationNs) { break }
-            if self.hitFrameCap() || self.hitSizeCap() { break }
+            if self.shouldEndSession(elapsedNs: elapsedNs, durationNs: timing.durationNs) {
+                break
+            }
+            if self.hitFrameCap() || self.hitSizeCap() {
+                break
+            }
 
             let frameStart = Date()
             let cadence = state.activeMode ? timing.cadenceActiveNs : timing.cadenceIdleNs
@@ -269,8 +273,12 @@ extension WatchCaptureSession {
 
     func sleep(ns: UInt64, since start: Date) async throws {
         // Video input already has intrinsic cadence; do not add wall-clock throttling.
-        if self.frameSource != nil { return }
-        if self.hasStopRequest() { return }
+        if self.frameSource != nil {
+            return
+        }
+        if self.hasStopRequest() {
+            return
+        }
         let elapsed = UInt64(Date().timeIntervalSince(start) * 1_000_000_000)
         guard ns > elapsed else { return }
 

@@ -27,7 +27,9 @@ enum CGSMenuProbe {
         ]
         var chosen: UnsafeMutableRawPointer?
         for h in handles {
-            if let ptr = dlopen(h, RTLD_NOW) { chosen = ptr; break }
+            if let ptr = dlopen(h, RTLD_NOW) {
+                chosen = ptr; break
+            }
         }
         guard let handle = chosen else { print("could not load CGS symbols"); return }
 
