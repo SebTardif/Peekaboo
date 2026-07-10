@@ -6,6 +6,7 @@
 - The accessibility element boxes drawn during `peekaboo see` are off by default now; they were visual clutter on every capture. Re-enable them in Peekaboo.app under Settings › Visualizer › Element Detection Boxes, by setting `visualizer.elementDetectionEnabled` in `~/.peekaboo/config.json`, or per-run with `PEEKABOO_VISUAL_ELEMENT_BOXES=true`. The app toggle and the config file now stay in sync, and a running MCP server picks up the change without a restart.
 
 ### Fixed
+- A transient lock or read failure on the snapshot invalidation watermark no longer hides every cached snapshot. When the latest snapshot really was invalidated by an earlier command, element and query targeting now says so and tells you to re-run `peekaboo see`, instead of the meaningless "Snapshot not found or expired: No snapshot found".
 - `peekaboo window resize`, `move`, and `set-bounds` now report the window's real frame and warn when the app clamps the request (for example a minimum window size); a resize that has no effect at all fails instead of reporting success. `window maximize` reports the settled frame rather than a mid-animation one, and is now idempotent instead of toggling a maximized window back down.
 - `peekaboo list windows` no longer emits the same window twice when an app has two windows with the same title, which also shifted every later `--window-index` and could target the wrong window.
 - The Visualizer's annotated-screenshot setting now persists across launches instead of silently resetting to enabled, and it finally has a toggle in Settings.

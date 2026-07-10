@@ -109,7 +109,7 @@ extension ErrorHandlingCommand {
             .ELEMENT_NOT_FOUND
         case .sessionNotFound:
             .SESSION_NOT_FOUND
-        case .snapshotNotFound:
+        case .snapshotNotFound, .snapshotNotAvailable:
             .SNAPSHOT_NOT_FOUND
         case .snapshotStale:
             .SNAPSHOT_STALE

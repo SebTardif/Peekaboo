@@ -24,6 +24,9 @@ public nonisolated enum PeekabooError: LocalizedError, StandardizedError, Peekab
     // Session errors
     case sessionNotFound(String)
     case snapshotNotFound(String)
+    /// No snapshot could be resolved at all (nothing captured, or the cache is empty).
+    /// Unlike `snapshotNotFound`, the associated value is a full user-facing message, not an ID.
+    case snapshotNotAvailable(String)
     case snapshotStale(String)
 
     // Operation errors
@@ -93,6 +96,8 @@ public nonisolated enum PeekabooError: LocalizedError, StandardizedError, Peekab
             return "Session not found or expired: \(id)"
         case let .snapshotNotFound(id):
             return "Snapshot not found or expired: \(id)"
+        case let .snapshotNotAvailable(message):
+            return message
         case let .snapshotStale(reason):
             return "Snapshot is stale: \(reason). Re-run peekaboo see to refresh."
         case .captureTimeout:
@@ -174,6 +179,8 @@ public nonisolated enum PeekabooError: LocalizedError, StandardizedError, Peekab
             .sessionNotFound
         case .snapshotNotFound:
             .snapshotNotFound
+        case .snapshotNotAvailable:
+            .snapshotNotFound
         case .snapshotStale:
             .snapshotNotFound
         case .captureTimeout:
@@ -245,6 +252,8 @@ public nonisolated enum PeekabooError: LocalizedError, StandardizedError, Peekab
             return ["session_id": id]
         case let .snapshotNotFound(id):
             return ["snapshot_id": id]
+        case let .snapshotNotAvailable(message):
+            return ["message": message]
         case let .captureFailed(reason):
             return ["reason": reason]
         case let .clickFailed(reason):
@@ -311,7 +320,7 @@ public nonisolated enum PeekabooError: LocalizedError, StandardizedError, Peekab
              .elementNotFound, .ambiguousElement, .menuNotFound, .menuItemNotFound,
              .clickFailed, .typeFailed, .invalidCoordinates:
             .automation
-        case .sessionNotFound, .snapshotNotFound, .snapshotStale:
+        case .sessionNotFound, .snapshotNotFound, .snapshotNotAvailable, .snapshotStale:
             .session
         case .captureTimeout, .captureFailed, .timeout:
             .automation
@@ -348,6 +357,8 @@ public nonisolated enum PeekabooError: LocalizedError, StandardizedError, Peekab
             "Grant event-synthesizing access in System Settings → Privacy & Security → Accessibility"
         case let .ambiguousAppIdentifier(_, suggestions):
             "Try one of: \(suggestions.joined(separator: ", "))"
+        case .snapshotNotAvailable:
+            "Run 'peekaboo see' to capture a fresh UI snapshot"
         case .noAIProviderAvailable:
             "Configure an AI provider and API key in settings"
         case .aiProviderError:
