@@ -214,7 +214,12 @@ extension VisualizerCoordinator {
     }
 
     func displayElementOverlays(elements: [String: CGRect], duration: TimeInterval) async -> Bool {
-        // Check if enabled
+        // The default-off decision for element boxes lives in the *sender*
+        // (SeeTool + VisualizationClient, gated by `PEEKABOO_VISUAL_ELEMENT_BOXES`
+        // / `visualizer.elementDetectionEnabled`), mirroring how
+        // `PEEKABOO_VISUAL_SCREENSHOTS` works: the receiver renders whatever
+        // element-detection event it is handed once the top-level visualizer
+        // switch is on. A second gate here would swallow the env/config opt-in.
         guard self.settings?.visualizerEnabled ?? true else {
             return false
         }

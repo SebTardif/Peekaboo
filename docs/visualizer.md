@@ -69,6 +69,7 @@ MCP Server → peekaboo CLI → VisualizerEventStore → Distributed Notificatio
 
 - `PEEKABOO_VISUAL_FEEDBACK=false` – disable the client entirely (no files, no notifications).
 - `PEEKABOO_VISUAL_SCREENSHOTS=false` – skip screenshot flash events but allow the rest.
+- `PEEKABOO_VISUAL_ELEMENT_BOXES=true|false` – opt in to (or force off) the per-element bounding boxes during `see`; they default to off and the env var beats `visualizer.elementDetectionEnabled` in `config.json`.
 - `PEEKABOO_VISUALIZER_MASK_TYPED_TEXT=true` – always mask typed characters as bullets. By default the typing HUD shows the text verbatim (that's the point of the caption); secure text fields are detected and masked automatically before the event is persisted.
 - `PEEKABOO_VISUALIZER_STDOUT=true|false` – force VisualizationClient logs to stderr regardless of bundle context.
 - `PEEKABOO_VISUALIZER_STORAGE=/path` – override the shared directory.
@@ -165,6 +166,7 @@ All animations share one design system (`VisualizerDesign.swift`): a single viol
 - **Effect**: A macOS-style Spaces indicator chip: one dot per desktop, the active dot hops to the destination, and a "Desktop N" label updates with a direction arrow
 
 ### Element Detection (See) 👁️
+- **Default**: OFF — a box per detected control clutters the screen. Opt in via the "Element Detection Boxes" toggle in Peekaboo.app settings, `"visualizer": {"elementDetectionEnabled": true}` in `~/.peekaboo/config.json`, or `PEEKABOO_VISUAL_ELEMENT_BOXES=true` (env wins over config). The gate is sender-side: `SeeTool`/`VisualizationClient` skip emitting the event unless one of those opts in (mirroring `PEEKABOO_VISUAL_SCREENSHOTS`); the receiver renders whatever it is handed once Visual Feedback is on. The app toggle writes the same config key — and a long-running CLI/MCP process re-reads `config.json` when its modification date changes — so one switch governs both processes without a restart.
 - **Effect**: Every detected element gets an accent outline sized exactly to the control, with its opaque ID in a small HUD tag above
 - **Coordinates**: Element rects in the payload are AppKit screen coordinates. Senders convert global Accessibility bounds through `VisualizerScreenGeometry`, flipping once against `NSScreen.screens[0]` (the primary display); logical point sizes are preserved, so Retina scale is never multiplied into overlay geometry
 - **Rendering**: One overlay window per screen holds every highlight (`ElementOverlaySheetView`); degenerate and screen-filling container rects are dropped and the count is capped at 120, preferring the smallest rects
@@ -230,6 +232,7 @@ Overlay invariants worth knowing when adding animations:
 ```bash
 PEEKABOO_VISUAL_FEEDBACK=false            # Disable all visual feedback
 PEEKABOO_VISUAL_SCREENSHOTS=false         # Disable just screenshot flash
+PEEKABOO_VISUAL_ELEMENT_BOXES=true        # Opt in to per-element bounding boxes during `see` (off by default)
 PEEKABOO_VISUALIZER_STDOUT=true           # Force VisualizationClient logs to stderr/stdout
 PEEKABOO_VISUALIZER_STORAGE=/tmp/events   # Override the shared events directory
 PEEKABOO_VISUALIZER_APP_GROUP=group.boo   # Resolve storage inside an App Group container

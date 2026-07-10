@@ -63,6 +63,11 @@ public final class ConfigurationManager: @unchecked Sendable {
     private var _configuration: Configuration?
     private var _credentials: [String: String] = [:]
 
+    /// Modification date of `config.json` when it was last read into `configuration`.
+    /// `reloadConfigurationIfChanged()` uses it to detect out-of-process edits (e.g. the
+    /// Mac app flipping a visualizer toggle) without re-parsing the file on every call.
+    private var configFileModificationDate: Date?
+
     /// Loaded configuration (lock-protected).
     var configuration: Configuration? {
         get { self.withStateLock { self._configuration } }
@@ -90,6 +95,7 @@ public final class ConfigurationManager: @unchecked Sendable {
     public func resetForTesting() {
         self.withStateLock {
             self.configuration = nil
+            self.configFileModificationDate = nil
             self.credentials = [:]
         }
     }
@@ -139,6 +145,7 @@ public final class ConfigurationManager: @unchecked Sendable {
             try? self.migrateIfNeeded()
             self.loadCredentials()
             self.configuration = self.loadConfigurationFromPath(Self.configPath)
+            self.configFileModificationDate = Self.modificationDate(ofFileAtPath: Self.configPath)
             return self.configuration
         }
     }
@@ -169,5 +176,25 @@ public final class ConfigurationManager: @unchecked Sendable {
         updatedConfig.aiProviders?.openaiApiKey = nil
         let data = try JSONCoding.encoder.encode(updatedConfig)
         try data.write(to: URL(fileURLWithPath: Self.configPath), options: .atomic)
+    }
+
+    /// Reload `config.json` only if it changed on disk since the last load.
+    ///
+    /// Long-running processes (e.g. an MCP server) cache the configuration at startup,
+    /// so a config value flipped in another process — like the Mac app writing
+    /// `visualizer.elementDetectionEnabled` — would otherwise be ignored until restart.
+    /// The steady-state cost is a single `stat`; the parse only runs when the file's
+    /// modification date actually changes, keeping this safe on hot paths like `see`.
+    public func reloadConfigurationIfChanged() {
+        self.withStateLock {
+            let currentDate = Self.modificationDate(ofFileAtPath: Self.configPath)
+            // Reload when the file appeared, disappeared, or was rewritten.
+            guard currentDate != self.configFileModificationDate else { return }
+            _ = self.loadConfiguration()
+        }
+    }
+
+    private static func modificationDate(ofFileAtPath path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
     }
 }

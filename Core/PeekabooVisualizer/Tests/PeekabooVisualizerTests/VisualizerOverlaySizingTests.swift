@@ -65,6 +65,33 @@ struct VisualizerOverlaySizingTests {
     }
 
     @Test
+    func `Element overlays render on the visualizer switch, not a per-feature gate`() async throws {
+        // Option (a): the sender (SeeTool / VisualizationClient) owns the default-off
+        // decision, so the renderer must draw whatever it is handed once the top-level
+        // visualizer switch is on — a second renderer gate would swallow the env/config opt-in.
+        let coordinator = VisualizerCoordinator()
+        defer { coordinator.overlayManager.removeAllWindows() }
+        let screen = try #require(NSScreen.screens.first)
+        let element = CGRect(
+            x: screen.frame.midX - 20,
+            y: screen.frame.midY - 10,
+            width: 40,
+            height: 20)
+
+        // No settings source connected: the visualizer switch defaults on, so it renders.
+        #expect(await coordinator.displayElementOverlays(elements: ["B1": element], duration: 60))
+        #expect(coordinator.overlayManager.activeReplaceKeys.contains(
+            VisualizerCoordinator.OverlaySlot.elementSheet(screenIndex: 0)))
+
+        // Visualizer switch off ⇒ nothing renders regardless of the sender decision.
+        let settings = StubVisualizerSettings()
+        settings.visualizerEnabled = false
+        coordinator.connectSettings(settings)
+        _ = await coordinator.displayElementOverlays(elements: [:], duration: 60)
+        #expect(await coordinator.displayElementOverlays(elements: ["B1": element], duration: 60) == false)
+    }
+
+    @Test
     func `Empty element refresh retires stale screen sheets`() async throws {
         let coordinator = VisualizerCoordinator()
         defer { coordinator.overlayManager.removeAllWindows() }
@@ -165,4 +192,28 @@ struct VisualizerOverlaySizingTests {
         #expect(short.height > 0)
         #expect(long.height == short.height)
     }
+}
+
+/// Host-settings stand-in with every animation on. Element-detection boxes are gated in
+/// the sender, not this protocol, so there is no `elementDetectionEnabled` member here.
+@MainActor
+private final class StubVisualizerSettings: VisualizerSettingsProviding {
+    var visualizerEnabled = true
+    var visualizerAnimationSpeed = 1.0
+    var visualizerEffectIntensity = 1.0
+
+    var screenshotFlashEnabled = true
+    var clickAnimationEnabled = true
+    var typeAnimationEnabled = true
+    var scrollAnimationEnabled = true
+    var mouseTrailEnabled = true
+    var swipePathEnabled = true
+    var hotkeyOverlayEnabled = true
+    var appLifecycleEnabled = true
+    var windowOperationEnabled = true
+    var menuNavigationEnabled = true
+    var dialogInteractionEnabled = true
+    var spaceTransitionEnabled = true
+    var annotatedScreenshotEnabled = true
+    var watchCaptureHUDEnabled = true
 }

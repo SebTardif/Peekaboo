@@ -2,12 +2,16 @@
 
 ## [3.8.1] - Unreleased
 
+### Changed
+- The accessibility element boxes drawn during `peekaboo see` are off by default now; they were visual clutter on every capture. Re-enable them in Peekaboo.app under Settings › Visualizer › Element Detection Boxes, by setting `visualizer.elementDetectionEnabled` in `~/.peekaboo/config.json`, or per-run with `PEEKABOO_VISUAL_ELEMENT_BOXES=true`. The app toggle and the config file now stay in sync, and a running MCP server picks up the change without a restart.
+
 ### Fixed
-- Concurrent credential and configuration updates now serialize the full load-mutate-persist transaction, preventing distinct updates from overwriting one another. Thanks @SebTardif for #227.
+- The Visualizer's annotated-screenshot setting now persists across launches instead of silently resetting to enabled, and it finally has a toggle in Settings.
 - The CLI no longer routes commands to a bridge host that cannot satisfy the permissions those commands need. A stale Peekaboo.app holding the bridge socket without Screen Recording or Accessibility is now skipped in favor of a permissioned daemon, instead of silently failing every capture and automation call. Screen Recording is only demanded for commands that actually capture, and hosts that do not report their permissions are still accepted.
 - Canceling an app relaunch wait now stops its running-state poll immediately instead of spinning through the remaining timeout budget. Thanks @SebTardif for #230.
 - Snapshot-backed MCP actions now synchronize cached application, window, and process metadata across concurrent observation updates and action reads, preventing data races. Thanks @SebTardif for #228.
 - Adding a path to the Dock now passes the item directly to `defaults` instead of interpolating it through a shell, preventing shell metacharacters in filenames from being executed. Thanks @SebTardif for #224.
+- Concurrent credential and configuration updates now serialize the full load-mutate-persist transaction, preventing distinct updates from overwriting one another. Thanks @SebTardif for #227.
 
 ## [3.8.0] - 2026-07-09
 
