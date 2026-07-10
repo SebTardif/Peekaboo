@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.8.1] - Unreleased
 
 ### Fixed
+- Canceling an app relaunch wait now stops its running-state poll immediately instead of spinning through the remaining timeout budget. Thanks @SebTardif for #230.
 - Snapshot-backed MCP actions now synchronize cached application, window, and process metadata across concurrent observation updates and action reads, preventing data races. Thanks @SebTardif for #228.
 - Adding a path to the Dock now passes the item directly to `defaults` instead of interpolating it through a shell, preventing shell metacharacters in filenames from being executed. Thanks @SebTardif for #224.
 
