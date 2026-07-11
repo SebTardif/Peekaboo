@@ -14,6 +14,7 @@
 - The accessibility element boxes drawn during `peekaboo see` are off by default now; they were visual clutter on every capture. Re-enable them in Peekaboo.app under Settings › Visualizer › Screen › Element boxes, by setting `visualizer.elementDetectionEnabled` in `~/.peekaboo/config.json`, or per-run with `PEEKABOO_VISUAL_ELEMENT_BOXES=true`. The app toggle and the config file now stay in sync, and a running MCP server picks up the change without a restart.
 
 ### Fixed
+- Click and type failures now emit `INTERACTION_FAILED` instead of `CAPTURE_FAILED` in structured CLI output. Thanks @SebTardif for #257.
 - The Mac app's status bar menu now follows the system light/dark mode. It previously inherited the menu bar's wallpaper-derived vibrant appearance, which could render a dark menu while the system was in light mode (and vice versa).
 - Resuming an agent session without an explicit model now preserves its credential-free provider-qualified model selection instead of silently switching to the current default and potentially sending saved context to a different provider; ambiguous legacy sessions fail closed and require an explicit override, automatic taskless piped resumes report failed turns with a nonzero exit, and chat headers show a credential-free saved-model label instead of claiming the current default.
 - Agent tool execution now treats provider terminal events and cancellation as hard boundaries: late or truncated tool calls cannot run, canceled or skipped calls emit failed completions, and final `done` / `need_info` reasons remain visible.

@@ -218,7 +218,6 @@ extension ErrorHandlingCommand {
     }
 }
 
-
 func peekabooAutomationErrorCode(for error: PeekabooError) -> ErrorCode? {
     switch error {
     case .captureFailed:
