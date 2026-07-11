@@ -119,6 +119,9 @@ struct MenuBarClickVerifier {
         while Date() < deadline {
             guard let frontmost = try? await self.services.applications.getFrontmostApplication() else {
                 try? await Task.sleep(nanoseconds: 120_000_000)
+                if Task.isCancelled {
+                    return nil
+                }
                 continue
             }
 
@@ -129,6 +132,9 @@ struct MenuBarClickVerifier {
                 bundleIdentifier: target.bundleIdentifier
             ) {
                 try? await Task.sleep(nanoseconds: 120_000_000)
+                if Task.isCancelled {
+                    return nil
+                }
                 continue
             }
 
@@ -144,6 +150,9 @@ struct MenuBarClickVerifier {
             }
 
             try? await Task.sleep(nanoseconds: 120_000_000)
+            if Task.isCancelled {
+                return nil
+            }
         }
 
         return nil
@@ -213,6 +222,9 @@ struct MenuBarClickVerifier {
                 return true
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
+            if Task.isCancelled {
+                return false
+            }
         }
         return false
     }
@@ -252,6 +264,9 @@ struct MenuBarClickVerifier {
                 }
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
+            if Task.isCancelled {
+                return nil
+            }
         }
         return nil
     }
@@ -312,6 +327,9 @@ struct MenuBarClickVerifier {
             let candidates = snapshot.candidates
             if candidates.isEmpty {
                 try? await Task.sleep(nanoseconds: 100_000_000)
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 continue
             }
 
@@ -331,6 +349,9 @@ struct MenuBarClickVerifier {
             }
 
             try? await Task.sleep(nanoseconds: 100_000_000)
+            if Task.isCancelled {
+                throw CancellationError()
+            }
         }
 
         return nil
