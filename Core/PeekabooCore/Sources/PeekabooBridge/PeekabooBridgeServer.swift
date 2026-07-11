@@ -174,7 +174,7 @@ public final class PeekabooBridgeServer {
             return envelope
         }
         if let error = error as? NotFoundError,
-           let envelope = bridgeErrorEnvelope(for: error.asPeekabooError, operation: operation)
+           let envelope = bridgeErrorEnvelope(for: error, operation: operation)
         {
             return envelope
         }
@@ -213,6 +213,27 @@ public final class PeekabooBridgeServer {
             code: .internalError,
             message: userMessage.isEmpty ? "Bridge operation failed" : userMessage,
             details: "\(error)")
+    }
+
+    private static func bridgeErrorEnvelope(
+        for error: NotFoundError,
+        operation: PeekabooBridgeOperation) -> PeekabooBridgeErrorEnvelope?
+    {
+        if error.code == .menuNotFound {
+            let itemContext = error.context["menuItem"]
+                ?? error.context["item"]
+                ?? error.context["submenu"]
+                ?? error.context["menuExtra"]
+            if itemContext != nil || error.context["availableItems"] != nil {
+                return .init(
+                    code: .notFound,
+                    message: error.userMessage,
+                    details: "\(error)",
+                    kind: .menuItemNotFound,
+                    context: itemContext)
+            }
+        }
+        return self.bridgeErrorEnvelope(for: error.asPeekabooError, operation: operation)
     }
 
     private static func bridgeErrorEnvelope(

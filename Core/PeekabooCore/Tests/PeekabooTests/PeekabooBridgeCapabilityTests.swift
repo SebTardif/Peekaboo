@@ -39,16 +39,29 @@ struct PeekabooBridgeCapabilityTests {
     @Test
     @MainActor
     func `production bridge classifier converts legacy lookup errors`() {
-        let error = NotFoundError(
-            code: .menuNotFound,
-            userMessage: "Menu not found",
-            context: ["application": "Finder"])
+        let cases: [(NotFoundError, PeekabooBridgeErrorKind, String?)] = [
+            (
+                NotFoundError(
+                    code: .menuNotFound,
+                    userMessage: "Menu not found",
+                    context: ["application": "Finder"]),
+                .menuNotFound,
+                "Finder"),
+            (
+                NotFoundError(
+                    code: .menuNotFound,
+                    userMessage: "Menu item not found",
+                    context: ["application": "Finder", "menuItem": "New Window"]),
+                .menuItemNotFound,
+                "New Window"),
+        ]
 
-        let envelope = PeekabooBridgeServer.bridgeErrorEnvelope(for: error, operation: .listMenus)
-
-        #expect(envelope.code == .notFound)
-        #expect(envelope.kind == .menuNotFound)
-        #expect(envelope.context == "Finder")
+        for (error, expectedKind, expectedContext) in cases {
+            let envelope = PeekabooBridgeServer.bridgeErrorEnvelope(for: error, operation: .listMenus)
+            #expect(envelope.code == .notFound)
+            #expect(envelope.kind == expectedKind)
+            #expect(envelope.context == expectedContext)
+        }
     }
 
     @Test
