@@ -27,6 +27,7 @@ struct MenuBarClickVerifier {
         clickLocation: CGPoint?,
         timeout: TimeInterval = 1.5
     ) async throws -> MenuBarClickVerification {
+        try Task.checkCancellation()
         let preferredX = clickLocation?.x ?? target.preferredX
         let context = MenuBarPopoverResolverContext.build(
             appHint: target.title ?? target.ownerName,
@@ -49,7 +50,7 @@ struct MenuBarClickVerifier {
             )
         }
 
-        if let focusResolution = await self.waitForFocusedWindowChange(
+        if let focusResolution = try await self.waitForFocusedWindowChange(
             target: target,
             preFocus: preFocus,
             timeout: timeout
@@ -61,7 +62,7 @@ struct MenuBarClickVerifier {
             )
         }
 
-        if let ownerWindowResolution = await self.waitForOwnerWindow(
+        if let ownerWindowResolution = try await self.waitForOwnerWindow(
             ownerPID: target.ownerPID,
             expectedTitle: target.title,
             timeout: timeout
@@ -76,7 +77,7 @@ struct MenuBarClickVerifier {
         let expectedTitle = target.title ?? target.ownerName
         if let expectedTitle, !expectedTitle.isEmpty {
             if ProcessInfo.processInfo.environment["PEEKABOO_MENUBAR_AX_VERIFY"] == "1" {
-                if await self.waitForMenuExtraMenuOpen(
+                if try await self.waitForMenuExtraMenuOpen(
                     expectedTitle: expectedTitle,
                     ownerPID: target.ownerPID,
                     timeout: timeout
@@ -114,14 +115,17 @@ struct MenuBarClickVerifier {
         target: MenuBarVerifyTarget,
         preFocus: MenuBarFocusSnapshot?,
         timeout: TimeInterval
-    ) async -> MenuBarPopoverResolution? {
+    ) async throws -> MenuBarPopoverResolution? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            guard let frontmost = try? await self.services.applications.getFrontmostApplication() else {
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                if Task.isCancelled {
-                    return nil
-                }
+            try Task.checkCancellation()
+            let frontmost: ServiceApplicationInfo
+            do {
+                frontmost = try await self.services.applications.getFrontmostApplication()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try await Task.sleep(nanoseconds: 120_000_000)
                 continue
             }
 
@@ -131,14 +135,18 @@ struct MenuBarClickVerifier {
                 ownerName: target.ownerName,
                 bundleIdentifier: target.bundleIdentifier
             ) {
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                if Task.isCancelled {
-                    return nil
-                }
+                try await Task.sleep(nanoseconds: 120_000_000)
                 continue
             }
 
-            let focused = try? await WindowServiceBridge.getFocusedWindow(windows: self.services.windows)
+            let focused: ServiceWindowInfo?
+            do {
+                focused = try await WindowServiceBridge.getFocusedWindow(windows: self.services.windows)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                focused = nil
+            }
             if self.focusDidChange(preFocus: preFocus, frontmost: frontmost, focused: focused) {
                 return MenuBarPopoverResolution(
                     windowId: focused?.windowID,
@@ -149,10 +157,7 @@ struct MenuBarClickVerifier {
                 )
             }
 
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            if Task.isCancelled {
-                return nil
-            }
+            try await Task.sleep(nanoseconds: 120_000_000)
         }
 
         return nil
@@ -210,21 +215,24 @@ struct MenuBarClickVerifier {
         expectedTitle: String,
         ownerPID: pid_t?,
         timeout: TimeInterval
-    ) async -> Bool {
+    ) async throws -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if let axVerified = try? await MenuServiceBridge.isMenuExtraMenuOpen(
-                menu: self.services.menu,
-                title: expectedTitle,
-                ownerPID: ownerPID
-            ),
-                axVerified {
-                return true
+            try Task.checkCancellation()
+            do {
+                if try await MenuServiceBridge.isMenuExtraMenuOpen(
+                    menu: self.services.menu,
+                    title: expectedTitle,
+                    ownerPID: ownerPID
+                ) {
+                    return true
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Verification is best-effort; retry transient accessibility failures.
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            if Task.isCancelled {
-                return false
-            }
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
         return false
     }
@@ -233,9 +241,10 @@ struct MenuBarClickVerifier {
         ownerPID: pid_t?,
         expectedTitle: String?,
         timeout: TimeInterval
-    ) async -> MenuBarPopoverResolution? {
+    ) async throws -> MenuBarPopoverResolution? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            try Task.checkCancellation()
             if let ownerPID {
                 let windowIds = ObservationMenuBarWindowCatalog.currentWindowIDs(ownerPID: ownerPID)
                 if let windowId = windowIds.first {
@@ -263,10 +272,7 @@ struct MenuBarClickVerifier {
                     )
                 }
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            if Task.isCancelled {
-                return nil
-            }
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
         return nil
     }
@@ -287,17 +293,23 @@ struct MenuBarClickVerifier {
         let candidateOCR: MenuBarPopoverResolver.CandidateOCR? = if allowOCR {
             { candidate, _ in
                 guard !context.ocrHints.isEmpty else { return nil }
-                guard let match = try? await withTimeout(seconds: captureTimeout, operation: {
-                    try await ocrSelector.matchCandidate(
-                        windowID: CGWindowID(candidate.windowId),
-                        bounds: candidate.bounds,
-                        hints: context.ocrHints
+                do {
+                    guard let match = try await withTimeout(seconds: captureTimeout, operation: {
+                        try await ocrSelector.matchCandidate(
+                            windowID: CGWindowID(candidate.windowId),
+                            bounds: candidate.bounds,
+                            hints: context.ocrHints
+                        )
+                    }) else { return nil }
+                    return MenuBarPopoverResolver.OCRMatch(
+                        captureResult: match.captureResult,
+                        bounds: match.bounds
                     )
-                }) else { return nil }
-                return MenuBarPopoverResolver.OCRMatch(
-                    captureResult: match.captureResult,
-                    bounds: match.bounds
-                )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    return nil
+                }
             }
         } else {
             nil
@@ -305,19 +317,27 @@ struct MenuBarClickVerifier {
 
         let areaOCR: MenuBarPopoverResolver.AreaOCR? = if allowAreaFallback {
             { preferredX, hints in
-                guard let match = try? await ocrSelector.matchArea(preferredX: preferredX, hints: hints) else {
+                do {
+                    guard let match = try await ocrSelector.matchArea(
+                        preferredX: preferredX,
+                        hints: hints
+                    ) else { return nil }
+                    return MenuBarPopoverResolver.OCRMatch(
+                        captureResult: match.captureResult,
+                        bounds: match.bounds
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
                     return nil
                 }
-                return MenuBarPopoverResolver.OCRMatch(
-                    captureResult: match.captureResult,
-                    bounds: match.bounds
-                )
             }
         } else {
             nil
         }
 
         while Date() < deadline {
+            try Task.checkCancellation()
             let snapshot = ObservationMenuBarWindowCatalog.currentPopoverSnapshot(
                 screens: self.services.screens.listScreens(),
                 ownerPID: context.ownerPID,
@@ -326,10 +346,7 @@ struct MenuBarClickVerifier {
 
             let candidates = snapshot.candidates
             if candidates.isEmpty {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
+                try await Task.sleep(nanoseconds: 100_000_000)
                 continue
             }
 
@@ -348,10 +365,7 @@ struct MenuBarClickVerifier {
                 return resolution
             }
 
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            if Task.isCancelled {
-                throw CancellationError()
-            }
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
 
         return nil

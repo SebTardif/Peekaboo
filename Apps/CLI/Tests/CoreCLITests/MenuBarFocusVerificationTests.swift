@@ -5,6 +5,38 @@ import Testing
 
 struct MenuBarFocusVerificationTests {
     @Test
+    @MainActor
+    func `verification preserves cancellation from focused-window polling`() async throws {
+        let verifier = MenuBarClickVerifier(services: PeekabooServices())
+        let target = MenuBarVerifyTarget(
+            title: nil,
+            ownerPID: -1,
+            ownerName: nil,
+            bundleIdentifier: nil,
+            preferredX: nil
+        )
+        let task = Task { @MainActor in
+            try await verifier.verifyClick(
+                target: target,
+                preFocus: nil,
+                clickLocation: nil,
+                timeout: 0.01
+            )
+        }
+
+        // The first popover poll sleeps for 100 ms. Cancel during the following
+        // focused-window poll, which historically converted cancellation to nil.
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let cancelledAt = Date()
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(Date().timeIntervalSince(cancelledAt) < 0.5)
+    }
+
+    @Test
     func `matches by PID`() {
         let frontmost = ServiceApplicationInfo(
             processIdentifier: 200,
