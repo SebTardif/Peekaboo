@@ -4,7 +4,7 @@ import os
 import PeekabooFoundation
 
 /// Dock-specific errors
-public enum DockError: Error {
+public enum DockError: LocalizedError {
     case dockNotFound
     case dockListNotFound
     case itemNotFound(String)
@@ -12,6 +12,25 @@ public enum DockError: Error {
     case positionNotFound
     case launchFailed(String)
     case scriptError(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .dockNotFound:
+            "Dock not found"
+        case .dockListNotFound:
+            "Dock list not found"
+        case let .itemNotFound(name):
+            "Dock item not found: \(name)"
+        case let .menuItemNotFound(name):
+            "Dock menu item not found: \(name)"
+        case .positionNotFound:
+            "Dock item position not found"
+        case let .launchFailed(message):
+            "Failed to launch Dock item: \(message)"
+        case let .scriptError(message):
+            "Dock script failed: \(message)"
+        }
+    }
 }
 
 /// Default implementation of Dock interaction operations using AXorcist

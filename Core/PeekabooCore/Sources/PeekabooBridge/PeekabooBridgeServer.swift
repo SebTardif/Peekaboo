@@ -160,76 +160,119 @@ public final class PeekabooBridgeServer {
                 "bridge op=\(op.rawValue) pid=\(pid) failed in \(durationString)s: \(error.localizedDescription)"
             self.logger.error("\(message, privacy: .public)")
 
-            if let error = error as? PeekabooError {
-                switch error {
-                case let .invalidInput(message):
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .invalidRequest,
-                        message: message,
-                        details: "\(error)")
-                case .permissionDeniedAccessibility, .permissionDeniedScreenRecording,
-                     .permissionDeniedEventSynthesizing:
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .permissionDenied,
-                        message: error.localizedDescription,
-                        details: "\(error)",
-                        permission: Self.bridgePermission(for: error))
-                case let .serviceUnavailable(message):
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .operationNotSupported,
-                        message: message,
-                        details: "\(error)")
-                case let .notImplemented(message):
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .operationNotSupported,
-                        message: "Operation \(op.rawValue) is not supported: \(message)",
-                        details: "\(error)")
-                case .appNotFound, .notFound:
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .notFound,
-                        message: error.localizedDescription,
-                        details: "\(error)")
-                case let .elementNotFound(identifier):
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .notFound,
-                        message: error.localizedDescription,
-                        details: "\(error)",
-                        kind: .elementNotFound,
-                        context: identifier)
-                case let .snapshotNotFound(snapshotId):
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .notFound,
-                        message: error.localizedDescription,
-                        details: "\(error)",
-                        kind: .snapshotNotFound,
-                        context: snapshotId)
-                case let .snapshotStale(reason):
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .invalidRequest,
-                        message: error.localizedDescription,
-                        details: "\(error)",
-                        kind: .snapshotStale,
-                        context: reason)
-                case .timeout, .captureTimeout:
-                    throw PeekabooBridgeErrorEnvelope(
-                        code: .timeout,
-                        message: error.localizedDescription,
-                        details: "\(error)")
-                default:
-                    break
-                }
-            }
-
-            // Prefer the underlying error description so CLI clients do not only
-            // see a generic "Bridge operation failed" with the real text buried
-            // in details (see openclaw/Peekaboo#239).
-            let userMessage =
-                (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
-            throw PeekabooBridgeErrorEnvelope(
-                code: .internalError,
-                message: userMessage.isEmpty ? "Bridge operation failed" : userMessage,
-                details: "\(error)")
+            throw Self.bridgeErrorEnvelope(for: error, operation: op)
         }
+    }
+
+    static func bridgeErrorEnvelope(
+        for error: any Error,
+        operation: PeekabooBridgeOperation) -> PeekabooBridgeErrorEnvelope
+    {
+        if let error = error as? PeekabooError,
+           let envelope = bridgeErrorEnvelope(for: error, operation: operation)
+        {
+            return envelope
+        }
+
+        if let error = error as? DockError {
+            let kind: PeekabooBridgeErrorKind?
+            let context: String?
+            switch error {
+            case .dockNotFound:
+                (kind, context) = (.dockNotFound, nil)
+            case .dockListNotFound:
+                (kind, context) = (.dockListNotFound, nil)
+            case let .itemNotFound(name):
+                (kind, context) = (.dockItemNotFound, name)
+            case let .menuItemNotFound(name):
+                (kind, context) = (.menuItemNotFound, name)
+            case .positionNotFound:
+                (kind, context) = (.positionNotFound, nil)
+            case .launchFailed, .scriptError:
+                (kind, context) = (nil, nil)
+            }
+            if let kind {
+                return .init(
+                    code: .notFound,
+                    message: error.localizedDescription,
+                    details: "\(error)",
+                    kind: kind,
+                    context: context)
+            }
+        }
+
+        // Prefer the underlying error description so CLI clients do not only
+        // see a generic message with the real text buried in details.
+        let userMessage = (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
+        return .init(
+            code: .internalError,
+            message: userMessage.isEmpty ? "Bridge operation failed" : userMessage,
+            details: "\(error)")
+    }
+
+    private static func bridgeErrorEnvelope(
+        for error: PeekabooError,
+        operation: PeekabooBridgeOperation) -> PeekabooBridgeErrorEnvelope?
+    {
+        let details = "\(error)"
+        return switch error {
+        case let .invalidInput(message):
+            .init(code: .invalidRequest, message: message, details: details)
+        case .permissionDeniedAccessibility, .permissionDeniedScreenRecording,
+             .permissionDeniedEventSynthesizing:
+            .init(
+                code: .permissionDenied,
+                message: error.localizedDescription,
+                details: details,
+                permission: Self.bridgePermission(for: error))
+        case let .serviceUnavailable(message):
+            .init(code: .operationNotSupported, message: message, details: details)
+        case let .notImplemented(message):
+            .init(
+                code: .operationNotSupported,
+                message: "Operation \(operation.rawValue) is not supported: \(message)",
+                details: details)
+        case let .appNotFound(name):
+            Self.notFoundEnvelope(error, kind: .appNotFound, context: name)
+        case let .windowNotFound(criteria):
+            Self.notFoundEnvelope(error, kind: .windowNotFound, context: criteria)
+        case let .elementNotFound(identifier):
+            Self.notFoundEnvelope(error, kind: .elementNotFound, context: identifier)
+        case let .menuNotFound(app):
+            Self.notFoundEnvelope(error, kind: .menuNotFound, context: app)
+        case let .menuItemNotFound(item):
+            Self.notFoundEnvelope(error, kind: .menuItemNotFound, context: item)
+        case let .snapshotNotFound(snapshotId):
+            Self.notFoundEnvelope(error, kind: .snapshotNotFound, context: snapshotId)
+        case let .snapshotNotAvailable(message):
+            Self.notFoundEnvelope(error, kind: .snapshotNotFound, context: message)
+        case let .snapshotStale(reason):
+            .init(
+                code: .invalidRequest,
+                message: error.localizedDescription,
+                details: details,
+                kind: .snapshotStale,
+                context: reason)
+        case .notFound:
+            .init(code: .notFound, message: error.localizedDescription, details: details)
+        case .timeout, .captureTimeout:
+            .init(code: .timeout, message: error.localizedDescription, details: details)
+        default:
+            nil
+        }
+    }
+
+    private static func notFoundEnvelope(
+        _ error: PeekabooError,
+        kind: PeekabooBridgeErrorKind,
+        context: String?) -> PeekabooBridgeErrorEnvelope
+    {
+        .init(
+            code: .notFound,
+            message: error.localizedDescription,
+            details: "\(error)",
+            kind: kind,
+            context: context)
     }
 
     private func validatePeerAuthorization(_ peer: PeekabooBridgePeer?) throws {

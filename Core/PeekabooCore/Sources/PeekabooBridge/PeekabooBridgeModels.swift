@@ -295,7 +295,15 @@ public enum PeekabooBridgeErrorCode: String, Codable, Sendable {
 }
 
 public enum PeekabooBridgeErrorKind: String, Codable, Sendable {
+    case appNotFound
+    case windowNotFound
     case elementNotFound
+    case menuNotFound
+    case menuItemNotFound
+    case dockNotFound
+    case dockListNotFound
+    case dockItemNotFound
+    case positionNotFound
     case snapshotNotFound
     case snapshotStale
 }

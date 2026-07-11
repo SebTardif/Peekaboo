@@ -257,6 +257,9 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
             return PeekabooError.snapshotNotFound(envelope.context ?? snapshotId ?? envelope.message)
         case .snapshotStale:
             return PeekabooError.snapshotStale(envelope.context ?? envelope.message)
+        case .appNotFound, .windowNotFound, .menuNotFound, .menuItemNotFound,
+             .dockNotFound, .dockListNotFound, .dockItemNotFound, .positionNotFound:
+            break
         case nil:
             break
         }

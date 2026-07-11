@@ -92,6 +92,7 @@ struct FocusErrorMappingTests {
         let code = errorCode(for: POSIXError(.ETIMEDOUT))
         #expect(code == .TIMEOUT)
     }
+
     @Test
     func `clickFailed maps to INTERACTION_FAILED`() {
         #expect(peekabooAutomationErrorCode(for: .clickFailed("miss")) == .INTERACTION_FAILED)
@@ -119,14 +120,34 @@ struct FocusErrorMappingTests {
     }
 
     @Test
-    func `bridge snapshotNotFound kind maps to SNAPSHOT_NOT_FOUND`() {
+    func `bridge typed notFound kinds map to specific errors`() {
+        let cases: [(PeekabooBridgeErrorKind, ErrorCode)] = [
+            (.appNotFound, .APP_NOT_FOUND),
+            (.windowNotFound, .WINDOW_NOT_FOUND),
+            (.elementNotFound, .ELEMENT_NOT_FOUND),
+            (.menuNotFound, .MENU_BAR_NOT_FOUND),
+            (.menuItemNotFound, .MENU_ITEM_NOT_FOUND),
+            (.dockNotFound, .DOCK_NOT_FOUND),
+            (.dockListNotFound, .DOCK_LIST_NOT_FOUND),
+            (.dockItemNotFound, .DOCK_ITEM_NOT_FOUND),
+            (.positionNotFound, .POSITION_NOT_FOUND),
+            (.snapshotNotFound, .SNAPSHOT_NOT_FOUND),
+        ]
+        for (kind, expectedCode) in cases {
+            let envelope = PeekabooBridgeErrorEnvelope(code: .notFound, message: "Missing", kind: kind)
+            #expect(errorCode(for: envelope) == expectedCode)
+        }
+    }
+
+    @Test
+    func `bridge stale kind wins over invalidRequest transport code`() {
         let envelope = PeekabooBridgeErrorEnvelope(
-            code: .notFound,
-            message: "Snapshot expired",
-            kind: .snapshotNotFound,
+            code: .invalidRequest,
+            message: "Snapshot stale",
+            kind: .snapshotStale,
             context: "snap-1"
         )
-        #expect(errorCode(for: envelope) == .SNAPSHOT_NOT_FOUND)
+        #expect(errorCode(for: envelope) == .SNAPSHOT_STALE)
     }
 
     @Test
