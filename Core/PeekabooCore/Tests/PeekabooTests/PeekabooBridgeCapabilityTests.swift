@@ -26,14 +26,20 @@ struct PeekabooBridgeCapabilityTests {
     @Test
     @MainActor
     func `production bridge classifier preserves Dock identity and messages`() {
-        let envelope = PeekabooBridgeServer.bridgeErrorEnvelope(
-            for: DockError.itemNotFound("Safari"),
-            operation: .findDockItem)
-
-        #expect(envelope.code == .notFound)
-        #expect(envelope.kind == .dockItemNotFound)
-        #expect(envelope.context == "Safari")
-        #expect(envelope.message == "Dock item not found: Safari")
+        let cases: [(DockError, PeekabooBridgeOperation, PeekabooBridgeErrorKind, String)] = [
+            (.itemNotFound("Safari"), .findDockItem, .dockItemNotFound, "Dock item not found: Safari"),
+            (
+                .menuItemNotFound("New Window"),
+                .rightClickDockItem,
+                .menuItemNotFound,
+                "Dock menu item not found: New Window"),
+        ]
+        for (error, operation, expectedKind, expectedMessage) in cases {
+            let envelope = PeekabooBridgeServer.bridgeErrorEnvelope(for: error, operation: operation)
+            #expect(envelope.code == .notFound)
+            #expect(envelope.kind == expectedKind)
+            #expect(envelope.message == expectedMessage)
+        }
     }
 
     @Test

@@ -195,14 +195,13 @@ extension DockService {
         usleep(50000)
 
         if let targetMenuItem = menuItem {
-            try await self.clickContextMenuItem(targetMenuItem, for: element, fallbackName: appName)
+            try await self.clickContextMenuItem(targetMenuItem, for: element)
         }
     }
 
     private func clickContextMenuItem(
         _ targetMenuItem: String,
-        for dockElement: Element,
-        fallbackName: String) async throws
+        for dockElement: Element) async throws
     {
         try await Task.sleep(nanoseconds: 300_000_000)
 
@@ -215,7 +214,7 @@ extension DockService {
         }
 
         guard let foundMenu = menu else {
-            throw PeekabooError.menuNotFound("\(fallbackName)")
+            throw DockError.menuItemNotFound(targetMenuItem)
         }
 
         let menuItems = foundMenu.children() ?? []
@@ -223,7 +222,7 @@ extension DockService {
             item.title() == targetMenuItem ||
                 item.title()?.contains(targetMenuItem) == true
         }) else {
-            throw PeekabooError.menuNotFound("\(targetMenuItem)")
+            throw DockError.menuItemNotFound(targetMenuItem)
         }
 
         try targetItem.performAction(.press)
