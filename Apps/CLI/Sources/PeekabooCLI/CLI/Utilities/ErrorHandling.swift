@@ -1,4 +1,5 @@
 import Foundation
+import PeekabooBridge
 import PeekabooCore
 import PeekabooFoundation
 
@@ -31,10 +32,17 @@ private func emitError(
 func handleGenericError(_ error: any Error, jsonOutput: Bool, logger: Logger) {
     emitError(
         message: error.localizedDescription,
-        code: .UNKNOWN_ERROR,
+        code: genericErrorCode(for: error),
         jsonOutput: jsonOutput,
         logger: logger
     )
+}
+
+func genericErrorCode(for error: any Error) -> ErrorCode {
+    guard let bridgeError = error as? PeekabooBridgeErrorEnvelope else {
+        return .UNKNOWN_ERROR
+    }
+    return errorCode(for: bridgeError)
 }
 
 func handleValidationError(_ error: any Error, jsonOutput: Bool, logger: Logger) {

@@ -139,7 +139,7 @@ enum MenuErrorOutputSupport {
         if jsonOutput {
             outputError(
                 message: error.localizedDescription,
-                code: .UNKNOWN_ERROR,
+                code: genericErrorCode(for: error),
                 details: details,
                 logger: logger
             )

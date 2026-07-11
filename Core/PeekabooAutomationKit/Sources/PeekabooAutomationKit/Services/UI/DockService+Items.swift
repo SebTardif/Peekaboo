@@ -52,7 +52,7 @@ extension DockService {
             return partialMatches[0]
         }
 
-        throw PeekabooError.elementNotFound("\(name)")
+        throw DockError.itemNotFound(name)
     }
 
     private func makeDockItem(from element: Element, index: Int, includeAll: Bool) -> DockItem? {

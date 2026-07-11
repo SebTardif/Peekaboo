@@ -155,4 +155,16 @@ struct FocusErrorMappingTests {
         let envelope = PeekabooBridgeErrorEnvelope(code: .notFound, message: "Dock item not found")
         #expect(errorCode(for: envelope) == .UNKNOWN_ERROR)
     }
+
+    @Test
+    func `generic command errors preserve bridge lookup kinds`() {
+        let envelope = PeekabooBridgeErrorEnvelope(
+            code: .notFound,
+            message: "Dock item not found",
+            kind: .dockItemNotFound
+        )
+
+        #expect(genericErrorCode(for: envelope) == .DOCK_ITEM_NOT_FOUND)
+        #expect(genericErrorCode(for: POSIXError(.ENOENT)) == .UNKNOWN_ERROR)
+    }
 }

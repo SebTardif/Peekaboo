@@ -173,6 +173,11 @@ public final class PeekabooBridgeServer {
         {
             return envelope
         }
+        if let error = error as? NotFoundError,
+           let envelope = bridgeErrorEnvelope(for: error.asPeekabooError, operation: operation)
+        {
+            return envelope
+        }
 
         if let error = error as? DockError {
             let kind: PeekabooBridgeErrorKind?
