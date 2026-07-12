@@ -225,6 +225,12 @@ func settleWindowFrame(
     while attempts < maxAttempts {
         if pollInterval > .zero {
             try? await Task.sleep(for: pollInterval)
+            // `try?` swallows CancellationError from sleep. Without this guard, later
+            // sleeps return immediately and the loop hammers AX reads until the
+            // attempt budget is exhausted.
+            guard !Task.isCancelled else {
+                return SettledWindowFrame(info: previous, stabilized: false)
+            }
         }
         let current = await read()
         attempts += 1

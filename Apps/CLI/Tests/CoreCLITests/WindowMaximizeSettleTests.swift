@@ -91,6 +91,33 @@ struct WindowMaximizeSettleTests {
         #expect(result.info?.bounds == self.maxFrame)
     }
 
+    @Test func `settle exits promptly when the task is cancelled`() async throws {
+        // With try? sleep, cancel is swallowed and the loop burns the attempt budget
+        // against a non-stabilizing frame. With the isCancelled guard, it returns early.
+        var reads = 0
+        let clock = ContinuousClock()
+        let start = clock.now
+        let settleTask = Task { @MainActor in
+            await settleWindowFrame(maxAttempts: 80, pollInterval: .milliseconds(100)) {
+                reads += 1
+                return ServiceWindowInfo(
+                    windowID: 1,
+                    title: "W",
+                    bounds: CGRect(x: CGFloat(reads) * 10, y: 0, width: 800, height: 600)
+                )
+            }
+        }
+
+        try await Task.sleep(for: .milliseconds(30))
+        settleTask.cancel()
+        let result = await settleTask.value
+
+        #expect(!result.stabilized)
+        #expect(start.duration(to: clock.now) < .seconds(2))
+        #expect(reads > 0)
+        #expect(reads < 20)
+    }
+
     @Test func `settle reports not stabilized when the frame never settles`() async {
         var counter = 0
         let result = await settleWindowFrame(maxAttempts: 5, pollInterval: .zero) {
