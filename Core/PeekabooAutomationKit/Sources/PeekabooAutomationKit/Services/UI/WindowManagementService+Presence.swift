@@ -24,6 +24,12 @@ extension WindowManagementService {
             }
 
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            // `try?` swallows CancellationError from sleep. Without this guard, later
+            // sleeps return immediately and the loop hammers window listing until the
+            // deadline is exhausted.
+            guard !Task.isCancelled else {
+                return false
+            }
         }
 
         return false
