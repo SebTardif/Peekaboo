@@ -220,19 +220,32 @@ func settleWindowFrame(
     pollInterval: Duration = .milliseconds(50),
     read: () async -> ServiceWindowInfo?
 ) async -> SettledWindowFrame {
+    guard !Task.isCancelled else {
+        return SettledWindowFrame(info: nil, stabilized: false)
+    }
+
     var previous = await read()
+    guard !Task.isCancelled else {
+        return SettledWindowFrame(info: previous, stabilized: false)
+    }
+
     var attempts = 1
     while attempts < maxAttempts {
+        guard !Task.isCancelled else {
+            return SettledWindowFrame(info: previous, stabilized: false)
+        }
         if pollInterval > .zero {
             try? await Task.sleep(for: pollInterval)
-            // `try?` swallows CancellationError from sleep. Without this guard, later
-            // sleeps return immediately and the loop hammers AX reads until the
-            // attempt budget is exhausted.
-            guard !Task.isCancelled else {
-                return SettledWindowFrame(info: previous, stabilized: false)
-            }
+        }
+        // `try?` suppresses CancellationError from sleep. Recheck before and after
+        // every asynchronous read so cancellation cannot consume the AX poll budget.
+        guard !Task.isCancelled else {
+            return SettledWindowFrame(info: previous, stabilized: false)
         }
         let current = await read()
+        guard !Task.isCancelled else {
+            return SettledWindowFrame(info: previous, stabilized: false)
+        }
         attempts += 1
         if let previousBounds = previous?.bounds, let currentBounds = current?.bounds,
            windowFramesMatch(previousBounds, currentBounds, tolerance: tolerance) {
