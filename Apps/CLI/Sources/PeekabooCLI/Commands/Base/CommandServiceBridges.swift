@@ -316,9 +316,15 @@ struct DragRequest {
 
 enum WindowServiceBridge {
     static func closeWindow(windows: any WindowManagementServiceProtocol, target: WindowTarget) async throws {
-        try await Task { @MainActor in
+        let operation = Task { @MainActor in
             try await windows.closeWindow(target: target)
-        }.value
+        }
+
+        return try await withTaskCancellationHandler {
+            try await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
     }
 
     static func minimizeWindow(windows: any WindowManagementServiceProtocol, target: WindowTarget) async throws {

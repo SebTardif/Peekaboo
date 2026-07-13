@@ -8,6 +8,7 @@
 - Pointer-movement feedback now follows the real move with a short fading tail and one coalesced overlay instead of replaying a slow, thick line across the screen after the pointer arrives.
 
 ### Fixed
+- Canceling `peekaboo window close` now propagates through disappearance checks and stops before focus, hotkey, or pointer fallbacks. Thanks @SebTardif for #270.
 - Canceling `peekaboo window maximize` now stops frame-settling polls before any additional accessibility reads. Thanks @SebTardif for #271.
 - Default action-first clicks now synthesize a real pointer click for SwiftUI segmented tabs, whose accessibility `AXPress` action can report success without changing the selected tab.
 - Local `see` now confirms snapshot publication before reporting success, preserving its timeout and failure guarantees when a command-level mutation barrier is active.

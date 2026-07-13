@@ -7,6 +7,7 @@ import PeekabooFoundation
 extension WindowManagementService {
     public func closeWindow(target: WindowTarget) async throws {
         let trackedWindowID = try? await self.listWindows(target: target).first?.windowID
+        try Task.checkCancellation()
         let trackedAppIdentifier = self.appIdentifierForPresenceTracking(target)
         var windowBounds: CGRect?
         var closeButtonFrame: CGRect?
@@ -24,6 +25,7 @@ extension WindowManagementService {
             self.showWindowOperation(.close, bounds: windowBounds)
             return result
         }
+        try Task.checkCancellation()
 
         if !success {
             throw OperationError.interactionFailed(
@@ -33,35 +35,41 @@ extension WindowManagementService {
 
         guard let trackedWindowID else { return }
 
-        if await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
+        if try await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
             return
         }
 
+        try Task.checkCancellation()
         self.logger
             .warning("Close succeeded but window still exists; trying hotkey fallbacks. windowID=\(trackedWindowID)")
 
         // Make the target key before Cmd-W fallbacks; otherwise the frontmost window may close.
+        try Task.checkCancellation()
         _ = try? await self.performWindowOperation(target: target) { window in
             _ = window.focusWindow()
             return ()
         }
 
+        try Task.checkCancellation()
         try? InputDriver.hotkey(keys: ["cmd", "w"], holdDuration: 0.05)
-        if await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
+        if try await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
             return
         }
 
+        try Task.checkCancellation()
         try? InputDriver.hotkey(keys: ["cmd", "shift", "w"], holdDuration: 0.05)
-        if await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
+        if try await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
             return
         }
 
         if let closeButtonFrame {
+            try Task.checkCancellation()
             self.logger.warning(
                 "Hotkey fallbacks failed; clicking close button frame as final fallback. windowID=\(trackedWindowID)")
+            try Task.checkCancellation()
             try? InputDriver.click(at: CGPoint(x: closeButtonFrame.midX, y: closeButtonFrame.midY))
 
-            if await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
+            if try await self.windowDisappeared(windowID: trackedWindowID, appIdentifier: trackedAppIdentifier) {
                 return
             }
         }
@@ -164,8 +172,8 @@ extension WindowManagementService {
         }
     }
 
-    private func windowDisappeared(windowID: Int, appIdentifier: String?) async -> Bool {
-        await self.waitForWindowToDisappear(
+    private func windowDisappeared(windowID: Int, appIdentifier: String?) async throws -> Bool {
+        try await self.waitForWindowToDisappear(
             windowID: windowID,
             appIdentifier: appIdentifier,
             timeoutSeconds: 3.0)

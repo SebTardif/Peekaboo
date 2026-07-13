@@ -191,6 +191,23 @@ struct ServiceBridgeTests {
         #expect(windows == [window])
     }
 
+    @Test func `window bridge propagates close cancellation`() async {
+        let service = CancellableWindowService()
+        let task = Task { @MainActor in
+            try await WindowServiceBridge.closeWindow(windows: service, target: .frontmost)
+        }
+
+        while !service.closeStarted {
+            await Task.yield()
+        }
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await task.value
+        }
+        #expect(service.observedCancellation)
+    }
+
     @Test func `menu bridge lists menu bar items`() async throws {
         let menuItems = [MenuBarItemInfo(
             title: "Item",
@@ -418,6 +435,40 @@ final class MockWindowService: WindowManagementServiceProtocol {
 
     func getFocusedWindow() async throws -> ServiceWindowInfo? {
         self.windowsResult.first
+    }
+}
+
+@MainActor
+final class CancellableWindowService: WindowManagementServiceProtocol {
+    var closeStarted = false
+    var observedCancellation = false
+
+    func closeWindow(target _: WindowTarget) async throws {
+        await MainActor.run {
+            self.closeStarted = true
+        }
+        do {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+        } catch is CancellationError {
+            await MainActor.run {
+                self.observedCancellation = true
+            }
+            throw CancellationError()
+        }
+    }
+
+    func minimizeWindow(target _: WindowTarget) async throws {}
+    func maximizeWindow(target _: WindowTarget) async throws {}
+    func moveWindow(target _: WindowTarget, to _: CGPoint) async throws {}
+    func resizeWindow(target _: WindowTarget, to _: CGSize) async throws {}
+    func setWindowBounds(target _: WindowTarget, bounds _: CGRect) async throws {}
+    func focusWindow(target _: WindowTarget) async throws {}
+    func listWindows(target _: WindowTarget) async throws -> [ServiceWindowInfo] {
+        []
+    }
+
+    func getFocusedWindow() async throws -> ServiceWindowInfo? {
+        nil
     }
 }
 
