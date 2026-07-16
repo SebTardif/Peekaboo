@@ -6,6 +6,7 @@
 - Refresh AXorcist, Commander, Swiftdansi, Tachikoma, and TauTUI, including stricter SwiftPM checkout handling for Tachikoma's Commander dependency plus corrected AXorcist app resolution, attribute serialization, and descendant filtering.
 
 ### Fixed
+- Canceling during the screen-recording permission probe retry no longer continues a second ScreenCaptureKit shareable-content probe. Thanks @SebTardif.
 - Resolve applications by executable name, so `--app <name>` finds an app by the process/binary name shown in `ps`, `pgrep`, and Activity Monitor even when it differs from the app's localized name (e.g. an `openclaw-desktop` binary whose bundle name is "OpenClaw Desktop Test").
 - Keep bridge acceptance and request handling responsive, and retry timed-out snapshot invalidation handshakes once so busy local endpoints are not mistaken for stale sockets.
 

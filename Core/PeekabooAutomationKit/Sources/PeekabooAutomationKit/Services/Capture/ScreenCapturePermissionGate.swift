@@ -24,7 +24,11 @@ struct ScreenRecordingPermissionChecker: ScreenRecordingPermissionEvaluating {
             if let delay = ScreenCaptureKitTransientError.retryDelayNanoseconds(after: error) {
                 logger.warning(
                     "Screen recording permission probe hit transient ScreenCaptureKit denial; retrying once")
+                // `try?` would swallow CancellationError and continue a second SCK probe after cancel.
                 try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else {
+                    return false
+                }
                 do {
                     _ = try await ScreenCaptureKitCaptureGate.currentShareableContent()
                     logger.info("Screen recording permission granted (SCShareableContent retry)")
