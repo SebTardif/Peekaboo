@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Canceling during a ScreenCaptureKit transient-denial retry sleep no longer proceeds into a second capture attempt or permission probe. Thanks @SebTardif.
+
 ## [3.9.6] - 2026-07-19
 
 ### Highlights
