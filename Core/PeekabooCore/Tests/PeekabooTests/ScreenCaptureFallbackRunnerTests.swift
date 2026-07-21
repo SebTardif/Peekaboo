@@ -150,4 +150,79 @@ struct ScreenCaptureFallbackRunnerTests {
         #expect(value == "ok_modern")
         #expect(calls == [.modern, .modern])
     }
+
+    /// Transient ScreenCaptureKit denial triggers a 350ms sleep. Cancelling during that sleep
+    /// must not invoke a second capture attempt (the pre-fix `try?` path swallowed cancel).
+    @MainActor
+    @Test
+    func `cancel during transient denial sleep skips second generic attempt`() async throws {
+        let logger = LoggingService(subsystem: "test.logger").logger(category: "test")
+        let runner = ScreenCaptureFallbackRunner(apis: [.modern])
+        var attempts = 0
+
+        let task = Task { @MainActor in
+            try await runner.run(
+                operationName: "test",
+                logger: logger,
+                correlationId: "cancel-run")
+            { _ in
+                attempts += 1
+                throw NSError(
+                    domain: "com.apple.ScreenCaptureKit.SCStreamErrorDomain",
+                    code: -3801,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "The user declined TCCs for application, window, display capture",
+                    ])
+            }
+        }
+
+        // Cancel while the 350ms transient-denial sleep is in progress.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("expected cancellation without a second attempt")
+        } catch {
+            // CancellationError or first-attempt failure without retry is fine.
+        }
+
+        #expect(attempts == 1)
+    }
+
+    @MainActor
+    @Test
+    func `cancel during transient denial sleep skips second capture attempt`() async throws {
+        let logger = LoggingService(subsystem: "test.logger").logger(category: "test")
+        let runner = ScreenCaptureFallbackRunner(apis: [.modern])
+        var attempts = 0
+
+        let task = Task { @MainActor in
+            try await runner.runCapture(
+                operationName: "captureScreen",
+                logger: logger,
+                correlationId: "cancel-capture")
+            { _ in
+                attempts += 1
+                throw NSError(
+                    domain: "com.apple.ScreenCaptureKit.SCStreamErrorDomain",
+                    code: -3801,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "The user declined TCCs for application, window, display capture",
+                    ])
+            }
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("expected cancellation or failure without second attempt")
+        } catch {
+            // Expected: CancellationError or first-attempt error without retry.
+        }
+
+        #expect(attempts == 1)
+    }
 }

@@ -6,9 +6,29 @@ import Foundation
     func hasPermission(logger: CategoryLogger) async -> Bool
 }
 
-struct ScreenRecordingPermissionChecker: ScreenRecordingPermissionEvaluating {
-    func hasPermission(logger: CategoryLogger) async -> Bool {
-        let preflightResult = CGPreflightScreenCaptureAccess()
+@MainActor
+@_spi(Testing) public struct ScreenRecordingPermissionChecker: ScreenRecordingPermissionEvaluating {
+    private let preflight: @MainActor @Sendable () -> Bool
+    private let shareableContentProbe: @MainActor @Sendable () async throws -> Void
+
+    public init() {
+        self.preflight = { CGPreflightScreenCaptureAccess() }
+        self.shareableContentProbe = {
+            _ = try await ScreenCaptureKitCaptureGate.currentShareableContent()
+        }
+    }
+
+    /// Test seam: inject preflight and shareable-content probe results.
+    @_spi(Testing) public init(
+        preflight: @escaping @MainActor @Sendable () -> Bool,
+        shareableContentProbe: @escaping @MainActor @Sendable () async throws -> Void)
+    {
+        self.preflight = preflight
+        self.shareableContentProbe = shareableContentProbe
+    }
+
+    public func hasPermission(logger: CategoryLogger) async -> Bool {
+        let preflightResult = self.preflight()
         if preflightResult {
             return true
         }
@@ -17,16 +37,24 @@ struct ScreenRecordingPermissionChecker: ScreenRecordingPermissionEvaluating {
         // granted because TCC tracks by code signature and the check can fail after rebuilds or for non-.app bundles.
         logger.debug("CGPreflightScreenCaptureAccess returned false, probing SCShareableContent")
         do {
-            _ = try await ScreenCaptureKitCaptureGate.currentShareableContent()
+            try await self.shareableContentProbe()
             logger.info("Screen recording permission granted (SCShareableContent probe)")
             return true
         } catch {
             if let delay = ScreenCaptureKitTransientError.retryDelayNanoseconds(after: error) {
                 logger.warning(
                     "Screen recording permission probe hit transient ScreenCaptureKit denial; retrying once")
-                try? await Task.sleep(nanoseconds: delay)
+                // `try?` would swallow CancellationError and continue a second SCK probe after cancel.
                 do {
-                    _ = try await ScreenCaptureKitCaptureGate.currentShareableContent()
+                    try await Task.sleep(nanoseconds: delay)
+                    try Task.checkCancellation()
+                } catch {
+                    // Task.sleep / checkCancellation only throw CancellationError in practice;
+                    // map any failure here to not-granted so a canceled task never starts a second probe.
+                    return false
+                }
+                do {
+                    try await self.shareableContentProbe()
                     logger.info("Screen recording permission granted (SCShareableContent retry)")
                     return true
                 } catch {
