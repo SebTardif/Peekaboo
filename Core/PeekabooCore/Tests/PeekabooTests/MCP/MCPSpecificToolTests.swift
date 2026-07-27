@@ -502,6 +502,29 @@ struct MCPSpecificToolTests {
             Issue.record("Expected text content from shell output")
         }
     }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool timeout bounds drain when a descendant holds stdout`() async throws {
+        let tool = makeTestTool(ShellTool.init)
+        let started = Date()
+
+        // Foreground loop never exits; background sleep inherits stdout and would keep
+        // the pipe open if only the direct shell process were signaled.
+        let result = try await tool.execute(arguments: ToolArguments(raw: [
+            "command": "sleep 120 & while true; do sleep 1; done",
+            "timeout": 1,
+        ]))
+
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(result.isError == true)
+        // Timeout (1s) + TERM grace (0.5s) + drain bound (0.5s) should finish well under 5s.
+        #expect(elapsed < 5.0)
+        if case let .text(text, _, _) = result.content.first {
+            #expect(text.lowercased().contains("timed out"))
+        } else {
+            Issue.record("Expected timeout error text from shell tool")
+        }
+    }
 }
 
 @MainActor
