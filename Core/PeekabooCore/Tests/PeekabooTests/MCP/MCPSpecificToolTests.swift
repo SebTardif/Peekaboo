@@ -466,6 +466,16 @@ struct MCPSpecificToolTests {
         }
     }
 
+    @Test
+    func `Shell tool resolveTimeout omits deadline when timeout is absent`() {
+        #expect(ShellTool.resolveTimeout(nil) == nil)
+        #expect(ShellTool.resolveTimeout(0) == nil)
+        #expect(ShellTool.resolveTimeout(-1) == nil)
+        #expect(ShellTool.resolveTimeout(.nan) == nil)
+        #expect(ShellTool.resolveTimeout(1) == 1)
+        #expect(ShellTool.resolveTimeout(9000) == ShellTool.maxTimeoutSeconds)
+    }
+
     @Test(.timeLimit(.minutes(1)))
     func `Shell tool times out hung commands instead of blocking forever`() async throws {
         let tool = makeTestTool(ShellTool.init)
@@ -498,6 +508,28 @@ struct MCPSpecificToolTests {
         #expect(result.isError == false)
         if case let .text(text, _, _) = result.content.first {
             #expect(text.contains("shell-timeout-ok"))
+        } else {
+            Issue.record("Expected text content from shell output")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool omitted timeout allows commands longer than former default`() async throws {
+        let tool = makeTestTool(ShellTool.init)
+        let started = Date()
+
+        // Legacy contract: no timeout argument means unlimited. A 2s command must succeed
+        // and must not be cut off by a silent 30s (or any) default deadline.
+        let result = try await tool.execute(arguments: ToolArguments(raw: [
+            "command": "sleep 2; echo omitted-timeout-ok",
+        ]))
+
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(result.isError == false)
+        #expect(elapsed >= 1.5)
+        #expect(elapsed < 10.0)
+        if case let .text(text, _, _) = result.content.first {
+            #expect(text.contains("omitted-timeout-ok"))
         } else {
             Issue.record("Expected text content from shell output")
         }

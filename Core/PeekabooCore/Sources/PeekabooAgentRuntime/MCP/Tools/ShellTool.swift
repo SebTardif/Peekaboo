@@ -17,11 +17,11 @@ private func proc_listchildpids(_ pid: pid_t, _ buffer: UnsafeMutableRawPointer?
 public struct ShellTool: MCPTool {
     private let logger = os.Logger(subsystem: "boo.peekaboo.mcp", category: "ShellTool")
 
-    /// Default max wall-clock seconds for a shell command (matches agent shell formatter default).
-    public static let defaultTimeoutSeconds: TimeInterval = 30
-
     /// Max time to wait for pipe EOF after the process deadline fires.
     private static let postTimeoutDrainSeconds: TimeInterval = 0.5
+
+    /// Hard ceiling when a client opts into an explicit timeout.
+    public static let maxTimeoutSeconds: TimeInterval = 3600
 
     public let name = "shell"
 
@@ -34,9 +34,10 @@ public struct ShellTool: MCPTool {
         - Returns command output on success
         - Returns error output on failure
         - Exit code is available in error messages
-        - Commands that hang are killed after timeout seconds (default 30)
-        - Timeout kills the shell process tree and bounds pipe draining so a
-          descendant holding stdout/stderr cannot block the agent forever
+        - Omitting timeout preserves unlimited execution (legacy MCP contract)
+        - Passing timeout kills the shell process tree after that many seconds and
+          bounds pipe draining so a descendant holding stdout/stderr cannot block
+          the agent forever
 
         Examples:
         - List files: { "command": "ls -la" }
@@ -54,7 +55,8 @@ public struct ShellTool: MCPTool {
                 "command": SchemaBuilder.string(
                     description: "Shell command to execute"),
                 "timeout": SchemaBuilder.number(
-                    description: "Maximum seconds to wait before killing the command (default 30)."),
+                    description:
+                    "Optional maximum seconds to wait before killing the command. Omit for unlimited (legacy)."),
             ],
             required: ["command"])
     }
@@ -111,12 +113,13 @@ public struct ShellTool: MCPTool {
             let error = String(data: errorData, encoding: .utf8) ?? ""
 
             if timedOut {
+                let appliedTimeout = timeoutSeconds ?? 0
                 let message = error.isEmpty ? output : error
                 let detail = message.isEmpty ? "" : ": \(message)"
-                self.logger.error("Command timed out after \(timeoutSeconds)s\(detail)")
+                self.logger.error("Command timed out after \(appliedTimeout)s\(detail)")
                 return ToolResponse(
                     content: [.text(
-                        text: "Command timed out after \(Self.formatTimeout(timeoutSeconds))s\(detail)",
+                        text: "Command timed out after \(Self.formatTimeout(appliedTimeout))s\(detail)",
                         annotations: nil,
                         _meta: nil)],
                     isError: true)
@@ -154,11 +157,15 @@ public struct ShellTool: MCPTool {
         }
     }
 
-    static func resolveTimeout(_ raw: Double?) -> TimeInterval {
+    /// Returns an explicit timeout, or `nil` when the caller omitted timeout (unlimited).
+    ///
+    /// Invalid values (non-finite, <= 0) are treated as omitted so we never invent a
+    /// silent default deadline that changes the legacy MCP contract.
+    static func resolveTimeout(_ raw: Double?) -> TimeInterval? {
         guard let raw, raw.isFinite, raw > 0 else {
-            return self.defaultTimeoutSeconds
+            return nil
         }
-        return min(raw, 3600)
+        return min(raw, self.maxTimeoutSeconds)
     }
 
     private static func formatTimeout(_ timeout: TimeInterval) -> String {
@@ -168,13 +175,14 @@ public struct ShellTool: MCPTool {
         return String(format: "%.1f", timeout)
     }
 
-    /// Waits for process exit, or kills the process tree after `timeout`.
+    /// Waits for process exit, or kills the process tree after an explicit `timeout`.
     ///
+    /// When `timeout` is `nil`, waits only for natural process exit (legacy unlimited).
     /// Returns `true` when the deadline was hit and termination was initiated by this waiter.
     private static func waitForExit(
         process: Process,
         processIdentifier pid: pid_t,
-        timeout: TimeInterval) async -> Bool
+        timeout: TimeInterval?) async -> Bool
     {
         await withCheckedContinuation { continuation in
             let state = ShellProcessWaitState()
@@ -184,6 +192,11 @@ public struct ShellTool: MCPTool {
 
             if !process.isRunning {
                 state.finish(continuation: continuation)
+                return
+            }
+
+            guard let timeout else {
+                // Unlimited: only process exit finishes the wait.
                 return
             }
 
