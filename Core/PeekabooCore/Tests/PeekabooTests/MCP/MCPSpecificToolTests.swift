@@ -465,6 +465,43 @@ struct MCPSpecificToolTests {
             Issue.record("Expected text content from shell output")
         }
     }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool times out hung commands instead of blocking forever`() async throws {
+        let tool = makeTestTool(ShellTool.init)
+        let started = Date()
+
+        let result = try await tool.execute(arguments: ToolArguments(raw: [
+            "command": "sleep 30",
+            "timeout": 1,
+        ]))
+
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(result.isError == true)
+        #expect(elapsed < 4.0)
+        if case let .text(text, _, _) = result.content.first {
+            #expect(text.lowercased().contains("timed out"))
+        } else {
+            Issue.record("Expected timeout error text from shell tool")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool still succeeds for fast commands with an explicit timeout`() async throws {
+        let tool = makeTestTool(ShellTool.init)
+
+        let result = try await tool.execute(arguments: ToolArguments(raw: [
+            "command": "echo shell-timeout-ok",
+            "timeout": 5,
+        ]))
+
+        #expect(result.isError == false)
+        if case let .text(text, _, _) = result.content.first {
+            #expect(text.contains("shell-timeout-ok"))
+        } else {
+            Issue.record("Expected text content from shell output")
+        }
+    }
 }
 
 @MainActor
