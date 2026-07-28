@@ -11,40 +11,45 @@ final class WaitState: @unchecked Sendable {
     private var timedOut = false
 
     func beginTimeoutIfNeeded(processStillRunning: Bool) -> Bool {
-        lock.lock()
+        self.lock.lock()
         defer { lock.unlock() }
-        if finished || !processStillRunning { return false }
-        timedOut = true
+        if self.finished || !processStillRunning {
+            return false
+        }
+        self.timedOut = true
         return true
     }
 
     func finish(continuation: CheckedContinuation<Bool, Never>) {
-        lock.lock()
-        guard !finished else {
-            lock.unlock()
+        self.lock.lock()
+        guard !self.finished else {
+            self.lock.unlock()
             return
         }
-        finished = true
-        let result = timedOut
-        lock.unlock()
+        self.finished = true
+        let result = self.timedOut
+        self.lock.unlock()
         continuation.resume(returning: result)
     }
 }
 
+/// proc_listchildpids returns a PID count (not a byte length). buffersize is still bytes.
 func signalProcessTree(root: pid_t, signal: Int32) {
     guard root > 0 else { return }
     var buffer = [pid_t](repeating: 0, count: 512)
-    let bytes = buffer.withUnsafeMutableBufferPointer { buf -> Int32 in
+    let childCount = buffer.withUnsafeMutableBufferPointer { buf -> Int in
         guard let base = buf.baseAddress else { return 0 }
-        return proc_listchildpids(root, base, Int32(buf.count * MemoryLayout<pid_t>.stride))
+        let returned = proc_listchildpids(
+            root,
+            base,
+            Int32(buf.count * MemoryLayout<pid_t>.stride))
+        return max(0, Int(returned))
     }
-    if bytes > 0 {
-        let count = Int(bytes) / MemoryLayout<pid_t>.stride
-        for i in 0..<count {
-            let child = buffer[i]
-            if child > 0, child != root {
-                signalProcessTree(root: child, signal: signal)
-            }
+    let limit = min(childCount, buffer.count)
+    for i in 0..<limit {
+        let child = buffer[i]
+        if child > 0, child != root {
+            signalProcessTree(root: child, signal: signal)
         }
     }
     _ = kill(root, signal)
@@ -52,7 +57,9 @@ func signalProcessTree(root: pid_t, signal: Int32) {
 
 func readFD(_ fd: Int32) -> Data {
     let flags = fcntl(fd, F_GETFL)
-    if flags >= 0 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
+    if flags >= 0 {
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+    }
     var data = Data()
     var buffer = [UInt8](repeating: 0, count: 16384)
     while true {
@@ -64,16 +71,18 @@ func readFD(_ fd: Int32) -> Data {
             data.append(contentsOf: buffer.prefix(n))
             continue
         }
-        if n == 0 { return data }
+        if n == 0 {
+            return data
+        }
         if errno == EAGAIN || errno == EWOULDBLOCK {
-            usleep(10_000)
+            usleep(10000)
             continue
         }
         return data
     }
 }
 
-func waitForExit(process: Process, pid: pid_t, timeout: TimeInterval) async -> Bool {
+func waitForExit(process: Process, pid: pid_t, timeout: TimeInterval?) async -> Bool {
     await withCheckedContinuation { continuation in
         let state = WaitState()
         process.terminationHandler = { _ in state.finish(continuation: continuation) }
@@ -81,14 +90,19 @@ func waitForExit(process: Process, pid: pid_t, timeout: TimeInterval) async -> B
             state.finish(continuation: continuation)
             return
         }
+        guard let timeout else { return }
         Task {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             guard state.beginTimeoutIfNeeded(processStillRunning: process.isRunning) else { return }
             signalProcessTree(root: pid, signal: SIGTERM)
-            if process.isRunning { process.terminate() }
+            if process.isRunning {
+                process.terminate()
+            }
             try? await Task.sleep(nanoseconds: 500_000_000)
             signalProcessTree(root: pid, signal: SIGKILL)
-            if process.isRunning { kill(pid, SIGKILL) }
+            if process.isRunning {
+                kill(pid, SIGKILL)
+            }
             state.finish(continuation: continuation)
         }
     }
@@ -125,7 +139,7 @@ func collect(
     _ = await (outTask.value, errTask.value)
 }
 
-func runShell(command: String, timeout: TimeInterval) async -> (timedOut: Bool, status: Int32, elapsed: Double) {
+func runShell(command: String, timeout: TimeInterval?) async -> (timedOut: Bool, status: Int32, elapsed: Double) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/bash")
     process.arguments = ["-c", command]
@@ -145,7 +159,11 @@ func runShell(command: String, timeout: TimeInterval) async -> (timedOut: Bool, 
     return (timedOut, process.terminationStatus, Date().timeIntervalSince(started))
 }
 
-print("ShellTool process timeout proof (process tree + bounded drain)")
+func processExists(_ pid: pid_t) -> Bool {
+    kill(pid, 0) == 0
+}
+
+print("ShellTool process timeout proof (correct child count + descendant gone)")
 print("  case1: hung sleep with timeout=1")
 let hung = await runShell(command: "sleep 30", timeout: 1)
 print("  timedOut=\(hung.timedOut) status=\(hung.status) elapsed=\(String(format: "%.2f", hung.elapsed))s")
@@ -154,16 +172,35 @@ print("  case2: fast echo with timeout=5")
 let ok = await runShell(command: "echo shell-timeout-ok", timeout: 5)
 print("  timedOut=\(ok.timedOut) status=\(ok.status) elapsed=\(String(format: "%.2f", ok.elapsed))s")
 
-print("  case3: descendant holds stdout (sleep & forever loop) timeout=1")
-let tree = await runShell(command: "sleep 120 & while true; do sleep 1; done", timeout: 1)
+print("  case3: descendant holds stdout; record child pid and verify gone after timeout=1")
+let pidFile = FileManager.default.temporaryDirectory
+    .appendingPathComponent("prove-shell-child-\(UUID().uuidString).pid")
+defer { try? FileManager.default.removeItem(at: pidFile) }
+let treeCmd =
+    "sleep 120 & echo $! > '\(pidFile.path)'; while true; do sleep 1; done"
+let tree = await runShell(command: treeCmd, timeout: 1)
+usleep(300_000)
+let pidText = (try? String(contentsOf: pidFile, encoding: .utf8))?
+    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+let childPid = pid_t(pidText) ?? -1
+let childAlive = childPid > 0 && processExists(childPid)
 print("  timedOut=\(tree.timedOut) status=\(tree.status) elapsed=\(String(format: "%.2f", tree.elapsed))s")
+print("  childPid=\(childPid) childAliveAfterTimeout=\(childAlive)")
+print("  expected: timedOut=true elapsed<5s childAliveAfterTimeout=false")
+
+print("  case4: omitted timeout allows multi-second command")
+let unlimited = await runShell(command: "sleep 2; echo omitted-ok", timeout: nil)
+print(
+    "  timedOut=\(unlimited.timedOut) status=\(unlimited.status) elapsed=\(String(format: "%.2f", unlimited.elapsed))s")
 
 let hungOK = hung.timedOut && hung.elapsed < 3.0 && hung.elapsed >= 0.9
 let echoOK = !ok.timedOut && ok.status == 0 && ok.elapsed < 2.0
-let treeOK = tree.timedOut && tree.elapsed < 5.0
-if hungOK && echoOK && treeOK {
-    print("PROOF_OK shell deadline covers hang, success, and process-tree pipe hold")
+let treeOK = tree.timedOut && tree.elapsed < 5.0 && childPid > 0 && !childAlive
+let omitOK = !unlimited.timedOut && unlimited.status == 0 && unlimited.elapsed >= 1.5
+if hungOK, echoOK, treeOK, omitOK {
+    print("PROOF_OK hang, success, process-tree kill (descendant gone), omitted-timeout unlimited")
     exit(0)
 }
-print("PROOF_FAIL hungOK=\(hungOK) echoOK=\(echoOK) treeOK=\(treeOK)")
+
+print("PROOF_FAIL hungOK=\(hungOK) echoOK=\(echoOK) treeOK=\(treeOK) omitOK=\(omitOK)")
 exit(1)

@@ -261,20 +261,25 @@ public struct ShellTool: MCPTool {
     }
 
     /// Depth-first SIG* of every living descendant, then the root.
+    ///
+    /// `proc_listchildpids` returns the number of PIDs written (not a byte length).
+    /// The buffersize argument is still in bytes.
     private static func signalProcessTree(root: pid_t, signal: Int32) {
         guard root > 0 else { return }
         var buffer = [pid_t](repeating: 0, count: 512)
-        let bytes = buffer.withUnsafeMutableBufferPointer { buf -> Int32 in
+        let childCount = buffer.withUnsafeMutableBufferPointer { buf -> Int in
             guard let base = buf.baseAddress else { return 0 }
-            return proc_listchildpids(root, base, Int32(buf.count * MemoryLayout<pid_t>.stride))
+            let returned = proc_listchildpids(
+                root,
+                base,
+                Int32(buf.count * MemoryLayout<pid_t>.stride))
+            return max(0, Int(returned))
         }
-        if bytes > 0 {
-            let count = Int(bytes) / MemoryLayout<pid_t>.stride
-            for index in 0..<count {
-                let child = buffer[index]
-                if child > 0, child != root {
-                    self.signalProcessTree(root: child, signal: signal)
-                }
+        let limit = min(childCount, buffer.count)
+        for index in 0..<limit {
+            let child = buffer[index]
+            if child > 0, child != root {
+                self.signalProcessTree(root: child, signal: signal)
             }
         }
         _ = kill(root, signal)

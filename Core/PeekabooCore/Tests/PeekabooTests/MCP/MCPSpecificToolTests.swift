@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import MCP
 import PeekabooFoundation
@@ -556,6 +557,36 @@ struct MCPSpecificToolTests {
         } else {
             Issue.record("Expected timeout error text from shell tool")
         }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool timeout terminates recorded descendant pid`() async throws {
+        let tool = makeTestTool(ShellTool.init)
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shell-tool-child-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+
+        let result = try await tool.execute(arguments: ToolArguments(raw: [
+            "command":
+                "sleep 120 & echo $! > '\(pidFile.path)'; while true; do sleep 1; done",
+            "timeout": 1,
+        ]))
+
+        #expect(result.isError == true)
+
+        // Allow reaping after SIGKILL.
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let childPid = pid_t(pidText), childPid > 0 else {
+            Issue.record("Expected child pid file contents, got \(pidText)")
+            return
+        }
+
+        // kill(pid, 0) succeeds only if a process with that pid still exists.
+        let stillAlive = kill(childPid, 0) == 0
+        #expect(stillAlive == false)
     }
 }
 
