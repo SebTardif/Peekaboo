@@ -10,37 +10,50 @@ extension DockService {
         _ process: Process,
         timeoutSeconds: TimeInterval = 15) throws
     {
-        let group = DispatchGroup()
-        group.enter()
-        let lock = NSLock()
-        var left = false
-        let leaveOnce: () -> Void = {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !left else { return }
-            left = true
-            group.leave()
+        final class LeaveOnce: @unchecked Sendable {
+            private let lock = NSLock()
+            private let group = DispatchGroup()
+            private var left = false
+
+            init() {
+                self.group.enter()
+            }
+
+            func leave() {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                guard !self.left else { return }
+                self.left = true
+                self.group.leave()
+            }
+
+            func wait(timeoutSeconds: TimeInterval) -> DispatchTimeoutResult {
+                self.group.wait(timeout: .now() + timeoutSeconds)
+            }
         }
 
-        process.terminationHandler = { _ in leaveOnce() }
+        let once = LeaveOnce()
+        process.terminationHandler = { _ in
+            once.leave()
+        }
         // Cover the race where the child exits before the handler is installed.
         if !process.isRunning {
-            leaveOnce()
+            once.leave()
         }
 
-        let waitResult = group.wait(timeout: .now() + timeoutSeconds)
+        let waitResult = once.wait(timeoutSeconds: timeoutSeconds)
         guard waitResult == .timedOut else {
             return
         }
 
         process.terminate()
-        let grace = group.wait(timeout: .now() + 1.0)
+        let grace = once.wait(timeoutSeconds: 1.0)
         if grace == .timedOut {
             let pid = process.processIdentifier
             if pid > 0 {
                 kill(pid, SIGKILL)
             }
-            _ = group.wait(timeout: .now() + 1.0)
+            _ = once.wait(timeoutSeconds: 1.0)
         }
 
         throw PeekabooError.operationError(

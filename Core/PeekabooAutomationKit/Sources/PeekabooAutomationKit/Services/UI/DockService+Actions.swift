@@ -127,7 +127,7 @@ extension DockService {
         process.standardError = errorPipe
 
         try process.run()
-        try waitForProcessExit(process, timeoutSeconds: 15)
+        try DockService.waitForProcessExit(process, timeoutSeconds: 15)
 
         if process.terminationStatus != 0 {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
@@ -166,7 +166,7 @@ extension DockService {
         task.standardError = Pipe()
 
         try task.run()
-        try waitForProcessExit(task, timeoutSeconds: 30)
+        try DockService.waitForProcessExit(task, timeoutSeconds: 30)
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let result = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
