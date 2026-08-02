@@ -233,7 +233,17 @@ extension ElementDetectionService {
             }
 
             attempt += 1
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            // Honor cancellation between sparse-web retries (timeout runner cancels this task).
+            do {
+                try await Task.sleep(nanoseconds: 150_000_000)
+            } catch is CancellationError {
+                break
+            } catch {
+                break
+            }
+            guard !Task.isCancelled else {
+                break
+            }
         } while true
 
         return ElementCollection(
