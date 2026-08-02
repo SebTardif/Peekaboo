@@ -9,16 +9,15 @@ import MCP
 import os.log
 import TachikomaMCP
 
-/// libproc is part of libSystem on Apple platforms; declare the child-list entrypoint.
-@_silgen_name("proc_listchildpids")
-private func proc_listchildpids(_ pid: pid_t, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
-
 /// MCP tool for executing shell commands
 public struct ShellTool: MCPTool {
     private let logger = os.Logger(subsystem: "boo.peekaboo.mcp", category: "ShellTool")
 
     /// Max time to wait for pipe EOF after the process deadline fires.
     private static let postTimeoutDrainSeconds: TimeInterval = 0.5
+
+    /// Grace period between cooperative and forced process-group termination.
+    private static let terminationGraceSeconds: TimeInterval = 0.5
 
     /// Hard ceiling when a client opts into an explicit timeout.
     public static let maxTimeoutSeconds: TimeInterval = 3600
@@ -73,46 +72,43 @@ public struct ShellTool: MCPTool {
         let timeoutSeconds = Self.resolveTimeout(arguments.getNumber("timeout"))
         self.logger.info("Executing shell command: \(command)")
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", command]
-
         let outputPipe = Pipe()
         let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
 
         do {
-            try process.run()
-            let pid = process.processIdentifier
+            let pid = try Self.spawnShell(
+                command: command,
+                outputPipe: outputPipe,
+                errorPipe: errorPipe)
 
             // Non-blocking concurrent drains: large output cannot deadlock, and a post-timeout
             // deadline can stop waiting even if a write-end holder survives briefly.
             let outputFD = outputPipe.fileHandleForReading.fileDescriptor
             let errorFD = errorPipe.fileHandleForReading.fileDescriptor
+            let outputReadState = ShellPipeReadState()
+            let errorReadState = ShellPipeReadState()
             let outputTask = Task.detached(priority: .userInitiated) {
-                Self.readFileDescriptorToEnd(outputFD, deadline: nil)
+                Self.readFileDescriptorToEnd(outputFD, state: outputReadState)
             }
             let errorTask = Task.detached(priority: .userInitiated) {
-                Self.readFileDescriptorToEnd(errorFD, deadline: nil)
+                Self.readFileDescriptorToEnd(errorFD, state: errorReadState)
             }
 
-            let timedOut = await Self.waitForExit(
-                process: process,
+            let exit = await Self.waitForExit(
                 processIdentifier: pid,
                 timeout: timeoutSeconds)
 
             let (outputData, errorData) = await Self.collectPipeData(
                 outputTask: outputTask,
                 errorTask: errorTask,
-                outputFD: outputFD,
-                errorFD: errorFD,
-                timedOut: timedOut)
+                outputReadState: outputReadState,
+                errorReadState: errorReadState,
+                timedOut: exit.timedOut)
 
             let output = String(data: outputData, encoding: .utf8) ?? ""
             let error = String(data: errorData, encoding: .utf8) ?? ""
 
-            if timedOut {
+            if exit.timedOut {
                 let appliedTimeout = timeoutSeconds ?? 0
                 let message = error.isEmpty ? output : error
                 let detail = message.isEmpty ? "" : ": \(message)"
@@ -125,12 +121,12 @@ public struct ShellTool: MCPTool {
                     isError: true)
             }
 
-            if process.terminationStatus != 0 {
+            if exit.exitCode != 0 {
                 let message = error.isEmpty ? output : error
-                self.logger.error("Command failed with exit code \(process.terminationStatus): \(message)")
+                self.logger.error("Command failed with exit code \(exit.exitCode): \(message)")
                 return ToolResponse(
                     content: [.text(
-                        text: "Command failed (exit code \(process.terminationStatus)): \(message)",
+                        text: "Command failed (exit code \(exit.exitCode)): \(message)",
                         annotations: nil,
                         _meta: nil)],
                     isError: true)
@@ -175,118 +171,162 @@ public struct ShellTool: MCPTool {
         return String(format: "%.1f", timeout)
     }
 
-    /// Waits for process exit, or kills the process tree after an explicit `timeout`.
-    ///
-    /// When `timeout` is `nil`, waits only for natural process exit (legacy unlimited).
-    /// Returns `true` when the deadline was hit and termination was initiated by this waiter.
-    private static func waitForExit(
-        process: Process,
-        processIdentifier pid: pid_t,
-        timeout: TimeInterval?) async -> Bool
-    {
-        await withCheckedContinuation { continuation in
-            let state = ShellProcessWaitState()
-            process.terminationHandler = { _ in
-                state.finish(continuation: continuation)
-            }
+    private static func spawnShell(command: String, outputPipe: Pipe, errorPipe: Pipe) throws -> pid_t {
+        let outputRead = outputPipe.fileHandleForReading.fileDescriptor
+        let outputWrite = outputPipe.fileHandleForWriting.fileDescriptor
+        let errorRead = errorPipe.fileHandleForReading.fileDescriptor
+        let errorWrite = errorPipe.fileHandleForWriting.fileDescriptor
 
-            if !process.isRunning {
-                state.finish(continuation: continuation)
-                return
-            }
+        var fileActions: posix_spawn_file_actions_t?
+        try Self.checkSpawnResult(posix_spawn_file_actions_init(&fileActions), operation: "initialize file actions")
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
 
-            guard let timeout else {
-                // Unlimited: only process exit finishes the wait.
-                return
-            }
-
-            let timeoutNanoseconds = UInt64(max(timeout, 0.001) * 1_000_000_000)
-            Task {
-                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                guard state.beginTimeoutIfNeeded(processStillRunning: process.isRunning) else {
-                    return
-                }
-                // Kill descendants first, then the shell. Process-group kill is unreliable
-                // with job-control shells (children can be in separate groups).
-                Self.signalProcessTree(root: pid, signal: SIGTERM)
-                if process.isRunning {
-                    process.terminate()
-                }
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                Self.signalProcessTree(root: pid, signal: SIGKILL)
-                if process.isRunning {
-                    kill(pid, SIGKILL)
-                }
-                // Unblock even if Foundation never reports exit (wedged wait source).
-                state.finish(continuation: continuation)
-            }
+        try Self.checkSpawnResult(
+            posix_spawn_file_actions_adddup2(&fileActions, outputWrite, STDOUT_FILENO),
+            operation: "redirect stdout")
+        try Self.checkSpawnResult(
+            posix_spawn_file_actions_adddup2(&fileActions, errorWrite, STDERR_FILENO),
+            operation: "redirect stderr")
+        try Self.checkSpawnResult(
+            posix_spawn_file_actions_addclose(&fileActions, outputRead),
+            operation: "close child stdout read end")
+        try Self.checkSpawnResult(
+            posix_spawn_file_actions_addclose(&fileActions, errorRead),
+            operation: "close child stderr read end")
+        if outputWrite != STDOUT_FILENO {
+            try Self.checkSpawnResult(
+                posix_spawn_file_actions_addclose(&fileActions, outputWrite),
+                operation: "close child stdout write end")
         }
+        if errorWrite != STDERR_FILENO {
+            try Self.checkSpawnResult(
+                posix_spawn_file_actions_addclose(&fileActions, errorWrite),
+                operation: "close child stderr write end")
+        }
+
+        var attributes: posix_spawnattr_t?
+        try Self.checkSpawnResult(posix_spawnattr_init(&attributes), operation: "initialize spawn attributes")
+        defer { posix_spawnattr_destroy(&attributes) }
+
+        try Self.checkSpawnResult(
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)),
+            operation: "set process-group spawn flag")
+        try Self.checkSpawnResult(
+            posix_spawnattr_setpgroup(&attributes, 0),
+            operation: "create process group")
+
+        var arguments = Self.makeCStringArray(["/bin/bash", "-c", command])
+        defer { Self.freeCStringArray(arguments) }
+        let environment = ProcessInfo.processInfo.environment.map { key, value in "\(key)=\(value)" }
+        var environmentPointers = Self.makeCStringArray(environment)
+        defer { Self.freeCStringArray(environmentPointers) }
+
+        var pid: pid_t = 0
+        let spawnResult = "/bin/bash".withCString { executable in
+            posix_spawn(&pid, executable, &fileActions, &attributes, &arguments, &environmentPointers)
+        }
+        outputPipe.fileHandleForWriting.closeFile()
+        errorPipe.fileHandleForWriting.closeFile()
+        try Self.checkSpawnResult(spawnResult, operation: "launch /bin/bash")
+        return pid
+    }
+
+    /// Waits for process exit, or terminates its launch-owned process group after an explicit timeout.
+    ///
+    /// The timeout path deliberately does not reap the group leader between SIGTERM and SIGKILL. Its
+    /// zombie PID therefore cannot be recycled into an unrelated process group during the grace period.
+    private static func waitForExit(
+        processIdentifier pid: pid_t,
+        timeout: TimeInterval?) async -> ShellProcessExit
+    {
+        await Task.detached(priority: .userInitiated) {
+            Self.waitForExitBlocking(processIdentifier: pid, timeout: timeout)
+        }.value
+    }
+
+    private static func waitForExitBlocking(
+        processIdentifier pid: pid_t,
+        timeout: TimeInterval?) -> ShellProcessExit
+    {
+        let clock = ContinuousClock()
+        let timeoutDeadline = timeout.map { clock.now.advanced(by: .seconds(max($0, 0.001))) }
+        var waitStatus: Int32 = 0
+
+        while true {
+            let result = Darwin.waitpid(pid, &waitStatus, WNOHANG)
+            if result == pid {
+                return ShellProcessExit(timedOut: false, exitCode: Self.exitCode(fromWaitStatus: waitStatus))
+            }
+            if result == -1, errno != EINTR {
+                return ShellProcessExit(timedOut: false, exitCode: -1)
+            }
+            if let timeoutDeadline, clock.now >= timeoutDeadline {
+                break
+            }
+            usleep(10000)
+        }
+
+        _ = Darwin.kill(-pid, SIGTERM)
+        usleep(useconds_t(self.terminationGraceSeconds * 1_000_000))
+        _ = Darwin.kill(-pid, SIGKILL)
+
+        let reapDeadline = clock.now.advanced(by: .seconds(self.terminationGraceSeconds))
+        while clock.now < reapDeadline {
+            let result = Darwin.waitpid(pid, &waitStatus, WNOHANG)
+            if result == pid {
+                return ShellProcessExit(timedOut: true, exitCode: Self.exitCode(fromWaitStatus: waitStatus))
+            }
+            if result == -1, errno != EINTR {
+                return ShellProcessExit(timedOut: true, exitCode: 128 + SIGKILL)
+            }
+            usleep(10000)
+        }
+
+        Self.startBackgroundReaper(processIdentifier: pid)
+        return ShellProcessExit(timedOut: true, exitCode: 128 + SIGKILL)
     }
 
     private static func collectPipeData(
         outputTask: Task<Data, Never>,
         errorTask: Task<Data, Never>,
-        outputFD: Int32,
-        errorFD: Int32,
+        outputReadState: ShellPipeReadState,
+        errorReadState: ShellPipeReadState,
         timedOut: Bool) async -> (Data, Data)
     {
         if !timedOut {
             return await (outputTask.value, errorTask.value)
         }
 
-        let drainNanoseconds = UInt64(self.postTimeoutDrainSeconds * 1_000_000_000)
-        let finishedInTime = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                _ = await (outputTask.value, errorTask.value)
-                return true
+        let clock = ContinuousClock()
+        let drainDeadline = clock.now.advanced(by: .seconds(self.postTimeoutDrainSeconds))
+        while clock.now < drainDeadline {
+            if outputReadState.isFinished, errorReadState.isFinished {
+                return await (outputTask.value, errorTask.value)
             }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: drainNanoseconds)
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        if finishedInTime {
-            return await (outputTask.value, errorTask.value)
-        }
-
-        // Outstanding readers are non-blocking loops; close the FDs so they observe errors/EOF
-        // and return without waiting for a surviving write-end holder.
-        _ = Darwin.close(outputFD)
-        _ = Darwin.close(errorFD)
+        outputReadState.stop()
+        errorReadState.stop()
         return await (outputTask.value, errorTask.value)
     }
 
-    /// Depth-first SIG* of every living descendant, then the root.
-    ///
-    /// `proc_listchildpids` returns the number of PIDs written (not a byte length).
-    /// The buffersize argument is still in bytes.
-    private static func signalProcessTree(root: pid_t, signal: Int32) {
-        guard root > 0 else { return }
-        var buffer = [pid_t](repeating: 0, count: 512)
-        let childCount = buffer.withUnsafeMutableBufferPointer { buf -> Int in
-            guard let base = buf.baseAddress else { return 0 }
-            let returned = proc_listchildpids(
-                root,
-                base,
-                Int32(buf.count * MemoryLayout<pid_t>.stride))
-            return max(0, Int(returned))
-        }
-        let limit = min(childCount, buffer.count)
-        for index in 0..<limit {
-            let child = buffer[index]
-            if child > 0, child != root {
-                self.signalProcessTree(root: child, signal: signal)
+    private static func startBackgroundReaper(processIdentifier pid: pid_t) {
+        Task.detached(priority: .utility) {
+            var waitStatus: Int32 = 0
+            while true {
+                let result = Darwin.waitpid(pid, &waitStatus, WNOHANG)
+                if result == pid || (result == -1 && errno != EINTR) {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
-        _ = kill(root, signal)
     }
 
-    /// Read until EOF, error, or optional deadline. Uses non-blocking I/O so a deadline works.
-    private static func readFileDescriptorToEnd(_ fd: Int32, deadline: Date?) -> Data {
+    /// Read until EOF, error, or a timeout requests a bounded stop.
+    private static func readFileDescriptorToEnd(_ fd: Int32, state: ShellPipeReadState) -> Data {
+        defer { state.finish() }
         let flags = fcntl(fd, F_GETFL)
         if flags >= 0 {
             _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
@@ -295,7 +335,7 @@ public struct ShellTool: MCPTool {
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
         while true {
-            if let deadline, Date() >= deadline {
+            if state.isStopped {
                 return data
             }
             let count = buffer.withUnsafeMutableBufferPointer { buf -> Int in
@@ -313,37 +353,74 @@ public struct ShellTool: MCPTool {
                 usleep(10000)
                 continue
             }
-            // EBADF after close, or other hard errors: return what we have.
+            // A hard read error ends collection and preserves the bytes already received.
             return data
         }
     }
-}
 
-/// Shared state for process exit vs timeout race.
-private final class ShellProcessWaitState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var finished = false
-    private var timedOut = false
-
-    func beginTimeoutIfNeeded(processStillRunning: Bool) -> Bool {
-        self.lock.lock()
-        defer { self.lock.unlock() }
-        if self.finished || !processStillRunning {
-            return false
-        }
-        self.timedOut = true
-        return true
+    private static func makeCStringArray(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
+        var pointers = strings.map { strdup($0) }
+        pointers.append(nil)
+        return pointers
     }
 
-    func finish(continuation: CheckedContinuation<Bool, Never>) {
-        self.lock.lock()
-        guard !self.finished else {
-            self.lock.unlock()
-            return
+    private static func freeCStringArray(_ pointers: [UnsafeMutablePointer<CChar>?]) {
+        for pointer in pointers {
+            free(pointer)
         }
-        self.finished = true
-        let result = self.timedOut
+    }
+
+    private static func checkSpawnResult(_ code: Int32, operation: String) throws {
+        guard code != 0 else { return }
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: "\(operation) failed: \(String(cString: strerror(code)))"])
+    }
+
+    private static func exitCode(fromWaitStatus status: Int32) -> Int32 {
+        let signal = status & 0x7F
+        if signal == 0 {
+            return (status >> 8) & 0xFF
+        }
+        if signal != 0x7F {
+            return 128 + signal
+        }
+        return status
+    }
+}
+
+private struct ShellProcessExit: Sendable {
+    let timedOut: Bool
+    let exitCode: Int32
+}
+
+private final class ShellPipeReadState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    private var finished = false
+
+    var isStopped: Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.stopped
+    }
+
+    var isFinished: Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.finished
+    }
+
+    func stop() {
+        self.lock.lock()
+        self.stopped = true
         self.lock.unlock()
-        continuation.resume(returning: result)
+    }
+
+    func finish() {
+        self.lock.lock()
+        self.finished = true
+        self.lock.unlock()
     }
 }

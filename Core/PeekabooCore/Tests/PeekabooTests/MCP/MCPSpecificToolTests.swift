@@ -541,10 +541,10 @@ struct MCPSpecificToolTests {
         let tool = makeTestTool(ShellTool.init)
         let started = Date()
 
-        // Foreground loop never exits; background sleep inherits stdout and would keep
-        // the pipe open if only the direct shell process were signaled.
+        // Both the shell and its child ignore SIGTERM, exercising the process group's
+        // SIGKILL pass while the child keeps stdout open.
         let result = try await tool.execute(arguments: ToolArguments(raw: [
-            "command": "sleep 120 & while true; do sleep 1; done",
+            "command": "trap '' TERM; sleep 120 & while true; do sleep 1; done",
             "timeout": 1,
         ]))
 
@@ -568,7 +568,7 @@ struct MCPSpecificToolTests {
 
         let result = try await tool.execute(arguments: ToolArguments(raw: [
             "command":
-                "sleep 120 & echo $! > '\(pidFile.path)'; while true; do sleep 1; done",
+                "trap '' TERM; sleep 120 & echo $! > '\(pidFile.path)'; while true; do sleep 1; done",
             "timeout": 1,
         ]))
 

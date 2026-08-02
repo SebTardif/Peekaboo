@@ -2,6 +2,9 @@
 
 ## [3.9.9] - Unreleased
 
+### Fixed
+- MCP shell commands now support an opt-in timeout that safely terminates the launch-owned process group and bounds pipe draining without changing the legacy unlimited default. Thanks @SebTardif for #298.
+
 ## [3.9.8] - 2026-07-23
 
 ### Fixed
