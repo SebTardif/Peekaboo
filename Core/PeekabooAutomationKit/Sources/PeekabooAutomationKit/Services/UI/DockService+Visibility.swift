@@ -56,7 +56,7 @@ extension DockService {
                 process.standardError = pipe
 
                 try process.run()
-                process.waitUntilExit()
+                try DockService.waitForProcessExit(process, timeoutSeconds: 15)
 
                 if process.terminationStatus != 0 {
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
