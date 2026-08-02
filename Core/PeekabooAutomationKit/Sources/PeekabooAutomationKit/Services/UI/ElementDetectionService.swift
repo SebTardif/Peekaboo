@@ -233,15 +233,7 @@ extension ElementDetectionService {
             }
 
             attempt += 1
-            // Honor cancellation between sparse-web retries (timeout runner cancels this task).
-            do {
-                try await Task.sleep(nanoseconds: 150_000_000)
-            } catch is CancellationError {
-                break
-            } catch {
-                break
-            }
-            guard !Task.isCancelled else {
+            guard await ElementDetectionWebFocusRetryDelay.wait() else {
                 break
             }
         } while true
@@ -249,6 +241,17 @@ extension ElementDetectionService {
         return ElementCollection(
             elements: detectedElements,
             truncationInfo: truncationInfo)
+    }
+}
+
+@_spi(Testing) public enum ElementDetectionWebFocusRetryDelay {
+    @_spi(Testing) public static func wait(nanoseconds: UInt64 = 150_000_000) async -> Bool {
+        do {
+            try await Task.sleep(nanoseconds: nanoseconds)
+        } catch {
+            return false
+        }
+        return !Task.isCancelled
     }
 }
 
