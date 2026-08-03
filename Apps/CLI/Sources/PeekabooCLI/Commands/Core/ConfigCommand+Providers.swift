@@ -9,6 +9,7 @@ enum ConfigCommandTimeouts {
 
 enum TimeoutError: Error {
     case timedOut
+    case cancelled
 }
 
 @Sendable
@@ -24,9 +25,11 @@ func withTimeout<T: Sendable>(
             do {
                 try await Task.sleep(for: duration)
                 return .failure(.timedOut)
+            } catch is CancellationError {
+                // Cancelled by race win or outer cancel — not a wall-clock deadline.
+                return .failure(.cancelled)
             } catch {
-                // Cancelled when the operation wins the race; exit without reporting timeout.
-                return .failure(.timedOut)
+                return .failure(.cancelled)
             }
         }
         let result = await group.next()!

@@ -111,9 +111,11 @@ extension ConfigCommand {
             let error: String?
 
             switch result {
-            case .failure:
+            case .failure(.timedOut):
                 success = false
                 error = "Connection test timed out"
+            case .failure(.cancelled):
+                throw CancellationError()
             case let .success(value):
                 success = value.0
                 error = value.1
@@ -309,9 +311,11 @@ extension ConfigCommand {
                     await manager.discoverModelsForCustomProvider(id: providerId)
                 }
                 switch modelResult {
-                case .failure:
+                case .failure(.timedOut):
                     models = []
                     apiError = "Model discovery timed out"
+                case .failure(.cancelled):
+                    throw CancellationError()
                 case let .success(tuple):
                     models = tuple.models
                     apiError = tuple.error
