@@ -16,7 +16,11 @@ func withTimeout<T: Sendable>(
     }
 
     let timeoutTask = Task {
-        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        do {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        } catch {
+            return
+        }
         task.cancel()
     }
 

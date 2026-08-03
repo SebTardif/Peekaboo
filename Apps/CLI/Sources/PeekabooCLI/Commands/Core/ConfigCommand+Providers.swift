@@ -21,8 +21,13 @@ func withTimeout<T: Sendable>(
             await .success(operation())
         }
         group.addTask {
-            try? await Task.sleep(for: duration)
-            return .failure(.timedOut)
+            do {
+                try await Task.sleep(for: duration)
+                return .failure(.timedOut)
+            } catch {
+                // Cancelled when the operation wins the race; exit without reporting timeout.
+                return .failure(.timedOut)
+            }
         }
         let result = await group.next()!
         group.cancelAll()

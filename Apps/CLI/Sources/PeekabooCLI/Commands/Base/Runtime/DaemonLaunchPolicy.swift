@@ -648,8 +648,11 @@ enum DaemonLaunchPolicy {
             if !self.bridgeLeaseIsHeld(socketPath: socketPath) {
                 return .available
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            guard !Task.isCancelled else { break }
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                break
+            }
         }
         return self.bridgeLeaseIsHeld(socketPath: socketPath) ? .timedOut : .available
     }
@@ -775,8 +778,11 @@ enum DaemonLaunchPolicy {
                 return true
             }
             _ = try? await client.stopDaemon(expectedPID: expectedPID)
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            guard !Task.isCancelled else { break }
+            do {
+                try await Task.sleep(nanoseconds: 200_000_000)
+            } catch {
+                break
+            }
         }
 
         return await client.fetchControllableDaemonStatus()?.pid != expectedPID
