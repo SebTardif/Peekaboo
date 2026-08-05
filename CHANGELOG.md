@@ -2,9 +2,6 @@
 
 ## [3.9.11] - Unreleased
 
-### Fixed
-- Honor task cancellation in remaining daemon socket/stop poll sleeps and `withTimeout` timer sleeps (no more swallowed `CancellationError`). Thanks @SebTardif.
-
 ## [3.9.10] - 2026-08-02
 
 ### Changed
