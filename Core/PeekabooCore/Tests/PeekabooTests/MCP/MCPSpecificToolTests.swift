@@ -897,6 +897,63 @@ struct MCPSpecificToolTests {
         let stillAlive = kill(childPid, 0) == 0
         #expect(stillAlive == false)
     }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool post-timeout drain stops promptly when the caller is cancelled`() async {
+        let stopped = LockedFlag()
+        let task = Task {
+            await ShellTool.waitForPostTimeoutDrain(
+                isFinished: { false },
+                stop: { stopped.set() },
+                drainSeconds: 5)
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        await task.value
+        #expect(cancelledAt.duration(to: .now) < .seconds(1))
+        #expect(stopped.value)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func `Shell tool background reaper exits when cancelled`() async throws {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["30"]
+        try child.run()
+        defer {
+            child.terminate()
+            child.waitUntilExit()
+        }
+
+        let task = Task {
+            await ShellTool.reapDetachedProcess(
+                processIdentifier: child.processIdentifier,
+                maxDuration: 30)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        await task.value
+        #expect(cancelledAt.duration(to: .now) < .seconds(1))
+    }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.stored
+    }
+
+    func set() {
+        self.lock.lock()
+        self.stored = true
+        self.lock.unlock()
+    }
 }
 
 @MainActor

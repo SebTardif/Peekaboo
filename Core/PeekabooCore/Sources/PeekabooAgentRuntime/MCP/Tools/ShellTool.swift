@@ -16,6 +16,15 @@ public struct ShellTool: MCPTool {
     /// Max time to wait for pipe EOF after the process deadline fires.
     private static let postTimeoutDrainSeconds: TimeInterval = 0.5
 
+    /// Poll interval while waiting for post-timeout pipe EOF.
+    private static let drainPollNanoseconds: UInt64 = 10_000_000
+
+    /// Poll interval for the detached waitpid reaper.
+    private static let reaperPollNanoseconds: UInt64 = 1_000_000_000
+
+    /// Hard ceiling so a detached reaper cannot live forever if waitpid never succeeds.
+    static let backgroundReaperMaxDurationSeconds: TimeInterval = 60
+
     /// Grace period between cooperative and forced process-group termination.
     private static let terminationGraceSeconds: TimeInterval = 0.5
 
@@ -297,29 +306,71 @@ public struct ShellTool: MCPTool {
             return await (outputTask.value, errorTask.value)
         }
 
-        let clock = ContinuousClock()
-        let drainDeadline = clock.now.advanced(by: .seconds(self.postTimeoutDrainSeconds))
-        while clock.now < drainDeadline {
-            if outputReadState.isFinished, errorReadState.isFinished {
-                return await (outputTask.value, errorTask.value)
-            }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        outputReadState.stop()
-        errorReadState.stop()
+        await self.waitForPostTimeoutDrain(
+            isFinished: { outputReadState.isFinished && errorReadState.isFinished },
+            stop: {
+                outputReadState.stop()
+                errorReadState.stop()
+            },
+            drainSeconds: self.postTimeoutDrainSeconds)
         return await (outputTask.value, errorTask.value)
+    }
+
+    /// Waits for pipe EOF, the drain deadline, or caller cancellation.
+    ///
+    /// Cancellation must stop the readers immediately. Swallowing `CancellationError` from
+    /// `Task.sleep` keeps polling until the deadline and can leave an aborted agent turn
+    /// blocked for the remaining drain window.
+    static func waitForPostTimeoutDrain(
+        isFinished: @escaping @Sendable () -> Bool,
+        stop: @escaping @Sendable () -> Void,
+        drainSeconds: TimeInterval) async
+    {
+        let clock = ContinuousClock()
+        let drainDeadline = clock.now.advanced(by: .seconds(drainSeconds))
+        while clock.now < drainDeadline {
+            if Task.isCancelled {
+                stop()
+                return
+            }
+            if isFinished() {
+                return
+            }
+            do {
+                try await Task.sleep(nanoseconds: self.drainPollNanoseconds)
+            } catch {
+                stop()
+                return
+            }
+        }
+        stop()
     }
 
     private static func startBackgroundReaper(processIdentifier pid: pid_t) {
         Task.detached(priority: .utility) {
-            var waitStatus: Int32 = 0
-            while true {
-                let result = Darwin.waitpid(pid, &waitStatus, WNOHANG)
-                if result == pid || (result == -1 && errno != EINTR) {
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await Self.reapDetachedProcess(
+                processIdentifier: pid,
+                maxDuration: self.backgroundReaperMaxDurationSeconds)
+        }
+    }
+
+    /// Reaps `pid` with WNOHANG until the process exits, waitpid fails, cancellation, or `maxDuration`.
+    static func reapDetachedProcess(processIdentifier pid: pid_t, maxDuration: TimeInterval) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(maxDuration))
+        var waitStatus: Int32 = 0
+        while clock.now < deadline {
+            if Task.isCancelled {
+                return
+            }
+            let result = Darwin.waitpid(pid, &waitStatus, WNOHANG)
+            if result == pid || (result == -1 && errno != EINTR) {
+                return
+            }
+            do {
+                try await Task.sleep(nanoseconds: self.reaperPollNanoseconds)
+            } catch {
+                return
             }
         }
     }
