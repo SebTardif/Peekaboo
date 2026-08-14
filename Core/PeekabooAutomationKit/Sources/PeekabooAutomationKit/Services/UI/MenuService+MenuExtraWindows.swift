@@ -217,8 +217,12 @@ extension MenuService {
     }
 
     /// Invoke the LSUIElement helper (if built) to enumerate menu bar windows from a GUI context.
-    func getMenuBarItemsViaHelper(displayBounds: [CGRect]) -> [MenuExtraInfo]? {
-        let helperPath = [
+    func getMenuBarItemsViaHelper(
+        displayBounds: [CGRect],
+        helperPath: String? = nil,
+        timeoutSeconds: TimeInterval = 15) -> [MenuExtraInfo]?
+    {
+        let resolvedHelperPath = helperPath ?? [
             FileManager.default.currentDirectoryPath,
             "Helpers",
             "MenuBarHelper",
@@ -228,12 +232,12 @@ extension MenuService {
             "MacOS",
             "menubar-helper",
         ].joined(separator: "/")
-        guard FileManager.default.isExecutableFile(atPath: helperPath) else {
+        guard FileManager.default.isExecutableFile(atPath: resolvedHelperPath) else {
             return nil
         }
 
         let process = Process()
-        process.launchPath = helperPath
+        process.launchPath = resolvedHelperPath
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -244,7 +248,14 @@ extension MenuService {
             return nil
         }
 
-        process.waitUntilExit()
+        // Same bounded wait as dock helpers. waitUntilExit() hangs forever if the
+        // helper wedges, and peekaboo menubar list prefers this path when present.
+        do {
+            try DockService.waitForProcessExit(process, timeoutSeconds: timeoutSeconds)
+        } catch {
+            self.logger.debug("Menubar helper wait failed: \(error.localizedDescription)")
+            return nil
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let ids = json["window_ids"] as? [UInt32]
