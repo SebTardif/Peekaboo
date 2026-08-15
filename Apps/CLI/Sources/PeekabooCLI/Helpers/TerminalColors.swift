@@ -3,6 +3,7 @@
 //  PeekabooCLI
 //
 
+import Darwin
 import Foundation
 
 // MARK: - Terminal Color Codes
@@ -35,15 +36,75 @@ public func updateTerminalTitle(_ title: String) {
 
     do {
         try process.run()
-        process.waitUntilExit()
+        try waitForTerminalTitleProcessExit(process)
         if process.terminationStatus == 0 {
             return
         }
     } catch {
-        // VibeTunnel not available, fall through to ANSI
+        // VibeTunnel missing, failed, or wedged; fall through to ANSI
     }
 
     // Fallback to ANSI escape sequence
     print("\u{001B}]0;\(title)\u{0007}", terminator: "")
     fflush(stdout)
+}
+
+enum TerminalTitleProcessWaitError: Error {
+    case timedOut
+}
+
+/// Wait for the VibeTunnel title process with a hard deadline.
+///
+/// Foundation's `waitUntilExit()` can block forever if a wedged `vt` is first on PATH.
+nonisolated func waitForTerminalTitleProcessExit(
+    _ process: Process,
+    timeoutSeconds: TimeInterval = 2
+) throws {
+    final class LeaveOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private let group = DispatchGroup()
+        private var left = false
+
+        init() {
+            self.group.enter()
+        }
+
+        func leave() {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            guard !self.left else { return }
+            self.left = true
+            self.group.leave()
+        }
+
+        func wait(timeoutSeconds: TimeInterval) -> DispatchTimeoutResult {
+            self.group.wait(timeout: .now() + timeoutSeconds)
+        }
+    }
+
+    let once = LeaveOnce()
+    process.terminationHandler = { _ in
+        once.leave()
+    }
+    // Cover the race where the child exits before the handler is installed.
+    if !process.isRunning {
+        once.leave()
+    }
+
+    let waitResult = once.wait(timeoutSeconds: timeoutSeconds)
+    guard waitResult == .timedOut else {
+        return
+    }
+
+    process.terminate()
+    let grace = once.wait(timeoutSeconds: 1.0)
+    if grace == .timedOut {
+        let pid = process.processIdentifier
+        if pid > 0 {
+            kill(pid, SIGKILL)
+        }
+        _ = once.wait(timeoutSeconds: 1.0)
+    }
+
+    throw TerminalTitleProcessWaitError.timedOut
 }
