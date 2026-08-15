@@ -20,6 +20,22 @@ struct TerminalTitleProcessTests {
     }
 
     @Test
+    func `already exited child is not terminated again`() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "exit 0"]
+
+        try process.run()
+        process.waitUntilExit()
+        #expect(!process.isRunning)
+
+        try waitForTerminalTitleProcessExit(process, timeoutSeconds: 0.05)
+        #expect(!process.isRunning)
+        #expect(process.terminationReason == .exit)
+        #expect(process.terminationStatus == 0)
+    }
+
+    @Test
     func `timed out child is killed and reaped`() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

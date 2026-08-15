@@ -96,14 +96,18 @@ nonisolated func waitForTerminalTitleProcessExit(
         return
     }
 
-    process.terminate()
-    let grace = once.wait(timeoutSeconds: 1.0)
-    if grace == .timedOut {
-        let pid = process.processIdentifier
-        if pid > 0 {
-            kill(pid, SIGKILL)
+    // Child can exit after the group wait times out and before cleanup.
+    // Process.terminate() on an already-exited task can raise; match daemon cleanup.
+    if process.isRunning {
+        process.terminate()
+        let grace = once.wait(timeoutSeconds: 1.0)
+        if grace == .timedOut, process.isRunning {
+            let pid = process.processIdentifier
+            if pid > 0 {
+                kill(pid, SIGKILL)
+            }
+            _ = once.wait(timeoutSeconds: 1.0)
         }
-        _ = once.wait(timeoutSeconds: 1.0)
     }
 
     throw TerminalTitleProcessWaitError.timedOut
