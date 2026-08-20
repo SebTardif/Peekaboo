@@ -148,7 +148,7 @@ extension ConfigurationManager {
         provider: Configuration.CustomProvider,
         apiKey: String) async throws -> (success: Bool, error: String?)
     {
-        let url = URL(string: "\(provider.options.baseURL)/models")!
+        let url = try self.requiredEndpointURL(provider.options.baseURL, path: "models")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -174,7 +174,7 @@ extension ConfigurationManager {
         provider: Configuration.CustomProvider,
         apiKey: String) async throws -> (success: Bool, error: String?)
     {
-        let url = URL(string: "\(provider.options.baseURL)/messages")!
+        let url = try self.requiredEndpointURL(provider.options.baseURL, path: "messages")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -208,11 +208,18 @@ extension ConfigurationManager {
         provider.models?.keys.min() ?? "claude-opus-5"
     }
 
+    private func requiredEndpointURL(_ baseURL: String, path: String) throws -> URL {
+        guard let url = URL(string: "\(baseURL)/\(path)") else {
+            throw ConfigurationValidationError.invalidURL("Invalid provider URL: \(baseURL)/\(path)")
+        }
+        return url
+    }
+
     private func discoverOpenAICompatibleModels(
         provider: Configuration.CustomProvider,
         apiKey: String) async throws -> (models: [String], error: String?)
     {
-        let url = URL(string: "\(provider.options.baseURL)/models")!
+        let url = try self.requiredEndpointURL(provider.options.baseURL, path: "models")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")

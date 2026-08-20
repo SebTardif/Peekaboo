@@ -7,6 +7,8 @@ import Testing
 
 @Suite(.tags(.safe), .serialized)
 struct ConfigModelsProviderTests {
+    private static let invalidProviderBaseURL = "https://["
+
     @Test
     func `Saving provider models preserves configured model capabilities`() async throws {
         try await self.withTempConfigDir {
@@ -202,6 +204,91 @@ struct ConfigModelsProviderTests {
         }
     }
 
+    @Test
+    func `OpenAI provider test reports malformed persisted URL as JSON connection failure`() async throws {
+        try await self.withTempConfigDir {
+            try self.seedBrokenProvider(id: "broken-openai", type: .openai)
+
+            var command = ConfigCommand.TestProviderCommand()
+            command.providerId = "broken-openai"
+            let output = try await self.captureStandardOutput {
+                let exitCode = await #expect(throws: ExitCode.self) {
+                    try await command.run(using: self.makeRuntime(jsonOutput: true))
+                }
+                #expect(exitCode == .failure)
+            }
+
+            let response = try JSONDecoder().decode(
+                ProviderConnectionJSONResponse.self,
+                from: Data(output.utf8)
+            )
+            #expect(!response.success)
+            #expect(response.error.code == "CONNECTION_FAILED")
+            #expect(response.error.message.contains("Invalid provider URL"))
+            #expect(response.error.message.contains(Self.invalidProviderBaseURL))
+        }
+    }
+
+    @Test
+    func `Anthropic provider test reports malformed persisted URL as JSON connection failure`() async throws {
+        try await self.withTempConfigDir {
+            try self.seedBrokenProvider(id: "broken-anthropic", type: .anthropic)
+
+            var command = ConfigCommand.TestProviderCommand()
+            command.providerId = "broken-anthropic"
+            let output = try await self.captureStandardOutput {
+                let exitCode = await #expect(throws: ExitCode.self) {
+                    try await command.run(using: self.makeRuntime(jsonOutput: true))
+                }
+                #expect(exitCode == .failure)
+            }
+
+            let response = try JSONDecoder().decode(
+                ProviderConnectionJSONResponse.self,
+                from: Data(output.utf8)
+            )
+            #expect(!response.success)
+            #expect(response.error.code == "CONNECTION_FAILED")
+            #expect(response.error.message.contains("Invalid provider URL"))
+            #expect(response.error.message.contains(Self.invalidProviderBaseURL))
+        }
+    }
+
+    @Test
+    func `OpenAI model discovery reports malformed persisted URL as an ordinary failure`() async throws {
+        try await self.withTempConfigDir {
+            try self.seedBrokenProvider(id: "broken-discover", type: .openai)
+
+            var command = ConfigCommand.ModelsProviderCommand()
+            command.providerId = "broken-discover"
+            command.discover = true
+            let output = try await self.captureStandardOutput {
+                let exitCode = await #expect(throws: ExitCode.self) {
+                    try await command.run(using: self.makeRuntime())
+                }
+                #expect(exitCode == .failure)
+            }
+
+            #expect(output.contains("Failed to discover models"))
+            #expect(output.contains("Invalid provider URL"))
+            #expect(output.contains(Self.invalidProviderBaseURL))
+        }
+    }
+
+    private func seedBrokenProvider(id: String, type: Configuration.CustomProvider.ProviderType) throws {
+        let provider = Configuration.CustomProvider(
+            name: "Broken Provider",
+            type: type,
+            options: .init(baseURL: Self.invalidProviderBaseURL, apiKey: "test-key")
+        )
+        try PeekabooCore.ConfigurationManager.shared.updateConfiguration { configuration in
+            if configuration.customProviders == nil {
+                configuration.customProviders = [:]
+            }
+            configuration.customProviders?[id] = provider
+        }
+    }
+
     private func makeRuntime(jsonOutput: Bool = false) -> CommandRuntime {
         CommandRuntime(
             configuration: .init(verbose: false, jsonOutput: jsonOutput, logLevel: nil),
@@ -281,6 +368,16 @@ private struct ModelsProviderJSONResponse: Decodable {
 private struct ModelsProviderJSONData: Decodable {
     let models: [String]
     let saved: Bool
+}
+
+private struct ProviderConnectionJSONResponse: Decodable {
+    let success: Bool
+    let error: ProviderConnectionJSONError
+}
+
+private struct ProviderConnectionJSONError: Decodable {
+    let code: String
+    let message: String
 }
 
 private final class AcceptedRequestCounter: @unchecked Sendable {
