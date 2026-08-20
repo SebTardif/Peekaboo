@@ -27,8 +27,8 @@ Starting with v3, Peekaboo includes comprehensive window focus management that:
 
 - **Tracks window identity** across interactions using stable window IDs
 - **Detects window location** across different Spaces
-- **Switches Spaces automatically** when needed
-- **Ensures window focus** before any interaction
+- **Switches Spaces only with explicit foreground consent**
+- **Ensures window focus** before foreground interaction
 - **Handles edge cases** like minimized windows, closed windows, and multi-display setups
 
 This eliminates the need for manual window management in your automation scripts.
@@ -67,7 +67,7 @@ Foreground interaction commands automatically handle focus:
 peekaboo click "Submit" --app Safari --foreground
 peekaboo type "Hello world" --app TextEdit --foreground
 peekaboo scroll --direction down --foreground
-peekaboo menu click --app Safari --item "New Tab"
+peekaboo menu click --app Safari --item "New Tab" --foreground
 peekaboo press cmd+s --app TextEdit --foreground
 peekaboo drag --from "$SOURCE_ID" --to "$TARGET_ID" --foreground
 ```
@@ -75,7 +75,8 @@ peekaboo drag --from "$SOURCE_ID" --to "$TARGET_ID" --foreground
 ### Default Behavior
 
 By default, Peekaboo will:
-- ✅ Focus the target window before interaction
+- ✅ Keep targeted interaction in the background when the command supports it
+- ✅ Focus the target window only after explicit foreground consent
 - ✅ Refuse an unintended Space switch unless `--space-switch` or `--bring-to-current-space` is explicit
 - ✅ Wait up to 5 seconds for focus to complete
 - ✅ Retry up to 3 times if focus fails
@@ -83,7 +84,11 @@ By default, Peekaboo will:
 
 ## Focus Options
 
-Interaction commands that use foreground delivery support these focus-related options. `click`, `type`, and `paste` default to background delivery when Peekaboo can resolve a target process. Raw `press` always requires `--foreground`. Targeted scroll stays background through Accessibility or a capability-gated exact-window WebKit route, while targetless/smooth scroll and all move/drag operations require explicit foreground mode.
+Interaction commands that use foreground delivery support these focus-related options. `click`, `type`, and `paste`
+default to background delivery when Peekaboo can resolve a target process. Raw `press` stays background only with a
+fresh exact-window/snapshot receipt; app/PID-only and targetless forms require `--foreground`. Targeted scroll stays
+background through Accessibility or a capability-gated exact-window WebKit route, while targetless/smooth scroll and
+all move/drag operations require explicit foreground mode.
 
 ### `--no-auto-focus`
 Disables automatic focus management (not recommended).
@@ -98,7 +103,10 @@ Use cases:
 - Testing or debugging focus issues
 
 ### `--focus-background`
-Uses command-supported background delivery instead of activating the target app. For input commands that can resolve a target process, this is now the default; the flag is a legacy alias where still exposed. `press` retains the spelling for compatibility but refuses raw background chords and requires `--foreground`.
+Uses command-supported background delivery instead of activating the target app. For input commands that can resolve a
+target process, this is now the default; the flag is a legacy alias where still exposed. `press` retains the spelling
+for compatibility, but the alias does not replace the fresh exact-window/snapshot receipt required for background raw
+chords.
 
 ```bash
 peekaboo press cmd+l --app Safari --foreground
@@ -113,7 +121,10 @@ Use cases:
 - Typing or pasting into a targeted app without activating it
 - Keeping a long-running foreground workflow uninterrupted
 
-Currently, typed text and paste use background delivery when `--app`, `--pid`, or supported snapshot process metadata identifies a live process. Raw key chords cannot prove semantic intent or effect and are refused without `--foreground`. Background click can preserve an exact window/element target.
+Currently, typed text and paste use background delivery when `--app`, `--pid`, or supported snapshot process metadata
+identifies a live process. Raw key chords require either a fresh exact-window/snapshot focused-element receipt or
+explicit `--foreground`; app/PID-only and targetless raw chords refuse. Background click can preserve an exact
+window/element target.
 
 Background delivery is a delivery mode, not a focus mode. It cannot be combined with foreground focus timeout, retry, or Space-switching flags. Background element/query/coordinate clicks and targeted scroll prefer Accessibility; an opaque WebKit scroll target may use exact PID/window wheel delivery without focus. Keyboard delivery, that WebKit wheel route, and foreground synthetic pointer operations require Event Synthesizing; `peekaboo permissions request event-synthesizing` requests it for the selected bridge host by default, or for the local CLI with `--no-remote`.
 
@@ -157,7 +168,7 @@ Use cases:
 Moves the window to your current Space instead of switching to it.
 
 ```bash
-peekaboo type "Hello" --bring-to-current-space
+peekaboo type "Hello" --foreground --bring-to-current-space
 ```
 
 Use cases:
@@ -218,7 +229,7 @@ The list marks the active Space for each display; add `--json` when a script nee
 
 ```bash
 # Switch to Space 2 (1-based numbering)
-peekaboo space switch --to 2
+peekaboo space switch --to 2 --foreground
 
 ```
 
@@ -303,7 +314,7 @@ peekaboo click "Button" --app YourApp --foreground --space-switch
 peekaboo click "Button" --app YourApp --foreground --bring-to-current-space
 
 # Solution 3: Manually switch first
-peekaboo space switch --to 2
+peekaboo space switch --to 2 --foreground
 peekaboo click "Button" --app YourApp --foreground
 ```
 

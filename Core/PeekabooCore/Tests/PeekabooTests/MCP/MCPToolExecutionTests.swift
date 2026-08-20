@@ -3,6 +3,7 @@ import Foundation
 import ImageIO
 import MCP
 import PeekabooAutomationKit
+import PeekabooAutomationKitTestSupport
 import PeekabooFoundation
 import TachikomaMCP
 import Testing
@@ -14,6 +15,22 @@ import UniformTypeIdentifiers
 
 @Suite(.serialized)
 struct MCPToolExecutionTests {
+    @Test
+    @MainActor
+    func `Mock application request quit preserves legacy delegation`() async throws {
+        let applications = MockApplicationService()
+
+        #expect(try await applications.quitApplication(request: ApplicationQuitRequest(
+            identifier: "Missing App",
+            force: false)))
+        await #expect(throws: PeekabooError.self) {
+            try await applications.quitApplication(request: ApplicationQuitRequest(
+                identifier: "PID:42",
+                force: false,
+                expectedIdentity: AutomationTestFixtures.processIdentity(processIdentifier: 42)))
+        }
+    }
+
     // MARK: - Sleep Tool Tests
 
     @Test
@@ -78,40 +95,6 @@ struct MCPToolExecutionTests {
     }
 
     @Test
-    func `Image tool app target uses observation best window selection`() async throws {
-        let (app, windows) = await MainActor.run {
-            Self.makeWindowedTestApp()
-        }
-        let applications = await MainActor.run {
-            MockApplicationService(applications: [app], windowsByIdentifier: [
-                app.bundleIdentifier ?? app.name: windows,
-            ])
-        }
-        let screenCapture = await MainActor.run { MockScreenCaptureService(screenRecordingGranted: true) }
-        let context = await MCPToolTestHelpers.makeLegacyContext(
-            screenCapture: screenCapture,
-            applications: applications)
-        let tool = ImageTool(context: context)
-        let outputPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("peekaboo-mcp-image-\(UUID().uuidString).png")
-            .path
-        defer { try? FileManager.default.removeItem(atPath: outputPath) }
-
-        let response = try await tool.execute(arguments: ToolArguments(raw: [
-            "path": outputPath,
-            "format": "png",
-            "app_target": app.name,
-        ]))
-
-        #expect(response.isError == false)
-        #expect(await MainActor.run { screenCapture.lastWindowID } == 42)
-        #expect(await MainActor.run { screenCapture.captureAttemptCount } == 1)
-        #expect(FileManager.default.fileExists(atPath: outputPath))
-        #expect(Self.observationSpanNames(from: response).contains("output.raw.write"))
-        #expect(Self.observationSpanNames(from: response).contains("desktop.observe"))
-    }
-
-    @Test
     func `Image tool menubar target uses observation menu bar bounds`() async throws {
         let screen = ScreenInfo(
             index: 0,
@@ -169,6 +152,10 @@ struct MCPToolExecutionTests {
         ]))
 
         #expect(response.isError == true)
+        #expect(!FileManager.default.fileExists(atPath: outputPath))
+        let meta = try #require(response.meta?.objectValue)
+        #expect(meta["mutation_dispatched"] == .bool(false))
+        #expect(meta["retry_safe"] == .bool(true))
         guard case let .text(text: output, annotations: _, _meta: _) = response.content.first else {
             Issue.record("Expected text error response")
             return
@@ -290,12 +277,17 @@ struct MCPToolExecutionTests {
             .path
         defer { try? FileManager.default.removeItem(atPath: outputPath) }
         try highResPNG.write(to: URL(fileURLWithPath: outputPath))
+        let capture = CaptureResult(
+            imageData: Data(),
+            savedPath: outputPath,
+            metadata: CaptureMetadata(size: CGSize(width: 3000, height: 2000), mode: .screen))
+        let observation = DesktopObservationResult(
+            target: ResolvedObservationTarget(kind: .screen(index: 0)),
+            capture: capture,
+            elements: nil)
         let captureSet = ImageCaptureSet(
-            captures: [CaptureResult(
-                imageData: Data(),
-                savedPath: outputPath,
-                metadata: CaptureMetadata(size: CGSize(width: 3000, height: 2000), mode: .screen))],
-            observation: nil)
+            captures: [capture],
+            actionResult: UIAutomationActionResult(payload: observation, outcome: nil))
         let request = try ImageRequest(arguments: ToolArguments(raw: [
             "format": "data",
             "max_dimension": 600,
@@ -303,9 +295,9 @@ struct MCPToolExecutionTests {
 
         let result = try tool.downscaledCaptureSetIfNeeded(captureSet, request: request)
 
-        let capture = try #require(result.captures.first)
-        #expect(Self.imageDimensions(from: capture.imageData) == CGSize(width: 600, height: 400))
-        #expect(capture.metadata.size == CGSize(width: 600, height: 400))
+        let deliveredCapture = try #require(result.captures.first)
+        #expect(Self.imageDimensions(from: deliveredCapture.imageData) == CGSize(width: 600, height: 400))
+        #expect(deliveredCapture.metadata.size == CGSize(width: 600, height: 400))
         let savedData = try Data(contentsOf: URL(fileURLWithPath: outputPath))
         #expect(Self.imageDimensions(from: savedData) == CGSize(width: 600, height: 400))
     }
@@ -499,9 +491,11 @@ struct MCPToolExecutionTests {
 
     @Test
     func `See tool app target detects against resolved observation window`() async throws {
-        let (app, windows) = await MainActor.run {
-            Self.makeWindowedTestApp()
+        let graph = try await MainActor.run {
+            try Self.makeWindowedTestGraph()
         }
+        let app = try #require(graph.applications.first)
+        let windows = try #require(graph.nodes.first?.windows)
         let detectionResult = ElementDetectionResult(
             snapshotId: "snapshot-2",
             screenshotPath: "/tmp/peekaboo-see-observation-test.png",
@@ -517,11 +511,13 @@ struct MCPToolExecutionTests {
             MockAutomationService(accessibilityGranted: true, detectionResult: detectionResult)
         }
         let applications = await MainActor.run {
-            MockApplicationService(applications: [app], windowsByIdentifier: [
-                app.bundleIdentifier ?? app.name: windows,
-            ])
+            MockApplicationService(graph: graph)
         }
-        let screenCapture = await MainActor.run { MockScreenCaptureService(screenRecordingGranted: true) }
+        let screenCapture = await MainActor.run {
+            MockScreenCaptureService(
+                screenRecordingGranted: true,
+                windowMetadata: Self.captureMetadata(application: app, windows: windows))
+        }
         let context = await MCPToolTestHelpers.makeLegacyContext(
             automation: automation,
             screenCapture: screenCapture,
@@ -546,23 +542,33 @@ struct MCPToolExecutionTests {
 
     @Test
     func `See tool PID target with window index uses shared observation parser`() async throws {
-        let (app, windows) = await MainActor.run {
-            Self.makeWindowedTestApp()
+        let graph = try await MainActor.run {
+            try Self.makeWindowedTestGraph()
         }
+        let app = try #require(graph.applications.first)
+        let windows = try #require(graph.nodes.first?.windows)
         let detectionResult = ElementDetectionResult(
             snapshotId: "snapshot-pid-window",
             screenshotPath: "/tmp/peekaboo-see-pid-window-test.png",
-            elements: DetectedElements(),
-            metadata: DetectionMetadata(detectionTime: 0.01, elementCount: 0, method: "mock"))
+            elements: DetectedElements(buttons: [
+                DetectedElement(
+                    id: "B1",
+                    type: .button,
+                    label: "Continue",
+                    bounds: CGRect(x: 10, y: 10, width: 80, height: 30)),
+            ]),
+            metadata: DetectionMetadata(detectionTime: 0.01, elementCount: 1, method: "mock"))
         let automation = await MainActor.run {
             MockAutomationService(accessibilityGranted: true, detectionResult: detectionResult)
         }
         let applications = await MainActor.run {
-            MockApplicationService(applications: [app], windowsByIdentifier: [
-                app.bundleIdentifier ?? app.name: windows,
-            ])
+            MockApplicationService(graph: graph)
         }
-        let screenCapture = await MainActor.run { MockScreenCaptureService(screenRecordingGranted: true) }
+        let screenCapture = await MainActor.run {
+            MockScreenCaptureService(
+                screenRecordingGranted: true,
+                windowMetadata: Self.captureMetadata(application: app, windows: windows))
+        }
         let context = await MCPToolTestHelpers.makeLegacyContext(
             automation: automation,
             screenCapture: screenCapture,
@@ -578,9 +584,10 @@ struct MCPToolExecutionTests {
     }
 
     @MainActor
-    private static func makeWindowedTestApp() -> (ServiceApplicationInfo, [ServiceWindowInfo]) {
-        let app = ServiceApplicationInfo(
+    private static func makeWindowedTestGraph() throws -> LinkedApplicationInventoryGraph {
+        let app = AutomationTestFixtures.application(
             processIdentifier: 1234,
+            processStartIdentity: 700,
             bundleIdentifier: "com.test.zephyr",
             name: "Zephyr Agency",
             isActive: true,
@@ -589,24 +596,39 @@ struct MCPToolExecutionTests {
         let visibleOrigin = CGPoint(x: screenFrame.minX + 20, y: screenFrame.minY + 20)
         let offscreenOrigin = CGPoint(x: screenFrame.maxX + 10000, y: screenFrame.maxY + 10000)
 
-        return (app, [
-            ServiceWindowInfo(
-                windowID: 100,
-                title: "",
-                bounds: CGRect(origin: offscreenOrigin, size: CGSize(width: 2560, height: 30)),
-                index: 0,
-                isOnScreen: false),
-            ServiceWindowInfo(
-                windowID: 41,
-                title: "Small Utility",
-                bounds: CGRect(origin: visibleOrigin, size: CGSize(width: 120, height: 90)),
-                index: 1),
-            ServiceWindowInfo(
-                windowID: 42,
-                title: "Zephyr Agency",
-                bounds: CGRect(origin: visibleOrigin, size: CGSize(width: 1460, height: 945)),
-                index: 2),
+        return try LinkedApplicationInventoryGraph(nodes: [
+            .init(application: app, windows: [
+                ServiceWindowInfo(
+                    windowID: 100,
+                    title: "",
+                    bounds: CGRect(origin: offscreenOrigin, size: CGSize(width: 2560, height: 30)),
+                    index: 0,
+                    isOnScreen: false),
+                ServiceWindowInfo(
+                    windowID: 41,
+                    title: "Small Utility",
+                    bounds: CGRect(origin: visibleOrigin, size: CGSize(width: 120, height: 90)),
+                    index: 1),
+                ServiceWindowInfo(
+                    windowID: 42,
+                    title: "Zephyr Agency",
+                    bounds: CGRect(origin: visibleOrigin, size: CGSize(width: 1460, height: 945)),
+                    index: 2),
+            ]),
         ])
+    }
+
+    private static func captureMetadata(
+        application: ServiceApplicationInfo,
+        windows: [ServiceWindowInfo]) -> [CGWindowID: CaptureMetadata]
+    {
+        Dictionary(uniqueKeysWithValues: windows.map { window in
+            (CGWindowID(window.windowID), CaptureMetadata(
+                size: window.bounds.size,
+                mode: .window,
+                applicationInfo: application,
+                windowInfo: window))
+        })
     }
 
     private static func observationSpanNames(from response: ToolResponse) -> [String] {
@@ -795,6 +817,52 @@ struct MCPToolExecutionTests {
     }
 
     @Test
+    func `set_value tool preserves post-dispatch readback failure and exact retry guidance`() async throws {
+        let automation = await MainActor.run { MockElementActionAutomationService(accessibilityGranted: true) }
+        let receipt = DesktopActionTargetReceipt(
+            processIdentifier: 42,
+            processStartIdentity: 9,
+            windowID: 73)
+        await MainActor.run {
+            automation.uiAutomationOutcomeScript.appendFailure(
+                DesktopActionFailure.indeterminate(
+                    delivery: .init(mechanism: .accessibilityValue, mode: .background),
+                    evidence: .completionUnknown,
+                    unitCount: .one,
+                    message: "The submitted value could not be read back.",
+                    hint: "Observe the exact target before retrying.")
+                    .attributed(to: receipt),
+                for: .setValue)
+        }
+        let context = await MCPToolTestHelpers.makeLegacyContext(automation: automation)
+        let snapshot = await UISnapshotManager.shared.createSnapshot()
+        let snapshotID = await snapshot.id
+
+        let response = try await SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+            "on": "T1",
+            "value": "hello",
+            "snapshot": snapshotID,
+        ]))
+
+        let meta = try #require(response.meta?.objectValue)
+        let target = try #require(meta["target_receipt"]?.objectValue)
+        #expect(response.isError)
+        #expect(meta["state"] == .string("indeterminate"))
+        #expect(meta["delivery_mechanism"] == .string("accessibility_value"))
+        #expect(meta["delivery_mode"] == .string("background"))
+        #expect(meta["dispatch_state"] == .string("may_have_dispatched"))
+        #expect(meta["dispatched_unit_count"] == .int(1))
+        #expect(meta["retry_safe"] == .bool(false))
+        #expect(meta["requires_fresh_observation"] == .bool(true))
+        #expect(meta["invalidated_snapshot"] == .string(snapshotID))
+        #expect(target["pid"] == .int(Int(receipt.processIdentifier)))
+        #expect(target["process_start_identity_decimal"] == .string("9"))
+        #expect(target["window_id"] == .int(73))
+        #expect(await UISnapshotManager.shared.getSnapshot(id: nil) == nil)
+        #expect(await MainActor.run { automation.setValueCalls.isEmpty })
+    }
+
+    @Test
     func `action tool validates request shape`() async throws {
         let automation = await MainActor.run { MockElementActionAutomationService(accessibilityGranted: true) }
         let context = await MCPToolTestHelpers.makeLegacyContext(automation: automation)
@@ -872,7 +940,7 @@ final class PointerPolicyWindowService: WindowManagementServiceProtocol, @unchec
     }
 }
 
-actor EmptyRecordingWindowService: WindowManagementServiceProtocol {
+actor EmptyRecordingWindowService: WindowManagementServiceProtocol, WindowMutationInventoryProviding {
     private(set) var requestedWindowIDs: [Int] = []
     private(set) var focusRequests: [WindowTarget] = []
 
@@ -891,6 +959,12 @@ actor EmptyRecordingWindowService: WindowManagementServiceProtocol {
             self.requestedWindowIDs.append(windowID)
         }
         return []
+    }
+
+    func windowMutationInventory(
+        target _: WindowTarget) async throws -> DesktopTargetPlanning.Inventory<ServiceWindowInfo>
+    {
+        .complete([])
     }
 
     func getFocusedWindow() async throws -> ServiceWindowInfo? {
@@ -960,6 +1034,7 @@ TargetedTypeServiceProtocol {
     var targetedTypeUnavailableReason: String?
     var targetedTypeRequiresEventSynthesizingPermission = false
     var supportsProcessGenerationPinnedClicks = true
+    var supportsStatelessClickVariants = true
     var pinnedClickError: ((ClickTarget) -> (any Error)?)?
     var pinnedTypeError: (([TypeAction]) -> (any Error)?)?
 
@@ -1122,7 +1197,8 @@ TargetedTypeServiceProtocol {
 }
 
 @MainActor
-private final class MockElementActionAutomationService: MockAutomationService, ElementActionAutomationServiceProtocol {
+private final class MockElementActionAutomationService: MockAutomationService, ElementActionAutomationServiceProtocol,
+ScriptedUIAutomationActionOutcomeProviding {
     struct SetValueCall {
         let target: String
         let value: UIElementValue
@@ -1137,6 +1213,7 @@ private final class MockElementActionAutomationService: MockAutomationService, E
 
     private(set) var setValueCalls: [SetValueCall] = []
     private(set) var performActionCalls: [PerformActionCall] = []
+    let uiAutomationOutcomeScript = UIAutomationOutcomeScript()
 
     func setValue(target: String, value: UIElementValue, snapshotId: String?) async throws -> ElementActionResult {
         self.setValueCalls.append(SetValueCall(target: target, value: value, snapshotId: snapshotId))
@@ -1162,6 +1239,7 @@ final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
     private let screenRecordingGranted: Bool
     private let imageData: Data
     private let metadata: CaptureMetadata?
+    private let windowMetadata: [CGWindowID: CaptureMetadata]
     private(set) var captureAttemptCount = 0
     private(set) var lastWindowID: CGWindowID?
     private(set) var lastAppIdentifier: String?
@@ -1172,18 +1250,28 @@ final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
         self.screenRecordingGranted = screenRecordingGranted
         self.imageData = Self.validPNGData
         self.metadata = nil
+        self.windowMetadata = [:]
     }
 
     init(screenRecordingGranted: Bool, metadata: CaptureMetadata) {
         self.screenRecordingGranted = screenRecordingGranted
         self.imageData = Self.validPNGData
         self.metadata = metadata
+        self.windowMetadata = [:]
     }
 
     init(screenRecordingGranted: Bool, imageData: Data, metadata: CaptureMetadata? = nil) {
         self.screenRecordingGranted = screenRecordingGranted
         self.imageData = imageData
         self.metadata = metadata
+        self.windowMetadata = [:]
+    }
+
+    init(screenRecordingGranted: Bool, windowMetadata: [CGWindowID: CaptureMetadata]) {
+        self.screenRecordingGranted = screenRecordingGranted
+        self.imageData = Self.validPNGData
+        self.metadata = nil
+        self.windowMetadata = windowMetadata
     }
 
     func captureScreen(
@@ -1222,6 +1310,9 @@ final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
         self.captureAttemptCount += 1
         self.lastWindowID = windowID
         self.lastScale = scale
+        if let metadata = self.windowMetadata[windowID] {
+            return CaptureResult(imageData: self.imageData, metadata: metadata)
+        }
         return self.makeResult(
             mode: .window,
             window: ServiceWindowInfo(
@@ -1300,122 +1391,28 @@ final class MockScreenService: ScreenServiceProtocol {
 }
 
 @MainActor
-class MockApplicationService: ApplicationServiceProtocol {
-    let supportsProcessGenerationPinnedApplicationActivation = true
-    private(set) var applications: [ServiceApplicationInfo]
-    private(set) var launchRequests: [ApplicationLaunchRequest] = []
-    private(set) var relaunchRequests: [ApplicationRelaunchRequest] = []
-    private let windowsByIdentifier: [String: [ServiceWindowInfo]]
-
-    init(
-        applications: [ServiceApplicationInfo] = [],
-        windowsByIdentifier: [String: [ServiceWindowInfo]] = [:])
-    {
-        self.applications = applications
-        self.windowsByIdentifier = windowsByIdentifier
+class MockApplicationService: ScriptedApplicationInventoryService {
+    override func getFrontmostApplication() async throws -> ServiceApplicationInfo {
+        self.applications.first ?? ServiceApplicationInfo(
+            processIdentifier: 0,
+            bundleIdentifier: nil,
+            name: "Mock")
     }
 
-    func replaceApplicationsForTesting(_ applications: [ServiceApplicationInfo]) {
-        self.applications = applications
-    }
+    override func activateApplication(identifier _: String) async throws {}
+    override func activateApplication(request _: ApplicationActivationRequest) async throws {}
 
-    func listApplications() async throws -> UnifiedToolOutput<ServiceApplicationListData> {
-        let warnings = self.applications.flatMap { $0.metadataWarnings ?? [] }
-        return UnifiedToolOutput(
-            data: ServiceApplicationListData(applications: self.applications),
-            summary: .init(
-                brief: "Found \(self.applications.count) apps",
-                status: warnings.isEmpty ? .success : .partial,
-                counts: ["applications": self.applications.count]),
-            metadata: .init(duration: 0, warnings: warnings))
-    }
-
-    func findApplication(identifier: String) async throws -> ServiceApplicationInfo {
-        let pid = identifier.uppercased().hasPrefix("PID:") ? Int32(identifier.dropFirst(4)) : nil
-        if let match = self.applications.first(where: {
-            $0.name == identifier || $0.bundleIdentifier == identifier || $0.processIdentifier == pid
-        }) {
-            return match
-        }
-        throw PeekabooError.appNotFound(identifier)
-    }
-
-    func listWindows(for appIdentifier: String, timeout _: Float?) async throws
-        -> UnifiedToolOutput<ServiceWindowListData>
-    {
-        let targetApp = try? await self.findApplication(identifier: appIdentifier)
-        let windows: [ServiceWindowInfo] = if let direct = self.windowsByIdentifier[appIdentifier] {
-            direct
-        } else if let bundleIdentifier = targetApp?.bundleIdentifier,
-                  let bundleWindows = self.windowsByIdentifier[bundleIdentifier]
-        {
-            bundleWindows
-        } else if let appName = targetApp?.name,
-                  let namedWindows = self.windowsByIdentifier[appName]
-        {
-            namedWindows
-        } else {
-            []
-        }
-        return UnifiedToolOutput(
-            data: ServiceWindowListData(windows: windows, targetApplication: targetApp),
-            summary: .init(brief: "Found \(windows.count) windows", status: .success),
-            metadata: .init(duration: 0))
-    }
-
-    func getFrontmostApplication() async throws -> ServiceApplicationInfo {
-        self.applications.first ?? ServiceApplicationInfo(processIdentifier: 0, bundleIdentifier: nil, name: "Mock")
-    }
-
-    func isApplicationRunning(identifier: String) async -> Bool {
-        self.applications.contains { app in
-            app.name == identifier || app.bundleIdentifier == identifier
-        }
-    }
-
-    func launchApplication(identifier: String) async throws -> ServiceApplicationInfo {
-        let app = ServiceApplicationInfo(
-            processIdentifier: Int32(self.applications.count + 1),
-            bundleIdentifier: identifier,
-            name: identifier,
-            isActive: true)
-        self.applications.append(app)
-        return app
-    }
-
-    func launchApplication(request: ApplicationLaunchRequest) async throws -> ServiceApplicationInfo {
-        self.launchRequests.append(request)
-        let identifier = request.applicationBundleIdentifier ?? request.applicationIdentifier ?? "Default Handler"
-        let app = ServiceApplicationInfo(
-            processIdentifier: Int32(self.applications.count + 1),
-            processStartIdentity: UInt64(self.applications.count + 1) * 1000,
-            bundleIdentifier: request.applicationBundleIdentifier,
-            name: identifier,
-            isActive: request.activates,
-            isFinishedLaunching: true)
-        self.applications.append(app)
-        return app
-    }
-
-    func relaunchApplication(request: ApplicationRelaunchRequest) async throws -> ServiceApplicationInfo {
-        self.relaunchRequests.append(request)
-        return try await self.launchApplication(request: request.launchRequest)
-    }
-
-    func activateApplication(identifier _: String) async throws {}
-    func activateApplication(request _: ApplicationActivationRequest) async throws {}
-
-    func quitApplication(identifier _: String, force _: Bool) async throws -> Bool {
+    override func quitApplication(identifier _: String, force _: Bool) async throws -> Bool {
         true
     }
 
-    func hideApplication(identifier _: String) async throws {}
-
-    func unhideApplication(identifier _: String) async throws {}
-
-    func hideOtherApplications(identifier _: String) async throws {}
-
-    func showAllApplications() async throws {}
+    override func quitApplication(request: ApplicationQuitRequest) async throws -> Bool {
+        guard request.expectedIdentity == nil else {
+            throw PeekabooError.serviceUnavailable(
+                "This application service does not support process-generation-pinned quit; update the runtime host")
+        }
+        return try await self.quitApplication(identifier: request.identifier, force: request.force)
+    }
 }
 
 struct MCPToolErrorHandlingTests {
@@ -1480,21 +1477,22 @@ struct MCPToolErrorHandlingTests {
 
     @Test
     func `Window tool reports missing target as validation error`() async throws {
-        try await MCPToolTestHelpers.withContext {
-            let tool = WindowTool()
+        let context = await MCPToolTestHelpers.makeContext(executionPolicy: .foregroundAllowed)
+        let tool = WindowTool(context: context)
 
-            let response = try await tool.execute(arguments: ToolArguments(raw: ["action": "focus"]))
+        let response = try await context.execute(
+            tool: tool,
+            arguments: ToolArguments(raw: ["action": "focus"]))
 
-            #expect(response.isError == true)
+        #expect(response.isError == true)
 
-            guard case let .text(text: error, annotations: _, _meta: _) = response.content.first else {
-                Issue.record("Expected text error response")
-                return
-            }
-
-            #expect(error.contains("Must specify at least 'window_id', 'app', or 'title'"))
-            #expect(!error.contains("Failed to focus window"))
+        guard case let .text(text: error, annotations: _, _meta: _) = response.content.first else {
+            Issue.record("Expected text error response")
+            return
         }
+
+        #expect(error.contains("Must specify at least 'window_id', 'app', or 'title'"))
+        #expect(!error.contains("Failed to focus window"))
     }
 
     @Test

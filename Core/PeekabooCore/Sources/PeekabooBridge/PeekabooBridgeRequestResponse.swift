@@ -3,6 +3,7 @@ import Foundation
 import PeekabooAutomationKit
 
 public enum PeekabooBridgeRequest: Codable, Sendable {
+    indirect case attestedOperation(PeekabooBridgeAttestedOperationRequest)
     indirect case projectedAction(PeekabooBridgeProjectedActionRequest)
     case handshake(PeekabooBridgeHandshake)
     case permissionsStatus
@@ -10,6 +11,7 @@ public enum PeekabooBridgeRequest: Codable, Sendable {
     case daemonStatus
     case daemonStop
     case daemonStopIf(PeekabooBridgeDaemonStopRequest)
+    case agentExecutionTrace(PeekabooBridgeAgentExecutionTraceRequest)
     case browserStatus(PeekabooBridgeBrowserChannelRequest)
     case browserConnect(PeekabooBridgeBrowserChannelRequest)
     case browserDisconnect
@@ -34,12 +36,18 @@ public enum PeekabooBridgeRequest: Codable, Sendable {
     case hotkey(PeekabooBridgeHotkeyRequest)
     case targetedHotkey(PeekabooBridgeTargetedHotkeyRequest)
     case exactWindowTargetedHotkey(PeekabooBridgeExactWindowHotkeyRequest)
+    case createExactWindowHeldPointerOwner
+    case beginExactWindowHeldPointer(PeekabooBridgeBeginHeldPointerRequest)
+    case releaseExactWindowHeldPointer(PeekabooBridgeFinishHeldPointerRequest)
+    case revokeExactWindowHeldPointer(PeekabooBridgeFinishHeldPointerRequest)
+    case disconnectExactWindowHeldPointerOwner(PeekabooBridgeHeldPointerOwnerRequest)
     case targetedClick(PeekabooBridgeTargetedClickRequest)
     case swipe(PeekabooBridgeSwipeRequest)
     case drag(PeekabooBridgeDragRequest)
     case moveMouse(PeekabooBridgeMoveMouseRequest)
     case waitForElement(PeekabooBridgeWaitRequest)
     case listWindows(PeekabooBridgeWindowTargetRequest)
+    case listWindowMutationInventory(PeekabooBridgeWindowTargetRequest)
     case focusWindow(PeekabooBridgeWindowTargetRequest)
     case moveWindow(PeekabooBridgeWindowMoveRequest)
     case resizeWindow(PeekabooBridgeWindowResizeRequest)
@@ -51,6 +59,7 @@ public enum PeekabooBridgeRequest: Codable, Sendable {
     case maximizeWindow(PeekabooBridgeWindowTargetRequest)
     case getFocusedWindow
     case listApplications
+    case listApplicationMutationInventory
     case findApplication(PeekabooBridgeAppIdentifierRequest)
     case getFrontmostApplication
     case isApplicationRunning(PeekabooBridgeAppIdentifierRequest)
@@ -113,6 +122,7 @@ public enum PeekabooBridgeRequest: Codable, Sendable {
 extension PeekabooBridgeRequest {
     public var operation: PeekabooBridgeOperation {
         switch self {
+        case let .attestedOperation(payload): payload.request.operation
         case let .projectedAction(payload): payload.request.operation
         case .handshake: .permissionsStatus
         case .permissionsStatus: .permissionsStatus
@@ -120,6 +130,7 @@ extension PeekabooBridgeRequest {
         case .daemonStatus: .daemonStatus
         case .daemonStop: .daemonStop
         case .daemonStopIf: .daemonStop
+        case .agentExecutionTrace: .agentExecutionTrace
         case .browserStatus: .browserStatus
         case .browserConnect: .browserConnect
         case .browserDisconnect: .browserDisconnect
@@ -144,13 +155,18 @@ extension PeekabooBridgeRequest {
         case .hotkey: .hotkey
         case .targetedHotkey: .targetedHotkey
         case .exactWindowTargetedHotkey: .exactWindowTargetedHotkey
+        case .createExactWindowHeldPointerOwner: .createExactWindowHeldPointerOwner
+        case .beginExactWindowHeldPointer: .beginExactWindowHeldPointer
+        case .releaseExactWindowHeldPointer: .releaseExactWindowHeldPointer
+        case .revokeExactWindowHeldPointer: .revokeExactWindowHeldPointer
+        case .disconnectExactWindowHeldPointerOwner: .disconnectExactWindowHeldPointerOwner
         case let .targetedClick(payload):
             payload.targetWindowID == nil ? .targetedClick : .exactWindowTargetedClick
         case .swipe: .swipe
         case .drag: .drag
         case .moveMouse: .moveMouse
         case .waitForElement: .waitForElement
-        case .listWindows: .listWindows
+        case .listWindows, .listWindowMutationInventory: .listWindows
         case .focusWindow: .focusWindow
         case .moveWindow: .moveWindow
         case .resizeWindow: .resizeWindow
@@ -161,7 +177,7 @@ extension PeekabooBridgeRequest {
         case .restoreWindow: .restoreWindow
         case .maximizeWindow: .maximizeWindow
         case .getFocusedWindow: .getFocusedWindow
-        case .listApplications: .listApplications
+        case .listApplications, .listApplicationMutationInventory: .listApplications
         case .findApplication: .findApplication
         case .getFrontmostApplication: .getFrontmostApplication
         case .isApplicationRunning: .isApplicationRunning
@@ -224,10 +240,13 @@ extension PeekabooBridgeRequest {
 }
 
 public enum PeekabooBridgeResponse: Codable, Sendable {
+    indirect case attestedOperation(PeekabooBridgeAttestedOperationResponse)
+    case operationSessionRollover(PeekabooBridgeOperationSessionRefusal)
     indirect case projectedAction(PeekabooBridgeProjectedActionResponse)
     case handshake(PeekabooBridgeHandshakeResponse)
     case permissionsStatus(PermissionsStatus)
     case daemonStatus(PeekabooDaemonStatus)
+    case agentExecutionTrace(PeekabooBridgeAgentExecutionTraceResponse)
     case browserStatus(PeekabooBridgeBrowserStatus)
     case browserToolResponse(PeekabooBridgeBrowserToolResponse)
     case capture(CaptureResult)
@@ -237,11 +256,16 @@ public enum PeekabooBridgeResponse: Codable, Sendable {
     case ok
     case waitResult(WaitForElementResult)
     case windows([ServiceWindowInfo])
+    case windowMutationInventory(DesktopTargetPlanning.Inventory<ServiceWindowInfo>)
     case window(ServiceWindowInfo?)
     case applications([ServiceApplicationInfo])
+    case applicationMutationInventory(DesktopTargetPlanning.Inventory<ServiceApplicationInfo>)
     case application(ServiceApplicationInfo)
     case bool(Bool)
     case typeResult(TypeResult)
+    case exactWindowHeldPointerOwner(ExactWindowHeldPointerOwner)
+    case exactWindowHeldPointerReceipt(ExactWindowHeldPointerReceipt)
+    case exactWindowHeldPointerTermination(ExactWindowHeldPointerTermination?)
     case elementActionResult(ElementActionResult)
     case clickResult(ClickResult)
     case menuStructure(MenuStructure)

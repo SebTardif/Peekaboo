@@ -152,7 +152,11 @@ struct UIAutomationActionOutcomeProvidingTests {
         let result = try await service.scrollWithOutcome(request)
         try await service.scroll(request)
 
-        #expect(result.outcome == Self.foregroundOutcome)
+        let expected = DesktopActionOutcome.dispatchedUnverified(
+            delivery: .init(mechanism: .globalEvents, mode: .foreground),
+            evidence: .deliveryAccepted,
+            unitCount: .one)
+        #expect(result.outcome == expected)
         #expect(synthetic.scrollCount == 2)
     }
 
@@ -190,6 +194,7 @@ struct UIAutomationActionOutcomeProvidingTests {
         #expect(result.payload == legacy)
         #expect(result.payload.oldValue == "old")
         #expect(result.payload.newValue == "new")
+        #expect(result.targetIdentity?.exactWindow != nil)
         #expect(resultDriver.setValueCount == 1)
         #expect(legacyDriver.setValueCount == 1)
     }
@@ -213,6 +218,11 @@ struct UIAutomationActionOutcomeProvidingTests {
 
         #expect(result.outcome == expected)
         #expect(result.payload == legacy)
+        #expect(result.payload.target == "E1")
+        #expect(result.payload.actionName == "AXPress")
+        #expect(result.payload.oldValue == nil)
+        #expect(result.payload.newValue == nil)
+        #expect(result.targetIdentity?.exactWindow != nil)
         #expect(resultDriver.performActionCount == 1)
         #expect(legacyDriver.performActionCount == 1)
     }
@@ -277,6 +287,11 @@ struct UIAutomationActionOutcomeProvidingTests {
         for result in clickResults {
             #expect(result.outcome == expectedClick)
         }
+        #expect(clickResults[0].targetIdentity == nil)
+        #expect(clickResults[1].targetIdentity?.processIdentity == processIdentity)
+        #expect(clickResults[1].targetIdentity?.exactWindow == nil)
+        #expect(clickResults[2].targetIdentity?.exactWindow?.identity == windowIdentity)
+        #expect(clickResults[2].targetIdentity?.exactWindow?.bounds == bounds)
 
         let pidType = try await service.typeActionsWithOutcome(
             [],
@@ -310,6 +325,15 @@ struct UIAutomationActionOutcomeProvidingTests {
             #expect(result.payload.totalCharacters == 0)
             #expect(result.payload.keyPresses == 0)
         }
+        #expect(pidType.targetIdentity == nil)
+        #expect(processType.targetIdentity?.processIdentity == processIdentity)
+        #expect(processType.targetIdentity?.exactWindow == nil)
+        #expect(windowType.targetIdentity?.exactWindow?.identity == windowIdentity)
+        #expect(windowType.targetIdentity?.exactWindow?.bounds == bounds)
+        #expect(windowType.targetIdentity?.exactWindow?.focusedElement == nil)
+        #expect(focusedType.targetIdentity?.exactWindow?.identity == windowIdentity)
+        #expect(focusedType.targetIdentity?.exactWindow?.bounds == bounds)
+        #expect(focusedType.targetIdentity?.exactWindow?.focusedElement == focused)
 
         let pidHotkey = try await service.hotkeyWithOutcome(
             keys: "cmd,shift,l",
@@ -329,8 +353,11 @@ struct UIAutomationActionOutcomeProvidingTests {
             holdDuration: 0,
             target: exactTarget)
 
-        for result in [pidHotkey, processHotkey, windowHotkey, focusedHotkey] {
+        for result in [pidHotkey, processHotkey] {
             #expect(result.outcome == Self.backgroundOutcome)
+        }
+        for result in [windowHotkey, focusedHotkey] {
+            #expect(result.outcome == Self.windowBackgroundOutcome)
         }
     }
 
@@ -365,16 +392,26 @@ struct UIAutomationActionOutcomeProvidingTests {
             id: "E1",
             type: .textField,
             label: "Value")
+        let processIdentity = AutomationTestFixtures.processIdentity(processIdentifier: getpid())
+        let window = AutomationTestFixtures.window(processIdentity: processIdentity)
         let detection = AutomationTestFixtures.detectionResult(
             snapshotID: "snapshot",
             elements: DetectedElements(textFields: [detected]),
-            windowContext: WindowContext(applicationProcessId: getpid()))
+            windowContext: WindowContext(
+                applicationProcessId: getpid(),
+                windowID: window.windowID,
+                windowBounds: window.bounds,
+                windowMutationIdentity: window.mutationIdentity))
         return UIAutomationService(
             snapshotManager: InMemorySnapshotManager(detectionResult: detection),
             inputPolicy: UIInputPolicy(defaultStrategy: .actionOnly),
             actionInputDriver: actionDriver,
             automationElementResolver: FixedOutcomeAutomationElementResolver(),
-            elementMutationValueReader: { _ in actionDriver.storedValue })
+            elementMutationValueReader: { _ in actionDriver.storedValue },
+            exactWindowIdentityValidator: { identity, bounds in
+                identity == window.mutationIdentity && bounds == window.bounds
+            },
+            processStartIdentityProvider: { _ in processIdentity.processStartIdentity })
     }
 
     private func makeTargetedService(

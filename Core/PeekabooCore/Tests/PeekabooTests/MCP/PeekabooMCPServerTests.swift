@@ -161,6 +161,20 @@ struct PeekabooMCPServerTests {
             #expect(referenceSchema["minLength"] == .int(1))
             #expect(pidSchema["type"] == .string("integer"))
             #expect(pidSchema["minimum"] == .int(1))
+            for variant in ["middle", "triple"] {
+                guard case let .object(variantSchema)? = properties[variant] else {
+                    Issue.record("click variant property \(variant) is missing")
+                    continue
+                }
+                #expect(variantSchema["type"] == .string("boolean"))
+                #expect(variantSchema["default"] == .bool(false))
+            }
+            guard case let .array(variantConstraints)? = schema["allOf"] else {
+                Issue.record("click wire schema is missing variant conflicts")
+                await session.stop()
+                return
+            }
+            #expect(!variantConstraints.isEmpty)
             for field in ["on", "query", "coords"] {
                 guard case let .object(targetSchema)? = properties[field] else {
                     Issue.record("click target property \(field) is missing")
@@ -215,6 +229,51 @@ struct PeekabooMCPServerTests {
 
     @Test
     @MainActor
+    func `click wire refuses conflicting true variants while accepting explicit false defaults`() async throws {
+        let automation = MockAutomationService(accessibilityGranted: true)
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        let session = try await MCPWireSession.connect(context: context)
+
+        do {
+            let conflicting: RequestContext<CallTool.Result> = try await session.client.callTool(
+                name: "click",
+                arguments: [
+                    "coords": .string("10,20"),
+                    "foreground": .bool(true),
+                    "middle": .bool(true),
+                    "triple": .bool(true),
+                ])
+            let refusal = try await conflicting.value
+            #expect(refusal.isError == true)
+            #expect(automation.clickCalls.isEmpty)
+
+            let explicitDefaults: RequestContext<CallTool.Result> = try await session.client.callTool(
+                name: "click",
+                arguments: [
+                    "coords": .string("10,20"),
+                    "foreground": .bool(true),
+                    "middle": .bool(true),
+                    "triple": .bool(false),
+                    "double": .bool(false),
+                    "right": .bool(false),
+                ])
+            let accepted = try await explicitDefaults.value
+            #expect(accepted.isError == true)
+            #expect(accepted.content.contains { content in
+                guard case let .text(text, _, _) = content else { return false }
+                return text.contains("Execution policy refused")
+            })
+            #expect(automation.clickCalls.isEmpty)
+        } catch {
+            await session.stop()
+            throw error
+        }
+
+        await session.stop()
+    }
+
+    @Test
+    @MainActor
     func `press wire reports an empty chord sequence without dispatch`() async throws {
         let automation = MockAutomationService(accessibilityGranted: true)
         let context = await MCPToolTestHelpers.makeContext(automation: automation)
@@ -230,6 +289,12 @@ struct PeekabooMCPServerTests {
                 guard case let .text(text, _, _) = content else { return false }
                 return text.contains("keys must contain at least one chord")
             })
+            let encoded = try JSONEncoder().encode(result)
+            let json = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            let metadata = try #require(json["_meta"] as? [String: Any])
+            #expect(metadata["refusal_reason"] as? String == "invalid_request")
+            #expect(metadata["mutation_dispatched"] as? Bool == false)
+            #expect(metadata["retry_safe"] as? Bool == true)
             #expect(automation.lastHotkeyKeys == nil)
             #expect(automation.targetedHotkeyCalls.isEmpty)
         } catch {
@@ -340,6 +405,40 @@ struct PeekabooMCPServerTests {
                 #expect(automation.lastHotkeyKeys == nil)
                 #expect(automation.targetedHotkeyCalls.isEmpty)
             }
+        } catch {
+            await session.stop()
+            throw error
+        }
+
+        await session.stop()
+    }
+
+    @Test
+    @MainActor
+    func `press wire still enforces background policy after semantic validation`() async throws {
+        let automation = MockAutomationService(accessibilityGranted: true)
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        let session = try await MCPWireSession.connect(context: context)
+
+        do {
+            let request: RequestContext<CallTool.Result> = try await session.client.callTool(
+                name: "press",
+                arguments: [
+                    "key": .string("c"),
+                    "modifiers": .array([.string("cmd")]),
+                    "foreground": .bool(true),
+                ])
+            let result = try await request.value
+            #expect(result.isError == true)
+            let encoded = try JSONEncoder().encode(result)
+            let json = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            let metadata = try #require(json["_meta"] as? [String: Any])
+            #expect(metadata["error_code"] as? String == MCPToolExecutionPolicy.refusalErrorCode)
+            #expect(metadata["refusal_reason"] as? String == "foreground_consent_required")
+            #expect(metadata["mutation_dispatched"] as? Bool == false)
+            #expect(metadata["retry_safe"] as? Bool == true)
+            #expect(automation.lastHotkeyKeys == nil)
+            #expect(automation.targetedHotkeyCalls.isEmpty)
         } catch {
             await session.stop()
             throw error

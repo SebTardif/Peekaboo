@@ -1,8 +1,164 @@
+import AppKit
 import CoreGraphics
 import XCTest
 @testable import PeekabooAutomationKit
 
 final class ElementDetectionReadOnlyWindowSelectionTests: XCTestCase {
+    func testDetectProjectionOmitsUnrequestedResolvedPaths() {
+        let projected = Self.detectProjection(requested: WindowContext(applicationName: "Fixture"))
+
+        XCTAssertNil(projected.bundlePath)
+        XCTAssertNil(projected.executablePath)
+    }
+
+    func testDetectProjectionPublishesCanonicalPathsForMatchingExplicitConstraints() {
+        let projected = Self.detectProjection(requested: WindowContext(
+            applicationName: "Fixture",
+            applicationBundlePath: Self.bundlePath,
+            applicationExecutablePath: Self.executablePath))
+
+        XCTAssertEqual(projected.bundlePath, Self.bundlePath)
+        XCTAssertEqual(projected.executablePath, Self.executablePath)
+    }
+
+    func testDetectProjectionNeverCopiesContradictoryCallerPathsAsResolvedFacts() {
+        let projected = Self.detectProjection(requested: WindowContext(
+            applicationName: "Fixture",
+            applicationBundlePath: "/Applications/Other.app",
+            applicationExecutablePath: "/Applications/Other.app/Contents/MacOS/other"))
+
+        XCTAssertEqual(projected.bundlePath, Self.bundlePath)
+        XCTAssertEqual(projected.executablePath, Self.executablePath)
+    }
+
+    func testResolvedApplicationAcceptsEveryMatchingSingleSelectorAndCombinedConstraints() {
+        let matchingContexts = [
+            WindowContext(applicationProcessId: 42),
+            WindowContext(applicationBundleId: "dev.peekaboo.fixture"),
+            WindowContext(applicationName: "Fixt"),
+            WindowContext(applicationName: Self.bundlePath),
+            WindowContext(applicationName: Self.executablePath),
+            WindowContext(applicationName: "fixture"),
+            WindowContext(applicationBundlePath: Self.bundlePath),
+            WindowContext(applicationExecutablePath: Self.executablePath),
+            WindowContext(
+                applicationName: "Fixture",
+                applicationBundleId: "dev.peekaboo.fixture",
+                applicationBundlePath: Self.bundlePath,
+                applicationExecutablePath: Self.executablePath,
+                applicationProcessId: 42),
+        ]
+
+        for context in matchingContexts {
+            XCTAssertNil(ElementDetectionWindowResolver.applicationConstraintMismatch(
+                candidate: Self.applicationCandidate,
+                context: context))
+        }
+    }
+
+    func testResolvedApplicationRejectsContradictoryCombinedSelectorsBeforeObservation() {
+        let contradictoryContexts = [
+            WindowContext(applicationName: "Other", applicationProcessId: 42),
+            WindowContext(applicationName: "/Applications/Other.app", applicationProcessId: 42),
+            WindowContext(
+                applicationName: "Other",
+                applicationBundleId: "dev.peekaboo.fixture"),
+            WindowContext(
+                applicationName: "Fixture",
+                applicationBundlePath: "/Applications/Other.app"),
+            WindowContext(
+                applicationName: "Fixture",
+                applicationExecutablePath: "/Applications/Fixture.app/Contents/MacOS/other"),
+        ]
+
+        for context in contradictoryContexts {
+            XCTAssertNotNil(ElementDetectionWindowResolver.applicationConstraintMismatch(
+                candidate: Self.applicationCandidate,
+                context: context))
+        }
+    }
+
+    func testApplicationResolutionAuthorityPrefersUniquePathsOverBroadSelectors() {
+        let bundlePathContext = WindowContext(
+            applicationName: "Fixt",
+            applicationBundleId: "dev.peekaboo.fixture",
+            applicationBundlePath: Self.bundlePath)
+        XCTAssertEqual(
+            ElementDetectionWindowResolver.applicationResolutionAuthority(for: bundlePathContext),
+            .identifier(Self.bundlePath, source: .bundlePath))
+        XCTAssertNil(ElementDetectionWindowResolver.applicationConstraintMismatch(
+            candidate: Self.applicationCandidate,
+            context: bundlePathContext))
+
+        let executablePathContext = WindowContext(
+            applicationName: "Fixt",
+            applicationBundleId: "dev.peekaboo.fixture",
+            applicationExecutablePath: Self.executablePath)
+        XCTAssertEqual(
+            ElementDetectionWindowResolver.applicationResolutionAuthority(for: executablePathContext),
+            .identifier(Self.executablePath, source: .executablePath))
+        XCTAssertNil(ElementDetectionWindowResolver.applicationConstraintMismatch(
+            candidate: Self.applicationCandidate,
+            context: executablePathContext))
+    }
+
+    func testApplicationResolutionAuthorityPrefersExactWindowOverAmbiguousBroadSelector() {
+        let context = WindowContext(
+            applicationName: "Fixt",
+            applicationBundleId: "dev.peekaboo.fixture",
+            windowID: 73)
+
+        XCTAssertEqual(
+            ElementDetectionWindowResolver.applicationResolutionAuthority(for: context),
+            .exactWindow(73))
+        XCTAssertNil(ElementDetectionWindowResolver.applicationConstraintMismatch(
+            candidate: Self.applicationCandidate,
+            context: context))
+    }
+
+    @MainActor
+    func testPathOnlySelectorsResolveTheirNonFrontmostApplication() async throws {
+        let target = try Self.uniqueNonFrontmostApplication()
+        let bundlePath = try XCTUnwrap(target.bundleURL?.standardizedFileURL.path)
+        let executablePath = try XCTUnwrap(target.executableURL?.standardizedFileURL.path)
+        let applicationService = ApplicationService()
+        let bundleMatch = try await applicationService.findApplication(identifier: bundlePath)
+        let executableMatch = try await applicationService.findApplication(identifier: executablePath)
+        XCTAssertEqual(bundleMatch.processIdentifier, target.processIdentifier)
+        XCTAssertEqual(executableMatch.processIdentifier, target.processIdentifier)
+        let refreshed = try XCTUnwrap(NSRunningApplication(processIdentifier: target.processIdentifier))
+        XCTAssertEqual(
+            refreshed.bundleURL?.standardizedFileURL.path,
+            bundlePath,
+            "original=\(bundlePath) refreshed=\(refreshed.bundleURL?.standardizedFileURL.path ?? "nil")")
+        let resolver = ElementDetectionWindowResolver(applicationService: applicationService)
+
+        for context in [
+            WindowContext(applicationBundlePath: bundlePath),
+            WindowContext(applicationExecutablePath: executablePath),
+        ] {
+            let resolved = try await resolver.resolveApplication(windowContext: context)
+            XCTAssertEqual(resolved.processIdentifier, target.processIdentifier)
+        }
+    }
+
+    @MainActor
+    func testPathResolutionRejectsContradictoryDualPathBeforeObservation() async throws {
+        let target = try Self.uniqueNonFrontmostApplication()
+        let bundlePath = try XCTUnwrap(target.bundleURL?.standardizedFileURL.path)
+        let resolver = ElementDetectionWindowResolver(applicationService: ApplicationService())
+        let context = WindowContext(
+            applicationBundlePath: bundlePath,
+            applicationExecutablePath: bundlePath + "/Contents/MacOS/not-the-target")
+
+        do {
+            _ = try await resolver.resolveApplication(windowContext: context)
+            XCTFail("Contradictory explicit paths must fail before observation")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("applicationExecutablePath contradicts"))
+        }
+    }
+
     func testRequestedTitleSelectsExactSiblingInsteadOfBestWindow() throws {
         let bestWindow = Self.window(
             id: 100,
@@ -141,6 +297,49 @@ final class ElementDetectionReadOnlyWindowSelectionTests: XCTestCase {
         { error in
             XCTAssertTrue(error.localizedDescription.contains("capture-time process-generation receipt"))
         }
+    }
+
+    private static let bundlePath = "/Applications/Fixture.app"
+    private static let executablePath = bundlePath + "/Contents/MacOS/fixture"
+    private static let applicationCandidate = ApplicationIdentifierMatcher.Candidate(
+        processIdentifier: 42,
+        bundleIdentifier: "dev.peekaboo.fixture",
+        name: "Fixture",
+        bundlePath: bundlePath,
+        executablePath: executablePath,
+        allowsFuzzyMatching: true,
+        isRegularApplication: true)
+
+    @MainActor
+    private static func uniqueNonFrontmostApplication() throws -> NSRunningApplication {
+        let frontmostProcessIdentifier = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let running = NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }
+        guard let target = running.first(where: { application in
+            guard application.processIdentifier != frontmostProcessIdentifier,
+                  let bundlePath = application.bundleURL?.standardizedFileURL.path,
+                  let executablePath = application.executableURL?.standardizedFileURL.path
+            else { return false }
+            return running.count(where: {
+                $0.bundleURL?.standardizedFileURL.path == bundlePath
+            }) == 1 && running.count(where: {
+                $0.executableURL?.standardizedFileURL.path == executablePath
+            }) == 1
+        }) else {
+            throw XCTSkip("No unique non-frontmost application is available for path-only resolution")
+        }
+        return target
+    }
+
+    private static func detectProjection(requested: WindowContext) -> ElementDetectionService
+    .ResolvedApplicationIdentity {
+        ElementDetectionService.projectedApplicationIdentity(
+            canonical: .init(
+                name: "Fixture",
+                bundleIdentifier: "dev.peekaboo.fixture",
+                bundlePath: self.bundlePath,
+                executablePath: self.executablePath),
+            requested: requested,
+            preservesRequestedIdentity: true)
     }
 
     func testExactReadOnlyObservationCapturesActionableReceiptWhenCallerHasNone() throws {

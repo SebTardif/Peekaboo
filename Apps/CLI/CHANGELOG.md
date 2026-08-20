@@ -5,15 +5,69 @@ All notable changes to Peekaboo CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.1.1] - Unreleased
+## [Unreleased]
 
 ### Added
+- Add Bridge protocol 1.31 one-request signed background Agent execution with authenticated CLI derivation, an irreversible earliest-entrypoint process limit, lifecycle-covered release acknowledgement, exact-leader reaping, canonical terminal receipt bundles, and nested exact-lane receipts.
+
+### Fixed
+- Treat empty `type`, `press`, `action`, `set-value`, and `click` invocations as invalid usage in both human and JSON output while preserving explicit help as a successful no-runtime path.
+- Expose requested foreground access and effective background/foreground UI authority in deterministic Agent dry-run human and JSON output without invoking models, tools, or sessions.
+- Warn when implicit Bridge hosts reject the CLI before local fallback while preserving the established `bridge status --json` schema.
+- Keep CLI wall-clock timeouts bounded under sustained executor load by sharing one monotonic dispatch timer and canceling losing timer/work paths without releasing mutation barriers early.
+- Pin foreground menu focus, clicks, and listing to one exact process/window generation across CLI and MCP, preserving focus outcomes when a later menu read fails.
+- Refuse fuzzy application selectors before app, menu, window, or background click mutations are pinned to a process, while preserving fuzzy read-only discovery.
+- Align CLI help and Agent guidance with receipt-pinned background keyboard input, targeted dialog AXValue, and explicit foreground consent for foreground-exposing actions.
+- Refuse targetless background typing, malformed browser requests, and invalid video inputs before runtime discovery, with path-specific media errors and CLI-native browser recovery.
+- Preserve local Option/Meta chords while buffering fragmented terminal escape sequences longer over SSH, and ignore stale cancelled escape timers that arrive after a newer sequence.
+- Update AXorcist so synchronous and legacy element observers share the bounded registration and cleanup state machine, preventing a wedged endpoint from blocking Peekaboo's main actor indefinitely or escaping late-result rollback.
+- Bound asynchronous Accessibility notification add and remove waits, removal joins, and subscription setup retries so one wedged endpoint cannot hang global observer startup or teardown. Thanks @SebTardif for AXorcist #47.
+
+## [4.2.1] - 2026-08-17
+
+### Highlights
+
+- **Background type, paste, and press now share one fail-closed planner.** Fuzzy applications, partial window catalogs, ambiguous matches, and stale process identities are refused before input dispatch.
+- **Protocol 1.30 preserves complete-versus-partial target evidence.** CLI inventory and receipt validation expose the exact host source and negotiated protocol while remaining conservative with protocol 1.29 hosts.
+- **Exact-window background input covers more click families.** Middle and triple clicks use generation-bound native event sequences without activating the target or moving the shared cursor.
+- **Automation dependencies are more cancellation-safe.** AX permission observation no longer deadlocks during termination, and Realtime tool execution preserves the first completion or cancellation result.
+
+### Added
+- Add Bridge protocol 1.30 planner inventory transport with explicit complete/partial evidence, while protocol 1.29 hosts keep legacy list bytes and conservative exact-target compatibility.
+- Add authenticated `bridge receipt validate` for fail-closed, agent-readable verification of private protocol 1.29 bundles against the exact live listener that produced them.
+- Add capability-gated exact-window background middle/triple clicks with native center-button and 1/2/3 click-state sequences, signed target receipts, and fail-closed protocol 1.29 compatibility.
+- Include the authenticated Bridge host's stamped source commit and negotiated protocol version in live receipt-validation results for exact-build protocol certification.
+
+### Fixed
+- Route CLI and MCP background keyboard delivery through one completeness-aware target planner, refusing fuzzy application selectors and partial window catalogs before type, paste, or press dispatch.
+- Make application and window inventories report omitted or identity-incomplete rows as partial, while keeping complete AX-only window listings usable without Screen Recording.
+- Update AXorcist and Tachikoma so Accessibility permission observation cancellation cannot deadlock the main queue or install timers after termination, while Realtime tool execution preserves the first completion/cancellation winner, keeps timeout returns bounded while owning delayed cleanup, preserves completed results during timer cancellation, and rejects invalid audio deadlines before dispatch. Thanks @SebTardif for AXorcist #46 and Tachikoma #68; follow-up fixes landed in AXorcist #48 and Tachikoma #69/#70.
+
+## [4.2.0] - 2026-08-16
+
+### Highlights
+
+- **Background-first automation is signed and fail closed.** Bridge protocol 1.29 binds peer-authenticated sessions to exact requests, targets, results, process generations, and retry semantics, with replay protection and bounded rollover for long-running automation.
+- **More UI automation stays in the background.** Exact browser sessions, dialog click/dismiss/input, coordinate-only snapshots, and opaque WKWebView/Tauri scrolling preserve the foreground app and physical cursor, while Space switching and followed moves require explicit foreground consent.
+- **Target and result semantics now have one canonical path.** Shared selector/receipt adapters and application/window outcomes keep CLI, MCP, Bridge, services, and Agent behavior aligned, refusing stale, ambiguous, or incomplete evidence before dispatch.
+- **Exact-target automation is substantially faster without weakening identity checks.** Generation-proven PID/window observations measured 141x faster combined resolution, and one-pass Bridge peer identity lookup reduced signed app-inventory median latency by 29.6%.
+- **Native-only embedding and release are first-class.** Signed macOS apps can host a lean background Bridge without Core, provider, browser, daemon, or AppleScript dependencies, while branded DMGs use direct Finder metadata outside the signed app and no GUI automation.
+
+### Added
+- Add Bridge protocol 1.29 peer-bound signed operation sessions and exact target/result receipts, with bounded rollover, replay protection, and fail-closed recovery for long-running background automation.
+- Make protocol 1.29 browser receipts require a fully resolved explicit DevTools endpoint, and make exact dialog text entry use background Accessibility value mutation while refusing receipt-incapable legacy dialog mutations before dispatch.
 - Add protocol 1.26 explicit-reference-only snapshot publication so exact-window `see --no-elements` can return coordinate receipts without replacing implicit latest element maps, while older hosts fail before allocation.
 - Add `browser connect --browser-url` for an exact loopback DevTools endpoint and expose its pinned browser identity in status metadata through Bridge protocol 1.26.
 - Add protocol 1.25 exact dialog click/dismiss receipts with unique target planning, raw AX identity revalidation, verified disappearance outcomes, and read-only targeted listing.
 - Add capability-gated exact-window background wheel delivery for opaque WKWebView/Tauri scroll targets, with retry-unsafe unverifiable outcomes and no activation or shared-cursor fallback.
 
 ### Fixed
+- Complete the Bridge 1.29 receipt-session handshake before daemon status or stop control, validate explicit move snapshots before focus setup, and preserve actionable quit recovery over generic escalation guidance.
+- Require explicit foreground consent for Space switching and followed window moves across CLI and MCP, and compose their native move/switch receipts without synthesizing success or dispatch counts.
+- Establish and verify a window's destination Space before removing prior memberships, and retain its exact generation-bound identity through Space-aware focus.
+- Let later exact maximize readbacks supersede transient poll errors while preserving cancellation and identity contradictions, and route idempotent no-change receipts by the actual execution host.
+- Return canonical retry-safe pre-dispatch refusals when window owner-generation or bounds-provenance evidence does not match the selected mutation target.
+- Bind protocol 1.29 window and frontmost capture receipts to the exact captured process/window, reject missing or contradictory target metadata, and keep screen/area captures explicitly global.
 - Keep root help and version order-independent across canonical kebab- and camel-case runtime-option aliases while preserving correct missing-value errors.
 - Treat `capture video` as caller-local media ingestion so valid files and typed media failures bypass Screen Recording and ScreenCaptureKit-owner preflight while live capture remains gated.
 - Keep normal exact-window Finder `see` usable when the window exposes no semantic AX value, without weakening hard Accessibility-read failures or the typed incomplete-evidence refusal.

@@ -79,7 +79,9 @@ peekaboo click --window-id "$WINDOW_ID" --snapshot "$SNAPSHOT_ID" --at 480,120
 The point is relative to the captured window. Add `--global` for screen coordinates, or add `--foreground` only when
 the target app requires focused synthetic input. See [automation.md](automation.md) for the full input vocabulary.
 
-Targeted click and type use background delivery by default, so Safari can receive them without becoming frontmost. Raw `press` requires explicit `--foreground`; prefer semantic actions for background confirmation when one exists.
+Targeted click and type use background delivery by default, so Safari can receive them without becoming frontmost. Raw
+`press` can stay background with a fresh exact-window/snapshot receipt; app/PID-only or targetless chords require
+explicit `--foreground`. Prefer semantic actions for background confirmation when one exists.
 
 Targeted `scroll --on <id>` is background-safe through Accessibility or, for a fresh exact-window pixel snapshot of a visible WebKit surface, PID-routed wheel events. The latter reports an unverifiable effect and must be observed before retry. Targetless/smooth scroll, `move`, and `drag` use the shared physical cursor and require explicit `--foreground`.
 
@@ -88,10 +90,11 @@ Targeted `scroll --on <id>` is background-safe through Accessibility or, for a f
 The agent picks tools, plans, and executes — give it a goal in natural language:
 
 ```bash
-peekaboo agent "Open Safari, go to github.com, and search for Peekaboo"
+peekaboo agent "Open Safari, go to github.com, and search for Peekaboo" --allow-foreground
 ```
 
-Default background work stays overlay-free so Peekaboo does not interrupt the foreground desktop. Run
+Cold-launching Safari needs the explicit foreground opt-in shown above. Default background work against already-running
+targets stays overlay-free so Peekaboo does not interrupt the foreground desktop. Run
 `peekaboo visualizer` when you explicitly want to exercise the overlay catalog. Continue a saved run with
 `peekaboo agent resume <session-id>`. See [commands/agent.md](commands/agent.md) for provider switching and session management.
 

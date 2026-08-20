@@ -26,6 +26,61 @@ private struct ApplicationInventoryRead: Sendable {
 
 @MainActor
 extension ApplicationService {
+    public func applicationMutationInventory() async throws
+        -> DesktopTargetPlanning.Inventory<ServiceApplicationInfo>
+    {
+        let processIdentifiers = Array(Set(self.runningApplicationProcessIdentifiersProvider()))
+            .filter { $0 > 0 }
+            .sorted()
+        var applications: [ServiceApplicationInfo] = []
+        var warnings: [String] = []
+        for processIdentifier in processIdentifiers {
+            guard let generation = self.processStartIdentityProvider(processIdentifier),
+                  generation > 0
+            else {
+                warnings.append(
+                    "Application PID \(processIdentifier) lacked process-generation identity and was omitted.")
+                continue
+            }
+            guard let candidate = self.applicationMutationCandidateProvider(processIdentifier) else {
+                warnings.append(
+                    "Application PID \(processIdentifier) metadata was unavailable and was omitted.")
+                continue
+            }
+            guard candidate.processIdentifier == processIdentifier,
+                  self.processStartIdentityProvider(processIdentifier) == generation
+            else {
+                warnings.append(
+                    "Application PID \(processIdentifier) changed process generation during inventory and was omitted.")
+                continue
+            }
+            guard !candidate.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                warnings.append(
+                    "Application PID \(processIdentifier) metadata lacked a usable name and was omitted.")
+                continue
+            }
+            let activationPolicy: ServiceApplicationActivationPolicy = if !candidate.allowsFuzzyMatching {
+                .prohibited
+            } else if candidate.isRegularApplication {
+                .regular
+            } else {
+                .accessory
+            }
+            applications.append(ServiceApplicationInfo(
+                processIdentifier: processIdentifier,
+                processStartIdentity: generation,
+                bundleIdentifier: candidate.bundleIdentifier,
+                name: candidate.name,
+                bundlePath: candidate.bundlePath,
+                executablePath: candidate.executablePath,
+                activationPolicy: activationPolicy))
+        }
+        return DesktopTargetPlanning.Inventory(
+            items: applications,
+            completeness: warnings.isEmpty ? .complete : .partial,
+            warnings: warnings)
+    }
+
     public func listApplications() async throws -> UnifiedToolOutput<ServiceApplicationListData> {
         let startTime = Date()
         self.logger.info("Listing all running applications")
@@ -111,19 +166,29 @@ extension ApplicationService {
         }
         try Task.checkCancellation()
 
-        let applications = reads.compactMap { read -> ServiceApplicationInfo? in
+        var applications: [ServiceApplicationInfo] = []
+        var omissionWarnings: [String] = []
+        for read in reads {
             if let expectedGeneration = read.candidate.processStartIdentity,
                self.processStartIdentityProvider(read.candidate.processIdentifier) != expectedGeneration
             {
-                return nil
+                omissionWarnings.append(
+                    "Application PID \(read.candidate.processIdentifier) changed process generation during inventory " +
+                        "and was omitted.")
+                continue
             }
-            return self.applicationInfo(from: read)
-        }.sorted { app1, app2 -> Bool in
+            if let application = self.applicationInfo(from: read) {
+                applications.append(application)
+            } else {
+                omissionWarnings.append(Self.applicationOmissionWarning(read))
+            }
+        }
+        applications.sort { app1, app2 -> Bool in
             app1.name == app2.name
                 ? app1.processIdentifier < app2.processIdentifier
                 : app1.name < app2.name
         }
-        let warnings = Self.uniqueWarnings(in: applications)
+        let warnings = Array(Set(Self.uniqueWarnings(in: applications) + omissionWarnings)).sorted()
 
         self.logger.info("Returning \(applications.count) applications")
 
@@ -151,7 +216,9 @@ extension ApplicationService {
                     "applications": applications.count,
                     "appsWithWindows": appsWithWindows.count,
                     "totalWindows": totalWindows,
-                    "incompleteApplications": applications.count(where: { !($0.metadataWarnings ?? []).isEmpty }),
+                    "incompleteApplications":
+                        applications.count(where: { !($0.metadataWarnings ?? []).isEmpty }),
+                    "omittedApplications": omissionWarnings.count,
                 ],
                 highlights: highlights),
             metadata: UnifiedToolOutput.Metadata(
@@ -166,6 +233,10 @@ extension ApplicationService {
         var warnings: [String] = candidate.windowCatalogAvailable
             ? []
             : ["Window inventory was unavailable for PID \(candidate.processIdentifier)"]
+        if candidate.processStartIdentity == nil {
+            warnings.append(
+                "Process-generation identity was unavailable for PID \(candidate.processIdentifier)")
+        }
 
         switch read.outcome {
         case let .metadata(metadata):
@@ -252,6 +323,21 @@ extension ApplicationService {
         }
     }
 
+    private static func applicationOmissionWarning(_ read: ApplicationInventoryRead) -> String {
+        let pid = read.candidate.processIdentifier
+        guard read.candidate.processStartIdentity != nil else {
+            return "Application PID \(pid) lacked process-generation identity and was omitted."
+        }
+        switch read.outcome {
+        case .processChanged:
+            return "Application PID \(pid) changed process generation during metadata discovery and was omitted."
+        case let .metadata(metadata) where metadata.name?.isEmpty != false:
+            return "Application PID \(pid) metadata lacked a usable name and was omitted."
+        default:
+            return "Application PID \(pid) could not be represented in the inventory and was omitted."
+        }
+    }
+
     private static func formatInventoryTimeout(_ seconds: TimeInterval) -> String {
         String(format: "%.2f", seconds)
     }
@@ -305,102 +391,36 @@ extension ApplicationService {
     public func findApplication(identifier: String) async throws -> ServiceApplicationInfo {
         self.logger.info("Finding application with identifier: \(identifier, privacy: .public)")
 
-        // Trim whitespace from identifier to handle edge cases
-        let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-
         let runningApps = NSWorkspace.shared.runningApplications.filter { app in
             !app.isTerminated
         }
-
-        // 1. Try PID match (highest priority)
-        if let pid = Self.parsePID(trimmedIdentifier),
-           let app = runningApps.first(where: { $0.processIdentifier == pid })
-        {
-            return self.createApplicationInfo(from: app)
-        }
-
-        // 2. Try exact bundle ID match
-        if let bundleMatch = runningApps.first(where: { $0.bundleIdentifier == trimmedIdentifier }) {
-            return self.createApplicationInfo(from: bundleMatch)
-        }
-
-        // 3. Try exact name match (case-insensitive)
-        if let exactName = runningApps.first(where: {
-            guard let name = $0.localizedName else { return false }
-            return name.compare(trimmedIdentifier, options: .caseInsensitive) == .orderedSame
-        }) {
-            return self.createApplicationInfo(from: exactName)
-        }
-
-        // 4. Try exact executable-name match (case-insensitive)
-        // The process/binary name shown by ps, pgrep, and Activity Monitor often differs
-        // from the localized app name (e.g. an app whose CFBundleName is
-        // "OpenClaw Desktop Test" ships an "openclaw-desktop" binary).
-        if let exactExecutable = runningApps.first(where: {
-            guard let executable = $0.executableURL?.lastPathComponent else { return false }
-            return executable.compare(trimmedIdentifier, options: .caseInsensitive) == .orderedSame
-        }) {
-            return self.createApplicationInfo(from: exactExecutable)
-        }
-
-        // 5. Fuzzy matching with prioritization
-        // Collect all fuzzy matches (localized name or executable name) and sort by relevance
-        let fuzzyMatches = runningApps.compactMap { app -> (app: NSRunningApplication, score: Int)? in
-            guard app.activationPolicy != .prohibited, let name = app.localizedName else { return nil }
-            let executable = app.executableURL?.lastPathComponent
-            let nameMatches = name.localizedCaseInsensitiveContains(trimmedIdentifier)
-            let executableMatches = executable?.localizedCaseInsensitiveContains(trimmedIdentifier) ?? false
-            guard nameMatches || executableMatches else { return nil }
-
-            // Calculate match score (higher is better)
-            var score = 0
-
-            let lowercaseIdentifier = trimmedIdentifier.lowercased()
-
-            // Exact match gets highest score; an exact executable match ranks just below
-            // an exact localized-name match.
-            if name.compare(trimmedIdentifier, options: .caseInsensitive) == .orderedSame {
-                score += 1000
+        let candidates = runningApps.map(Self.identifierCandidate)
+        if let resolution = try ApplicationIdentifierMatcher.resolution(for: identifier, in: candidates) {
+            guard !resolution.hasWinningTie else {
+                throw PeekabooError.ambiguousAppIdentifier(
+                    identifier,
+                    suggestions: candidates.map(\.name))
             }
-            if let executable, executable.compare(trimmedIdentifier, options: .caseInsensitive) == .orderedSame {
-                score += 800
+            let application = self.createApplicationInfo(from: runningApps[resolution.index])
+            let proof = application.processIdentity.map {
+                resolution.proof(selectedProcessIdentity: $0)
             }
-
-            // Name / executable starts with identifier gets high score
-            if name.lowercased().hasPrefix(lowercaseIdentifier) {
-                score += 100
-            }
-            if let executable, executable.lowercased().hasPrefix(lowercaseIdentifier) {
-                score += 80
-            }
-
-            // Prefer regular apps over accessories/helpers
-            if app.activationPolicy == .regular {
-                score += 50
-            }
-
-            // Prefer shorter names (penalize longer names)
-            // This helps prefer "Safari" over "Safari Web Content"
-            score -= name.count
-
-            return (app, score)
-        }
-
-        // Sort by score (descending) and return the best match
-        if let bestMatch = fuzzyMatches.max(by: { $0.score < $1.score }) {
-            let matchedName = bestMatch.app.localizedName ?? "unknown"
-            self.logger
-                .debug("Fuzzy match found: '\(trimmedIdentifier)' → '\(matchedName)' (score: \(bestMatch.score))")
-            return self.createApplicationInfo(from: bestMatch.app)
+            return application.withSelectorResolutionProofs(proof.map { [$0] })
         }
 
         self.logger.error("Application not found: \(identifier, privacy: .public)")
         throw PeekabooError.appNotFound(identifier)
     }
 
-    static func parsePID(_ identifier: String) -> Int32? {
-        guard identifier.uppercased().hasPrefix("PID:") else { return nil }
-        return Int32(identifier.dropFirst(4))
+    static func identifierCandidate(_ app: NSRunningApplication) -> ApplicationIdentifierMatcher.Candidate {
+        .init(
+            processIdentifier: app.processIdentifier,
+            bundleIdentifier: app.bundleIdentifier,
+            name: app.localizedName ?? app.bundleIdentifier ?? "Unknown",
+            bundlePath: app.bundleURL?.path,
+            executablePath: app.executableURL?.path,
+            allowsFuzzyMatching: app.activationPolicy != .prohibited,
+            isRegularApplication: app.activationPolicy == .regular)
     }
 
     public func getFrontmostApplication() async throws -> ServiceApplicationInfo {
@@ -445,6 +465,7 @@ extension ApplicationService {
             bundleIdentifier: app.bundleIdentifier,
             name: app.localizedName ?? "Unknown",
             bundlePath: app.bundleURL?.path,
+            executablePath: app.executableURL?.path,
             isActive: app.isActive,
             isHidden: app.isHidden,
             isHiddenKnown: true,

@@ -381,17 +381,23 @@ struct CommanderBinderTests {
 
     @Test
     func `Menu list requires invalidation only when auto focus may run`() throws {
-        let autoFocus = try CommanderCLIBinder.makeRuntimeOptions(
+        let background = try CommanderCLIBinder.makeRuntimeOptions(
             from: ParsedValues(positional: [], options: [:], flags: []),
             commandType: MenuCommand.ListSubcommand.self
         )
-        #expect(autoFocus.requiresImplicitSnapshotInvalidation)
+        #expect(!background.requiresImplicitSnapshotInvalidation)
 
-        let background = try CommanderCLIBinder.makeRuntimeOptions(
-            from: ParsedValues(positional: [], options: [:], flags: ["noAutoFocus"]),
+        let foreground = try CommanderCLIBinder.makeRuntimeOptions(
+            from: ParsedValues(positional: [], options: [:], flags: ["foreground"]),
             commandType: MenuCommand.ListSubcommand.self
         )
-        #expect(!background.requiresImplicitSnapshotInvalidation)
+        #expect(foreground.requiresImplicitSnapshotInvalidation)
+
+        let foregroundWithoutFocus = try CommanderCLIBinder.makeRuntimeOptions(
+            from: ParsedValues(positional: [], options: [:], flags: ["foreground", "noAutoFocus"]),
+            commandType: MenuCommand.ListSubcommand.self
+        )
+        #expect(!foregroundWithoutFocus.requiresImplicitSnapshotInvalidation)
     }
 
     @Test
@@ -708,7 +714,7 @@ struct CommanderBinderTests {
         let coordinate = try CommanderCLIBinder.makeRuntimeOptions(
             from: ParsedValues(
                 positional: [],
-                options: ["coords": ["10,20"]],
+                options: ["at": ["10,20"]],
                 flags: []
             ),
             commandType: ClickCommand.self
@@ -716,7 +722,7 @@ struct CommanderBinderTests {
         let coordinateDouble = try CommanderCLIBinder.makeRuntimeOptions(
             from: ParsedValues(
                 positional: [],
-                options: ["coords": ["10,20"]],
+                options: ["at": ["10,20"]],
                 flags: ["double"]
             ),
             commandType: ClickCommand.self
@@ -724,7 +730,7 @@ struct CommanderBinderTests {
         let coordinateRight = try CommanderCLIBinder.makeRuntimeOptions(
             from: ParsedValues(
                 positional: [],
-                options: ["coords": ["10,20"]],
+                options: ["at": ["10,20"]],
                 flags: ["right"]
             ),
             commandType: ClickCommand.self
@@ -769,7 +775,7 @@ struct CommanderBinderTests {
             ),
             commandType: ClickCommand.self
         )
-        let rightWinsConflictingFlags = try CommanderCLIBinder.makeRuntimeOptions(
+        let conflictingVariants = try CommanderCLIBinder.makeRuntimeOptions(
             from: ParsedValues(
                 positional: [],
                 options: ["on": ["B1"]],
@@ -780,7 +786,7 @@ struct CommanderBinderTests {
         let foregroundCoordinate = try CommanderCLIBinder.makeRuntimeOptions(
             from: ParsedValues(
                 positional: [],
-                options: ["coords": ["10,20"]],
+                options: ["at": ["10,20"]],
                 flags: ["foreground"]
             ),
             commandType: ClickCommand.self
@@ -795,18 +801,18 @@ struct CommanderBinderTests {
         )
 
         #expect(!coordinate.requiresPostEventPermission)
-        #expect(!coordinateDouble.requiresPostEventPermission)
-        #expect(!coordinateRight.requiresPostEventPermission)
+        #expect(coordinateDouble.requiresPostEventPermission)
+        #expect(coordinateRight.requiresPostEventPermission)
         #expect(!unconsentedLongPress.requiresPostEventPermission)
         #expect(!unconsentedLongPress.requiresLongPressClick)
         #expect(unconsentedLongPress.requiresAccessibilityPermission)
         #expect(longPress.requiresPostEventPermission)
         #expect(longPress.requiresLongPressClick)
         #expect(!longPress.requiresAccessibilityPermission)
-        #expect(!doubleClick.requiresPostEventPermission)
+        #expect(doubleClick.requiresPostEventPermission)
         #expect(!singleClick.requiresPostEventPermission)
         #expect(!rightClick.requiresPostEventPermission)
-        #expect(!rightWinsConflictingFlags.requiresPostEventPermission)
+        #expect(conflictingVariants.requiresPostEventPermission)
         #expect(foregroundCoordinate.requiresPostEventPermission)
         #expect(foregroundDoubleClick.requiresPostEventPermission)
         #expect(coordinate.requiresAccessibilityPermission)
@@ -848,9 +854,10 @@ struct CommanderBinderTests {
         #expect(CommandRuntime.supportsRemoteRequirements(for: accessibilityOnly, options: singleClick))
         #expect(CommandRuntime.supportsRemoteRequirements(for: accessibilityOnly, options: rightClick))
         #expect(CommandRuntime.supportsRemoteRequirements(for: accessibilityOnly, options: coordinate))
-        #expect(CommandRuntime.supportsRemoteRequirements(for: accessibilityOnly, options: doubleClick))
+        #expect(!CommandRuntime.supportsRemoteRequirements(for: accessibilityOnly, options: doubleClick))
         #expect(!CommandRuntime.supportsRemoteRequirements(for: accessibilityOnly, options: foregroundCoordinate))
         #expect(CommandRuntime.supportsRemoteRequirements(for: fullyPermitted, options: coordinate))
+        #expect(CommandRuntime.supportsRemoteRequirements(for: fullyPermitted, options: doubleClick))
         #expect(CommandRuntime.supportsRemoteRequirements(for: fullyPermitted, options: foregroundCoordinate))
     }
 }

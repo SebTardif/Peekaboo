@@ -10,7 +10,8 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
     TargetedTypeServiceProtocol,
     ExactWindowTargetedClickServiceProtocol,
     TargetedFocusedElementServiceProtocol,
-    ExactWindowTargetedKeyboardServiceProtocol
+    ExactWindowTargetedKeyboardServiceProtocol,
+    UIAutomationObservationActionResultProviding
 {
     let client: PeekabooBridgeClient
     public let supportsTargetedHotkeys: Bool
@@ -23,6 +24,7 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
     public let targetedTypeRequiresEventSynthesizingPermission: Bool
     public let supportsTargetedClicks: Bool
     public let supportsProcessGenerationPinnedClicks: Bool
+    public let supportsStatelessClickVariants: Bool
     public let targetedClickUnavailableReason: String?
     public let targetedClickRequiresEventSynthesizingPermission: Bool
     public let supportsExactWindowTargetedClicks: Bool
@@ -31,6 +33,7 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
     public let inspectAccessibilityTreeUnavailableReason: String?
     public let supportsExactWindowTargetedKeyboard: Bool
     public let exactWindowTargetedKeyboardUnavailableReason: String?
+    public let supportsExactWindowHeldPointerLifecycle: Bool
 
     public init(
         client: PeekabooBridgeClient,
@@ -44,6 +47,7 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
         targetedTypeRequiresEventSynthesizingPermission: Bool = false,
         supportsTargetedClicks: Bool = false,
         supportsProcessGenerationPinnedClicks: Bool = false,
+        supportsStatelessClickVariants: Bool = false,
         targetedClickUnavailableReason: String? = nil,
         targetedClickRequiresEventSynthesizingPermission: Bool = false,
         supportsExactWindowTargetedClicks: Bool = false,
@@ -51,7 +55,8 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
         supportsInspectAccessibilityTree: Bool = false,
         inspectAccessibilityTreeUnavailableReason: String? = nil,
         supportsExactWindowTargetedKeyboard: Bool = false,
-        exactWindowTargetedKeyboardUnavailableReason: String? = nil)
+        exactWindowTargetedKeyboardUnavailableReason: String? = nil,
+        supportsExactWindowHeldPointerLifecycle: Bool = false)
     {
         self.client = client
         self.supportsTargetedHotkeys = supportsTargetedHotkeys
@@ -64,6 +69,7 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
         self.targetedTypeRequiresEventSynthesizingPermission = targetedTypeRequiresEventSynthesizingPermission
         self.supportsTargetedClicks = supportsTargetedClicks
         self.supportsProcessGenerationPinnedClicks = supportsProcessGenerationPinnedClicks
+        self.supportsStatelessClickVariants = supportsStatelessClickVariants
         self.targetedClickUnavailableReason = targetedClickUnavailableReason
         self.targetedClickRequiresEventSynthesizingPermission = targetedClickRequiresEventSynthesizingPermission
         self.supportsExactWindowTargetedClicks = supportsExactWindowTargetedClicks
@@ -72,6 +78,7 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
         self.inspectAccessibilityTreeUnavailableReason = inspectAccessibilityTreeUnavailableReason
         self.supportsExactWindowTargetedKeyboard = supportsExactWindowTargetedKeyboard
         self.exactWindowTargetedKeyboardUnavailableReason = exactWindowTargetedKeyboardUnavailableReason
+        self.supportsExactWindowHeldPointerLifecycle = supportsExactWindowHeldPointerLifecycle
     }
 
     public func detectElements(
@@ -79,11 +86,11 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
         snapshotId: String?,
         windowContext: WindowContext?) async throws -> ElementDetectionResult
     {
-        try await self.detectElements(
+        try await self.detectElementsActionResult(
             in: imageData,
             snapshotId: snapshotId,
             windowContext: windowContext,
-            requestTimeoutSec: 30)
+            requestTimeoutSec: 30).payload
     }
 
     public func detectElements(
@@ -92,7 +99,20 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
         windowContext: WindowContext?,
         requestTimeoutSec: TimeInterval) async throws -> ElementDetectionResult
     {
-        try await self.client.detectElements(
+        try await self.detectElementsActionResult(
+            in: imageData,
+            snapshotId: snapshotId,
+            windowContext: windowContext,
+            requestTimeoutSec: requestTimeoutSec).payload
+    }
+
+    public func detectElementsActionResult(
+        in imageData: Data,
+        snapshotId: String?,
+        windowContext: WindowContext?,
+        requestTimeoutSec: TimeInterval?) async throws -> UIAutomationActionResult<ElementDetectionResult>
+    {
+        try await self.client.detectElementsWithOutcome(
             in: imageData,
             snapshotId: snapshotId,
             windowContext: windowContext,
@@ -100,12 +120,18 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
     }
 
     public func inspectAccessibilityTree(windowContext: WindowContext?) async throws -> ElementDetectionResult {
+        try await self.inspectAccessibilityTreeActionResult(windowContext: windowContext).payload
+    }
+
+    public func inspectAccessibilityTreeActionResult(
+        windowContext: WindowContext?) async throws -> UIAutomationActionResult<ElementDetectionResult>
+    {
         guard self.supportsInspectAccessibilityTree else {
             throw Self.inspectAccessibilityTreeUnavailableError(reason: self.inspectAccessibilityTreeUnavailableReason)
         }
 
         do {
-            return try await self.client.inspectAccessibilityTree(
+            return try await self.client.inspectAccessibilityTreeWithOutcome(
                 windowContext: windowContext,
                 requestTimeoutSec: Self.inspectAccessibilityTreeRequestTimeoutSeconds(
                     accessibilityTimeoutSeconds: windowContext?.accessibilityTimeoutSeconds))
@@ -150,10 +176,8 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
                 requiresEventSynthesizingPermission: self.targetedClickRequiresEventSynthesizingPermission)
         }
 
-        // No Event Synthesizing preflight: current hosts deliver every targeted click (coordinates
-        // included) through accessibility, so a coordinate click on an Accessibility-only host must
-        // reach the server rather than being rejected here. Variants the host genuinely cannot
-        // deliver (e.g. background double-click) are rejected authoritatively by the server.
+        // The server owns request-specific permission checks: semantic single/right clicks can
+        // remain Accessibility-only, while exact-window routed variants also require PostEvent.
         do {
             try await self.client.click(
                 target: target,
@@ -203,7 +227,7 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
                 requiresEventSynthesizingPermission: self.targetedClickRequiresEventSynthesizingPermission)
         }
 
-        // See the process-targeted overload: no Event Synthesizing preflight, the server decides.
+        // See the process-targeted overload: request-specific Event Synthesizing checks stay server-owned.
         do {
             try await self.client.click(
                 target: target,
@@ -483,11 +507,11 @@ public class RemoteUIAutomationService: DetectElementsRequestTimeoutAdjusting, T
     }
 
     public func drag(_ request: DragOperationRequest) async throws {
-        try await self.client.drag(PeekabooBridgeDragRequest(request))
+        _ = try await self.dragWithOutcome(request)
     }
 
     public func moveMouse(to: CGPoint, duration: Int, steps: Int, profile: MouseMovementProfile) async throws {
-        try await self.client.moveMouse(to: to, duration: duration, steps: steps, profile: profile)
+        _ = try await self.moveMouseWithOutcome(to: to, duration: duration, steps: steps, profile: profile)
     }
 
     public func getFocusedElement() -> UIFocusInfo? {
@@ -603,5 +627,44 @@ ElementActionAutomationServiceProtocol {
         } catch let envelope as PeekabooBridgeErrorEnvelope {
             throw Self.automationError(for: envelope, snapshotId: snapshotId)
         }
+    }
+}
+
+extension RemoteUIAutomationService: ExactWindowHeldPointerLifecycleServiceProtocol {
+    public func createExactWindowHeldPointerOwner(
+        boundTo _: ApplicationProcessIdentity?) async throws -> ExactWindowHeldPointerOwner
+    {
+        try await self.client.createExactWindowHeldPointerOwner()
+    }
+
+    public func beginExactWindowPointerHold(
+        owner: ExactWindowHeldPointerOwner,
+        request: ExactWindowHeldPointerRequest) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerReceipt>
+    {
+        try await self.client.beginExactWindowPointerHold(owner: owner, request: request)
+    }
+
+    public func releaseExactWindowPointerHold(
+        owner: ExactWindowHeldPointerOwner,
+        receipt: ExactWindowHeldPointerReceipt) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerTermination>
+    {
+        try await self.client.releaseExactWindowPointerHold(owner: owner, receipt: receipt)
+    }
+
+    public func revokeExactWindowPointerHold(
+        owner: ExactWindowHeldPointerOwner,
+        receipt: ExactWindowHeldPointerReceipt) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerTermination>
+    {
+        try await self.client.revokeExactWindowPointerHold(owner: owner, receipt: receipt)
+    }
+
+    public func disconnectExactWindowHeldPointerOwner(
+        _ owner: ExactWindowHeldPointerOwner) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerTermination?>
+    {
+        try await self.client.disconnectExactWindowHeldPointerOwner(owner)
     }
 }

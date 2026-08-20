@@ -1,8 +1,96 @@
 import Foundation
 import PeekabooAutomationKit
+import PeekabooFoundation
 import TachikomaMCP
 
 extension MCPToolContext {
+    private struct BackgroundExactWindowSelectorKeys {
+        let application: String
+        let pid: String?
+        let title: String
+        let index: String
+    }
+
+    private struct BackgroundExactWindowSelector {
+        let keys: BackgroundExactWindowSelectorKeys
+        let selector: InteractionTargetSelector
+    }
+
+    @MainActor
+    func backgroundTargetRevalidation(
+        _ authorization: BackgroundTargetAuthorization,
+        toolName: String) async throws -> ToolResponse?
+    {
+        guard let plan = authorization.targetPlan else { return nil }
+        guard let authority = plan.mutationAuthority else {
+            return self.executionPolicy.unresolvedTargetRejection(
+                toolName: toolName,
+                detail: "the selected target has no shared mutation authority")
+        }
+        let planner = DesktopTargetPlanning.MutationAuthorityPlanner(
+            applications: self.applications,
+            windows: self.windows)
+        do {
+            let current = try await planner.revalidate(authority)
+            _ = try plan.targetIdentity.coalescing(current.targetIdentity)
+            let application = current.application.application
+            return self.executionPolicy.systemSurfaceRejection(
+                toolName: toolName,
+                applicationBundleIdentifier: application.bundleIdentifier,
+                applicationName: application.name)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            let detail = plan.targetIdentity.exactWindow == nil
+                ? "the selected application changed process generation before dispatch"
+                : "the selected window changed identity or bounds before dispatch"
+            return self.executionPolicy.unresolvedTargetRejection(
+                toolName: toolName,
+                detail: detail)
+        }
+    }
+
+    @MainActor
+    func backgroundSnapshotTargetPlan(
+        snapshotID: String,
+        mirroredSnapshot: UISnapshot,
+        detectionResult: ElementDetectionResult) async throws -> AuthorizedDesktopTargetPlan
+    {
+        let mirroredReceipt = try mirroredSnapshot.targetReceipt()
+        let mirroredIdentity = try mirroredReceipt.requireIdentity()
+        if let mirroredName = Self.nonEmpty(mirroredReceipt.applicationName),
+           let detectionName = Self.nonEmpty(detectionResult.metadata.windowContext?.applicationName),
+           mirroredName.caseInsensitiveCompare(detectionName) != .orderedSame
+        {
+            throw DesktopTargetIdentityError.snapshotSourceMismatch
+        }
+        guard mirroredIdentity.exactWindow != nil else { throw DesktopTargetIdentityError.incompleteExactWindow }
+        let identity = try SnapshotTargetReceiptPlanner.assemble(
+            snapshotID: snapshotID,
+            detectionResult: detectionResult,
+            additionalEvidence: [.init(target: mirroredIdentity)],
+            applicationName: mirroredReceipt.applicationName).receipt.requireIdentity()
+        let authority = try await self.sharedMutationAuthority(for: identity)
+        return try AuthorizedDesktopTargetPlan(mutationAuthority: authority)
+    }
+
+    @MainActor
+    func sharedMutationAuthority(
+        for identity: DesktopTargetIdentity) async throws -> DesktopTargetPlanning.MutationAuthorityPlan
+    {
+        let planner = DesktopTargetPlanning.MutationAuthorityPlanner(
+            applications: self.applications,
+            windows: self.windows)
+        let authority = try await planner.plan(
+            selector: InteractionTargetSelector(
+                processIdentifier: Int(identity.processIdentity.processIdentifier),
+                windowID: identity.exactWindow?.identity.windowID),
+            expectedProcessIdentity: identity.processIdentity)
+        _ = try identity.coalescing(authority.targetIdentity)
+        return authority
+    }
+
     struct BackgroundApplicationTargetSchema {
         let stringKeys: [String]
         let pidKeys: [String]
@@ -22,15 +110,144 @@ extension MCPToolContext {
         switch toolName {
         case "app":
             BackgroundApplicationTargetSchema(stringKeys: ["name", "bundleId"], pidKeys: [], windowIDKeys: [])
-        case "dialog", "type":
+        case "dialog", "paste", "type":
             BackgroundApplicationTargetSchema(
                 stringKeys: ["app"],
                 pidKeys: ["pid"],
                 windowIDKeys: ["window_id"])
         case "window":
             BackgroundApplicationTargetSchema(stringKeys: ["app"], pidKeys: [], windowIDKeys: ["window_id"])
-        case "menu", "space":
+        case "menu":
             BackgroundApplicationTargetSchema(stringKeys: ["app"], pidKeys: [], windowIDKeys: [])
+        case "space":
+            BackgroundApplicationTargetSchema(stringKeys: ["app"], pidKeys: [], windowIDKeys: ["window_id"])
+        default:
+            nil
+        }
+    }
+
+    @MainActor
+    func backgroundExactWindowTargetAuthorization(
+        toolName: String,
+        arguments: ToolArguments) async throws -> BackgroundTargetAuthorization?
+    {
+        guard let selector = try Self.backgroundExactWindowSelector(
+            toolName: toolName,
+            arguments: arguments)
+        else { return nil }
+
+        let planner = DesktopTargetPlanning.MutationAuthorityPlanner(
+            applications: self.applications,
+            windows: self.windows)
+        let authority: DesktopTargetPlanning.MutationAuthorityPlan
+        do {
+            let automaticSelection: DesktopTargetPlanning.WindowSelectionPolicy =
+                toolName == "window" && arguments.getString("action")?.lowercased() == "restore"
+                    ? .preferredMutationWindow(.restore)
+                    : .preferredMutationWindow(.general)
+            authority = try await planner.plan(
+                selector: selector.selector,
+                requirement: .exactWindow(automaticSelection: automaticSelection))
+        } catch {
+            throw BackgroundTargetResolutionError(error.localizedDescription)
+        }
+        guard let windowPlan = authority.window else {
+            throw BackgroundTargetResolutionError(
+                "background \(toolName) did not resolve one exact window authority")
+        }
+        let application = authority.application.application
+        if let rejection = self.executionPolicy.systemSurfaceRejection(
+            toolName: toolName,
+            applicationBundleIdentifier: application.bundleIdentifier,
+            applicationName: application.name)
+        {
+            return BackgroundTargetAuthorization(arguments: arguments, rejection: rejection, targetPlan: nil)
+        }
+
+        var pinned = Self.argumentsPinnedToProcess(
+            arguments,
+            toolName: toolName,
+            processIdentifier: authority.application.processIdentity.processIdentifier).rawDictionary
+        pinned["window_id"] = windowPlan.identity.windowID
+        pinned.removeValue(forKey: selector.keys.title)
+        pinned.removeValue(forKey: selector.keys.index)
+        return try BackgroundTargetAuthorization(
+            arguments: ToolArguments(raw: pinned),
+            rejection: nil,
+            targetPlan: AuthorizedDesktopTargetPlan(mutationAuthority: authority))
+    }
+
+    private static func backgroundExactWindowSelector(
+        toolName: String,
+        arguments: ToolArguments) throws -> BackgroundExactWindowSelector?
+    {
+        guard let keys = self.backgroundExactWindowSelectorKeys(toolName: toolName, arguments: arguments) else {
+            return nil
+        }
+        let applicationSelector = self.strictString(arguments, key: keys.application)
+        let titleSelector = self.strictString(arguments, key: keys.title)
+        guard !applicationSelector.isInvalid else {
+            throw BackgroundTargetResolutionError("app must be a nonempty application identifier")
+        }
+        guard !titleSelector.isInvalid else {
+            throw BackgroundTargetResolutionError("\(keys.title) must be a nonempty window title")
+        }
+
+        let pid = try keys.pid.flatMap { try arguments.validatedInt($0) }
+        guard pid.map({ $0 > 0 && Int32(exactly: $0) != nil }) ?? true else {
+            throw BackgroundTargetResolutionError("pid must be a valid positive process identifier")
+        }
+        guard applicationSelector.value == nil || pid == nil else {
+            throw BackgroundTargetResolutionError("app and pid are mutually exclusive")
+        }
+        let windowID = try arguments.validatedInt("window_id")
+        let windowIndex = try arguments.validatedInt(keys.index)
+        guard windowID.map({ $0 > 0 && UInt32(exactly: $0) != nil }) ?? true else {
+            throw BackgroundTargetResolutionError("window_id must be a valid positive WindowServer identifier")
+        }
+        guard windowIndex.map({ $0 >= 0 }) ?? true else {
+            throw BackgroundTargetResolutionError("\(keys.index) must be zero or greater")
+        }
+        let selectorCount = [windowID != nil, titleSelector.value != nil, windowIndex != nil].count(where: { $0 })
+        guard selectorCount <= 1 else {
+            throw BackgroundTargetResolutionError("window_id, \(keys.title), and \(keys.index) are mutually exclusive")
+        }
+        if toolName == "paste", selectorCount == 0 {
+            return nil
+        }
+        guard windowID != nil || applicationSelector.value != nil || pid != nil else {
+            throw BackgroundTargetResolutionError(
+                "background window mutation requires an application or exact window_id owner")
+        }
+        return BackgroundExactWindowSelector(
+            keys: keys,
+            selector: InteractionTargetSelector(
+                applicationIdentifier: applicationSelector.value,
+                processIdentifier: pid,
+                windowID: windowID,
+                windowTitle: titleSelector.value,
+                windowIndex: windowIndex))
+    }
+
+    private static func backgroundExactWindowSelectorKeys(
+        toolName: String,
+        arguments: ToolArguments) -> BackgroundExactWindowSelectorKeys?
+    {
+        switch (toolName, arguments.getString("action")?.lowercased()) {
+        case let ("window", action?) where action != "list":
+            BackgroundExactWindowSelectorKeys(application: "app", pid: nil, title: "title", index: "index")
+        case ("space", "move-window"):
+            BackgroundExactWindowSelectorKeys(
+                application: "app",
+                pid: nil,
+                title: "window_title",
+                index: "window_index")
+        case ("paste", _):
+            BackgroundExactWindowSelectorKeys(
+                application: "app",
+                pid: "pid",
+                title: "window_title",
+                index: "window_index")
         default:
             nil
         }
@@ -58,11 +275,11 @@ extension MCPToolContext {
         return identifiers
     }
 
-    func windowProcessIdentities(
+    func windowTargetIdentities(
         arguments: ToolArguments,
-        keys: [String]) async throws -> [ApplicationProcessIdentity]
+        keys: [String]) async throws -> [DesktopTargetIdentity]
     {
-        var identities: [ApplicationProcessIdentity] = []
+        var identities: [DesktopTargetIdentity] = []
         for key in keys {
             guard let windowID = arguments.getInt(key) else { continue }
             let windows: [ServiceWindowInfo]
@@ -71,34 +288,44 @@ extension MCPToolContext {
             } catch {
                 throw BackgroundTargetResolutionError("window_id owner could not be resolved before dispatch")
             }
-            let owners = windows.compactMap { window -> ApplicationProcessIdentity? in
-                guard let identity = window.mutationIdentity else { return nil }
-                return ApplicationProcessIdentity(
-                    processIdentifier: identity.ownerProcessIdentifier,
-                    processStartIdentity: identity.ownerProcessStartIdentity)
-            }
-            guard owners.count == windows.count,
-                  let owner = owners.first,
-                  owners.allSatisfy({ $0 == owner })
-            else {
+            guard windows.count == 1, let window = windows.first else {
                 throw BackgroundTargetResolutionError(
-                    "window_id does not identify one process-generation-pinned owner")
+                    "window_id does not identify exactly one window")
             }
-            identities.append(owner)
+            do {
+                try identities.append(DesktopTargetIdentity(
+                    exactWindow: UIAutomationTarget.ExactWindow(window: window)))
+            } catch {
+                throw BackgroundTargetResolutionError(
+                    "window_id does not identify one generation-pinned exact window with immutable bounds")
+            }
         }
         return identities
     }
 
-    func resolveApplications(_ identifiers: [String]) async throws -> [ServiceApplicationInfo] {
+    @MainActor
+    func resolveApplicationAuthorities(
+        _ identifiers: [String]) async throws -> [DesktopTargetPlanning.MutationAuthorityPlan]
+    {
+        let planner = DesktopTargetPlanning.MutationAuthorityPlanner(
+            applications: self.applications,
+            windows: self.windows)
         do {
-            var resolved: [ServiceApplicationInfo] = []
+            var resolved: [DesktopTargetPlanning.MutationAuthorityPlan] = []
+            var expectedIdentity: ApplicationProcessIdentity?
             for identifier in identifiers {
-                try await resolved.append(self.applications.findApplication(identifier: identifier))
+                let authority = try await planner.plan(
+                    selector: InteractionTargetSelector(applicationIdentifier: identifier),
+                    expectedProcessIdentity: expectedIdentity)
+                expectedIdentity = authority.application.processIdentity
+                resolved.append(authority)
             }
             return resolved
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw BackgroundTargetResolutionError(
-                "the selected application owner could not be resolved before dispatch")
+                error.localizedDescription)
         }
     }
 
@@ -137,7 +364,7 @@ extension MCPToolContext {
         case "app":
             pinned["name"] = "PID:\(processIdentifier)"
             pinned.removeValue(forKey: "bundleId")
-        case "dialog", "type":
+        case "dialog", "paste", "type":
             pinned["pid"] = Int(processIdentifier)
             pinned.removeValue(forKey: "app")
         case "menu", "space", "window":

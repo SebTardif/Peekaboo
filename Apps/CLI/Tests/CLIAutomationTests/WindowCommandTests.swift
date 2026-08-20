@@ -70,6 +70,129 @@ struct WindowCommandTests {
     }
 
     @Test
+    func `window mutations reject every conflicting selector pair before dispatch`() async throws {
+        let selectorPairs = [
+            ["--window-id", "101", "--window-title", "Draft"],
+            ["--window-id", "101", "--window-index", "0"],
+            ["--window-title", "Draft", "--window-index", "0"],
+        ]
+
+        for selectors in selectorPairs {
+            let context = await MainActor.run {
+                self.makeStrictSelectionContext(titles: ["Draft", "Notes"])
+            }
+            let result = try await self.runWindowCommand(
+                ["window", "move", "--app", "Fixture"] + selectors + ["--x", "20", "--y", "30", "--json"],
+                context: context,
+                allowedExitStatuses: [1]
+            )
+
+            #expect((result.stdout + result.stderr).contains("Provide only one of"))
+            #expect(await MainActor.run { context.windowService.moveCalls.isEmpty })
+        }
+    }
+
+    @Test
+    func `window mutation rejects duplicate exact titles before dispatch`() async throws {
+        let context = await MainActor.run {
+            self.makeStrictSelectionContext(titles: ["Draft", "Draft"])
+        }
+
+        let result = try await self.runWindowCommand(
+            [
+                "window", "move", "--app", "Fixture", "--window-title", "Draft",
+                "--x", "20", "--y", "30", "--json",
+            ],
+            context: context,
+            allowedExitStatuses: [1]
+        )
+
+        #expect((result.stdout + result.stderr).localizedCaseInsensitiveContains("ambiguous"))
+        #expect(await MainActor.run { context.windowService.moveCalls.isEmpty })
+    }
+
+    @Test
+    func `window mutation rejects duplicate partial titles before dispatch`() async throws {
+        let context = await MainActor.run {
+            self.makeStrictSelectionContext(titles: ["Draft One", "Draft Two"])
+        }
+
+        let result = try await self.runWindowCommand(
+            [
+                "window", "move", "--app", "Fixture", "--window-title", "Draft",
+                "--x", "20", "--y", "30", "--json",
+            ],
+            context: context,
+            allowedExitStatuses: [1]
+        )
+
+        #expect((result.stdout + result.stderr).localizedCaseInsensitiveContains("ambiguous"))
+        #expect(await MainActor.run { context.windowService.moveCalls.isEmpty })
+    }
+
+    @Test
+    func `window mutation refuses a fuzzy application selector before window lookup`() async throws {
+        let context = await MainActor.run {
+            self.makeStrictSelectionContext(titles: ["Draft"])
+        }
+
+        let result = try await self.runWindowCommand(
+            [
+                "window", "move", "--app", "Fixt", "--window-title", "Draft",
+                "--x", "20", "--y", "30", "--json",
+            ],
+            context: context,
+            allowedExitStatuses: [1]
+        )
+
+        #expect((result.stdout + result.stderr).contains("not allowed for mutation"))
+        #expect(await MainActor.run { context.windowService.moveCalls.isEmpty })
+    }
+
+    @Test
+    func `window mutation dispatches to the unique partial title match`() async throws {
+        let context = await MainActor.run {
+            self.makeStrictSelectionContext(titles: ["Draft One", "Release Notes"])
+        }
+
+        let result = try await self.runWindowCommand(
+            [
+                "window", "move", "--app", "Fixture", "--window-title", "Notes",
+                "--x", "20", "--y", "30", "--json",
+            ],
+            context: context
+        )
+
+        #expect(result.exitStatus == 0)
+        #expect(await MainActor.run { context.windowService.moveCalls.map(\.description) } == [
+            "windowId(102)",
+        ])
+    }
+
+    @Test
+    func `window focus verify refuses when focused-window readback is absent`() async throws {
+        let context = await MainActor.run {
+            self.makeStrictSelectionContext(titles: ["Draft"])
+        }
+
+        let result = try await self.runWindowCommand(
+            ["window", "focus", "--app", "Fixture", "--verify", "--json"],
+            context: context,
+            allowedExitStatuses: [1]
+        )
+
+        let response = try JSONDecoder().decode(
+            JSONResponse.self,
+            from: Data((result.stdout + result.stderr).utf8)
+        )
+        #expect(!response.success)
+        #expect(response.error?.mutation_dispatched == true)
+        #expect(await MainActor.run { context.windowService.focusCalls.map(\.description) } == [
+            "windowId(101)",
+        ])
+    }
+
+    @Test
     func `minimized exact close reports restore or foreground guidance`() async throws {
         let appName = "TextEdit"
         let appInfo = ServiceApplicationInfo(
@@ -150,10 +273,55 @@ struct WindowCommandTests {
         )
 
         let windows = response.data.windows
+        #expect(response.data.inventory_completeness == "partial")
+        #expect(response.data.inventory_warnings?.contains(where: {
+            $0.contains("omitted 1 non-renderable or duplicate inventory row")
+        }) == true)
         #expect(windows.count == 1)
         let window = try #require(windows.first)
         #expect(window.window_title == "Document")
         #expect(window.window_index == mainWindow.index)
+    }
+
+    @Test
+    func `window list preserves partial inventory authority in JSON`() async throws {
+        let appName = "PartialApp"
+        let context = await MainActor.run {
+            self.makeWindowContext(
+                appInfo: ServiceApplicationInfo(
+                    processIdentifier: 5556,
+                    bundleIdentifier: "dev.partial",
+                    name: appName
+                ),
+                windows: [
+                    appName: [
+                        ServiceWindowInfo(
+                            windowID: 12,
+                            title: "Document",
+                            bounds: CGRect(x: 50, y: 50, width: 1200, height: 800),
+                            index: 0
+                        ),
+                    ],
+                ]
+            )
+        }
+        await MainActor.run {
+            context.windowService.inventoryCompleteness = .partial
+            context.windowService.inventoryWarnings = ["Accessibility omitted one unmatched window row"]
+        }
+
+        let result = try await self.runWindowCommand([
+            "window", "list", "--app", appName, "--json",
+        ], context: context)
+        let output = result.stdout.isEmpty ? result.stderr : result.stdout
+        let response = try JSONDecoder().decode(
+            CodableJSONResponse<WindowListData>.self,
+            from: Data(output.utf8)
+        )
+
+        #expect(response.data.windows.count == 1)
+        #expect(response.data.inventory_completeness == "partial")
+        #expect(response.data.inventory_warnings == ["Accessibility omitted one unmatched window row"])
     }
 
     @Test
@@ -172,6 +340,7 @@ struct WindowCommandTests {
         let appName = "Finder"
         let appInfo = ServiceApplicationInfo(
             processIdentifier: 1234,
+            processStartIdentity: 7,
             bundleIdentifier: "com.apple.finder",
             name: appName
         )
@@ -300,6 +469,7 @@ struct WindowCommandTests {
             self.makeWindowContext(
                 appInfo: ServiceApplicationInfo(
                     processIdentifier: 42,
+                    processStartIdentity: 7,
                     bundleIdentifier: bundleID,
                     name: appName
                 ),
@@ -369,6 +539,7 @@ struct WindowCommandTests {
             self.makeWindowContext(
                 appInfo: ServiceApplicationInfo(
                     processIdentifier: 99,
+                    processStartIdentity: 7,
                     bundleIdentifier: bundleID,
                     name: appName
                 ),
@@ -427,6 +598,7 @@ struct WindowCommandTests {
             self.makeWindowContext(
                 appInfo: ServiceApplicationInfo(
                     processIdentifier: 99,
+                    processStartIdentity: 7,
                     bundleIdentifier: "com.apple.TextEdit",
                     name: appName
                 ),
@@ -519,8 +691,16 @@ struct WindowCommandTests {
         appInfo: ServiceApplicationInfo,
         windows: [String: [ServiceWindowInfo]]
     ) -> WindowHarnessContext {
-        let applicationService = StubApplicationService(applications: [appInfo], windowsByApp: windows)
-        let windowService = OutcomeStubWindowService(windowsByApp: windows)
+        let pinnedWindows = windows.mapValues { windows in
+            windows.map {
+                $0.withMutationIdentityForTesting(
+                    ownerProcessIdentifier: appInfo.processIdentifier,
+                    ownerProcessStartIdentity: appInfo.processStartIdentity ?? 7
+                )
+            }
+        }
+        let applicationService = StubApplicationService(applications: [appInfo], windowsByApp: pinnedWindows)
+        let windowService = OutcomeStubWindowService(windowsByApp: pinnedWindows)
         let services = TestServicesFactory.makePeekabooServices(
             applications: applicationService,
             windows: windowService
@@ -530,6 +710,28 @@ struct WindowCommandTests {
             windowService: windowService,
             applicationService: applicationService
         )
+    }
+
+    @MainActor
+    private func makeStrictSelectionContext(titles: [String]) -> WindowHarnessContext {
+        let appName = "Fixture"
+        let appInfo = ServiceApplicationInfo(
+            processIdentifier: 42,
+            processStartIdentity: 7,
+            bundleIdentifier: "dev.fixture",
+            name: appName
+        )
+        let windows = titles.enumerated().map { offset, title in
+            let position = CGFloat(offset * 20)
+            return ServiceWindowInfo(
+                windowID: 101 + offset,
+                title: title,
+                bounds: CGRect(x: position, y: position, width: 640, height: 480),
+                isMainWindow: offset == 0,
+                index: offset
+            )
+        }
+        return self.makeWindowContext(appInfo: appInfo, windows: [appName: windows])
     }
 
     private struct WindowHarnessContext {

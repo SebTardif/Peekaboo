@@ -7,21 +7,59 @@ import Security
 
 public struct PeekabooBridgePeer: Sendable {
     public let processIdentifier: pid_t
+    public let auditTokenProcessIdentifierVersion: Int32?
+    public let processStartIdentity: UInt64?
+    public let codeSignatureHash: String?
     public let userIdentifier: uid_t?
     public let bundleIdentifier: String?
     public let teamIdentifier: String?
+    let liveIdentity: PeekabooBridgeLivePeerIdentity?
 
     public init(
         processIdentifier: pid_t,
+        auditTokenProcessIdentifierVersion: Int32? = nil,
+        processStartIdentity: UInt64? = nil,
+        codeSignatureHash: String? = nil,
         userIdentifier: uid_t?,
         bundleIdentifier: String?,
         teamIdentifier: String?)
     {
         self.processIdentifier = processIdentifier
+        self.auditTokenProcessIdentifierVersion = auditTokenProcessIdentifierVersion
+        self.processStartIdentity = processStartIdentity
+        self.codeSignatureHash = codeSignatureHash
         self.userIdentifier = userIdentifier
         self.bundleIdentifier = bundleIdentifier
         self.teamIdentifier = teamIdentifier
+        self.liveIdentity = nil
     }
+
+    init(
+        liveIdentity: PeekabooBridgeLivePeerIdentity,
+        bundleIdentifier: String?,
+        teamIdentifier: String?)
+    {
+        self.processIdentifier = liveIdentity.processIdentifier
+        self.auditTokenProcessIdentifierVersion = liveIdentity.processIdentifierVersion
+        self.processStartIdentity = liveIdentity.processStartIdentity
+        self.codeSignatureHash = liveIdentity.codeSignatureHash
+        self.userIdentifier = liveIdentity.effectiveUserIdentifier
+        self.bundleIdentifier = bundleIdentifier
+        self.teamIdentifier = teamIdentifier
+        self.liveIdentity = liveIdentity
+    }
+}
+
+struct PeekabooBridgeHeldPointerOwnerBinding {
+    let peerIdentity: ApplicationProcessIdentity
+    var pendingBeginTarget: DesktopTargetIdentity?
+    var activeReceipt: ExactWindowHeldPointerReceipt?
+    var closedAt: ContinuousClock.Instant?
+}
+
+struct PeekabooBridgeReceiptlessNegotiation {
+    let protocolVersion: PeekabooBridgeProtocolVersion
+    let recordedAt: ContinuousClock.Instant
 }
 
 @MainActor
@@ -30,22 +68,33 @@ public final class PeekabooBridgeServer {
     let hostKind: PeekabooBridgeHostKind
     let allowlistedTeams: Set<String>
     let allowlistedBundles: Set<String>
-    let supportedVersions: ClosedRange<PeekabooBridgeProtocolVersion>
+    nonisolated let supportedVersions: ClosedRange<PeekabooBridgeProtocolVersion>
+    nonisolated let operationReceiptSessionCapacity: Int
     let allowedOperations: Set<PeekabooBridgeOperation>
     let hostIdentity: PeekabooBridgeHostIdentity?
     let hostCapabilities: Set<String>
+    let servingSocketPath: String?
+    var agentExecutionRunner: (any PeekabooBridgeAgentExecutionRunning)?
     let daemonControl: (any PeekabooDaemonControlProviding)?
     let postEventAccessRequester: @MainActor @Sendable () -> Bool
     let permissionStatusEvaluator: @MainActor @Sendable (_ allowAppleScriptLaunch: Bool) -> PermissionsStatus
     let windowOwnerProcessIdentifierProvider: @Sendable (CGWindowID) -> pid_t?
     let windowBoundsProvider: @Sendable (CGWindowID) -> CGRect?
+    let maximizedVisibleWorkAreaProvider: @MainActor @Sendable (CGRect) -> CGRect?
     let processStartIdentityProvider: @Sendable (pid_t) -> UInt64?
     let desktopMutationWatermarkStore: DesktopMutationWatermarkStore?
     let desktopOperationLaneCoordinator: DesktopOperationLaneCoordinator
     let automationActivityObserver: (@Sendable (pid_t) -> Void)?
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    let encoder: JSONEncoder
+    let decoder: JSONDecoder
     let logger = Logger(subsystem: "boo.peekaboo.bridge", category: "server")
+    var heldPointerBridgeOwners: [ExactWindowHeldPointerOwner: PeekabooBridgeHeldPointerOwnerBinding] = [:]
+    var receiptlessNegotiations: [PeekabooBridgeLivePeerIdentity: PeekabooBridgeReceiptlessNegotiation] = [:]
+    #if DEBUG
+    var allowsAuthenticatedAgentExecutionPeerForTesting = false
+    var requestDecodeObserverForTesting: (@Sendable () -> Void)?
+    var admissionRefusalObserverForTesting: (@Sendable () async -> Void)?
+    #endif
 
     public init(
         services: any PeekabooBridgeServiceProviding,
@@ -53,9 +102,11 @@ public final class PeekabooBridgeServer {
         allowlistedTeams: Set<String>,
         allowlistedBundles: Set<String>,
         supportedVersions: ClosedRange<PeekabooBridgeProtocolVersion> = PeekabooBridgeConstants.supportedProtocolRange,
+        operationReceiptSessionCapacity: Int = 16384,
         allowedOperations: Set<PeekabooBridgeOperation> = PeekabooBridgeOperation.remoteDefaultAllowlist,
         hostIdentity: PeekabooBridgeHostIdentity? = .current(),
         hostCapabilities: Set<String> = [],
+        servingSocketPath: String? = nil,
         daemonControl: (any PeekabooDaemonControlProviding)? = nil,
         desktopMutationWatermarkStore: DesktopMutationWatermarkStore? = nil,
         desktopOperationLaneCoordinator: DesktopOperationLaneCoordinator = .shared,
@@ -68,6 +119,7 @@ public final class PeekabooBridgeServer {
         windowBoundsProvider: @escaping @Sendable (CGWindowID) -> CGRect? = {
             SystemIdentityResolver.windowIdentity($0)?.bounds
         },
+        maximizedVisibleWorkAreaProvider: (@MainActor @Sendable (CGRect) -> CGRect?)? = nil,
         processStartIdentityProvider: @escaping @Sendable (pid_t) -> UInt64? =
             SystemIdentityResolver.processStartIdentity,
         encoder: JSONEncoder = .peekabooBridgeEncoder(),
@@ -78,7 +130,10 @@ public final class PeekabooBridgeServer {
         self.allowlistedTeams = allowlistedTeams
         self.allowlistedBundles = allowlistedBundles
         self.supportedVersions = supportedVersions
+        self.operationReceiptSessionCapacity = operationReceiptSessionCapacity
         self.allowedOperations = allowedOperations.subtracting([._appleScriptProbe])
+        self.servingSocketPath = servingSocketPath
+        self.agentExecutionRunner = servingSocketPath == nil ? nil : PeekabooBridgeLiveAgentExecutionRunner()
         self.hostIdentity = hostIdentity
         var resolvedHostCapabilities = protocolHostCapabilities(
             hostCapabilities,
@@ -111,6 +166,15 @@ public final class PeekabooBridgeServer {
                 resolvedHostCapabilities.insert(PeekabooBridgeHostCapability.screenCaptureKitProcessOwnership)
             }
         }
+        if supportedVersions.upperBound >= PeekabooBridgeConstants.agentExecutionTraceVersion,
+           self.allowedOperations.contains(.agentExecutionTrace),
+           servingSocketPath != nil,
+           self.agentExecutionRunner != nil
+        {
+            resolvedHostCapabilities.insert(PeekabooBridgeHostCapability.agentExecutionTrace)
+        } else {
+            resolvedHostCapabilities.remove(PeekabooBridgeHostCapability.agentExecutionTrace)
+        }
         if self.allowedOperations.contains(.launchApplicationWithOptions),
            services.applications.supportsSafeBackgroundApplicationLaunchNoOp
         {
@@ -122,6 +186,12 @@ public final class PeekabooBridgeServer {
             resolvedHostCapabilities.insert(
                 PeekabooBridgeHostCapability.processGenerationPinnedApplicationActivation)
         }
+        if self.allowedOperations.contains(.hideApplication),
+           services.applications.supportsProcessGenerationPinnedApplicationHide
+        {
+            resolvedHostCapabilities.insert(
+                PeekabooBridgeHostCapability.processGenerationPinnedApplicationHide)
+        }
         self.hostCapabilities = resolvedHostCapabilities
         self.daemonControl = daemonControl
         self.desktopMutationWatermarkStore = desktopMutationWatermarkStore
@@ -129,6 +199,9 @@ public final class PeekabooBridgeServer {
         self.automationActivityObserver = automationActivityObserver
         self.windowOwnerProcessIdentifierProvider = windowOwnerProcessIdentifierProvider
         self.windowBoundsProvider = windowBoundsProvider
+        self.maximizedVisibleWorkAreaProvider = maximizedVisibleWorkAreaProvider ?? { bounds in
+            WindowMutationGeometryPostcondition.currentMaximizedVisibleWorkArea(for: bounds)
+        }
         self.processStartIdentityProvider = processStartIdentityProvider
         let resolvedPostEventAccessEvaluator = postEventAccessEvaluator ?? { [services] in
             services.permissions.checkPostEventPermission()
@@ -154,46 +227,37 @@ public final class PeekabooBridgeServer {
         self.decoder = decoder
     }
 
-    public func decodeAndHandle(_ requestData: Data, peer: PeekabooBridgePeer?) async -> Data {
-        do {
-            try PeekabooBridgeRequestPreflight.validate(requestData)
-            let request = try self.decoder.decode(PeekabooBridgeRequest.self, from: requestData)
-            if case let .projectedAction(payload) = request {
-                return await self.handleProjectedAction(payload, peer: peer)
-            }
-            let handled = try await self.route(request, peer: peer)
-            return try self.encoder.encode(handled.response)
-        } catch let envelope as PeekabooBridgeErrorEnvelope {
-            self.logger.error("bridge request failed: \(envelope.message, privacy: .public)")
-            return PeekabooBridgeResponse.encodeError(envelope.legacyCompatible, using: self.encoder)
-        } catch is CancellationError {
-            self.logger.debug("bridge request cancelled after its client disconnected")
-            let envelope = PeekabooBridgeErrorEnvelope(
-                code: .timeout,
-                message: "Bridge request was cancelled")
-            return PeekabooBridgeResponse.encodeError(envelope, using: self.encoder)
-        } catch {
-            self.logger.error("bridge request decoding failed: \(error.localizedDescription, privacy: .public)")
-            let envelope = PeekabooBridgeErrorEnvelope(
-                code: .decodingFailed,
-                message: "Failed to decode request",
-                details: "\(error)")
-            return PeekabooBridgeResponse.encodeError(envelope, using: self.encoder)
-        }
+    #if DEBUG
+    func setAgentExecutionRunnerForTesting(_ runner: (any PeekabooBridgeAgentExecutionRunning)?) {
+        self.agentExecutionRunner = runner
     }
 
-    private func handleProjectedAction(
+    func allowAuthenticatedAgentExecutionPeerForTesting() {
+        self.allowsAuthenticatedAgentExecutionPeerForTesting = true
+    }
+
+    func setRequestDecodeObserverForTesting(_ observer: (@Sendable () -> Void)?) {
+        self.requestDecodeObserverForTesting = observer
+    }
+
+    func setAdmissionRefusalObserverForTesting(_ observer: (@Sendable () async -> Void)?) {
+        self.admissionRefusalObserverForTesting = observer
+    }
+    #endif
+
+    func handleProjectedAction(
         _ payload: PeekabooBridgeProjectedActionRequest,
         peer: PeekabooBridgePeer?) async -> Data
     {
         do {
             let request = try payload.validatedRequest()
             let handled = try await self.route(request, peer: peer)
-            return try self.encoder.encode(PeekabooBridgeResponse.projectedAction(.init(
+            return try self.encoder.encode(PeekabooBridgeResponse.projectedActionForCurrentRequestVocabulary(
                 response: handled.response,
-                outcome: handled.outcome?.routed(to: .bridge).projection)))
+                outcome: handled.outcome?.routed(to: .bridge).projection))
         } catch let envelope as PeekabooBridgeErrorEnvelope {
-            self.logger.error("projected bridge request failed: \(envelope.message, privacy: .public)")
+            self.logger.error(
+                "projected bridge request failed code=\(envelope.code.rawValue, privacy: .public)")
             return self.encodeProjectedError(envelope)
         } catch is CancellationError {
             self.logger.debug("projected bridge request cancelled after its client disconnected")
@@ -201,7 +265,7 @@ public final class PeekabooBridgeServer {
                 code: .timeout,
                 message: "Bridge request was cancelled"))
         } catch {
-            self.logger.error("projected bridge request failed: \(error.localizedDescription, privacy: .public)")
+            self.logger.error("projected bridge request failed code=internal_error")
             return self.encodeProjectedError(PeekabooBridgeErrorEnvelope(
                 code: .internalError,
                 message: error.localizedDescription,
@@ -210,88 +274,13 @@ public final class PeekabooBridgeServer {
     }
 
     private func encodeProjectedError(_ envelope: PeekabooBridgeErrorEnvelope) -> Data {
-        let response = PeekabooBridgeResponse.projectedAction(.init(
+        let response = PeekabooBridgeResponse.projectedActionForCurrentRequestVocabulary(
             response: .error(envelope),
-            outcome: envelope.actionOutcome))
+            outcome: envelope.actionOutcome)
         guard let data = try? self.encoder.encode(response), !data.isEmpty else {
             return PeekabooBridgeResponse.encodeError(envelope, using: self.encoder)
         }
         return data
-    }
-
-    private func route(
-        _ request: PeekabooBridgeRequest,
-        peer: PeekabooBridgePeer?) async throws -> PeekabooBridgeHandledResponse
-    {
-        try self.validatePeerAuthorization(peer)
-        try PeekabooBridgeRequestContext.checkRequestIsActive()
-
-        let start = Date()
-        let pid = peer?.processIdentifier ?? 0
-        var failed = false
-        defer {
-            if !failed {
-                let duration = Date().timeIntervalSince(start)
-                let durationString = String(format: "%.3f", duration)
-                let message = "bridge op=\(request.operation.rawValue) pid=\(pid) ok in \(durationString)s"
-                self.logger.debug("\(message, privacy: .public)")
-            }
-        }
-
-        let op = request.operation
-        let permissions = self.currentPermissions()
-        let effectiveOps = self.effectiveAllowedOperations(permissions: permissions)
-
-        do {
-            try self.validateOperationAccess(for: request, permissions: permissions, effectiveOps: effectiveOps)
-            if let daemonControl = self.daemonControl,
-               op != .daemonStatus,
-               op != .daemonStop
-            {
-                if let conditionalControl = daemonControl as? any PeekabooConditionalDaemonControlProviding {
-                    guard await conditionalControl.admitActivity(operation: op) else {
-                        throw PeekabooBridgeErrorEnvelope(
-                            code: .serverBusy,
-                            message: "Daemon is shutting down")
-                    }
-                } else {
-                    await daemonControl.recordActivityStart(operation: op)
-                }
-                do {
-                    let response = try await self.handleAuthorizedWithDesktopMutationBarrier(
-                        request,
-                        peer: peer,
-                        permissions: permissions)
-                    await daemonControl.recordActivityEnd(operation: op)
-                    return response
-                } catch {
-                    await daemonControl.recordActivityEnd(operation: op)
-                    throw error
-                }
-            }
-
-            return try await self.handleAuthorizedWithDesktopMutationBarrier(
-                request,
-                peer: peer,
-                permissions: permissions)
-        } catch let envelope as PeekabooBridgeErrorEnvelope {
-            failed = true
-            let duration = Date().timeIntervalSince(start)
-            let durationString = String(format: "%.3f", duration)
-            let message =
-                "bridge op=\(op.rawValue) pid=\(pid) failed in \(durationString)s: \(envelope.message)"
-            self.logger.error("\(message, privacy: .public)")
-            throw envelope
-        } catch {
-            failed = true
-            let duration = Date().timeIntervalSince(start)
-            let durationString = String(format: "%.3f", duration)
-            let message =
-                "bridge op=\(op.rawValue) pid=\(pid) failed in \(durationString)s: \(error.localizedDescription)"
-            self.logger.error("\(message, privacy: .public)")
-
-            throw Self.bridgeErrorEnvelope(for: error, operation: op)
-        }
     }
 
     static func bridgeErrorEnvelope(
@@ -302,9 +291,14 @@ public final class PeekabooBridgeServer {
             return envelope
         }
         if let error = error as? ApplicationLifecycleRefusalError {
+            let failure = DesktopActionFailure.preDispatchRefusal(
+                route: .bridge,
+                reason: .foregroundConsentRequired,
+                message: error.userMessage,
+                hint: error.hint)
             return .init(
                 code: .internalError,
-                message: error.userMessage,
+                actionFailure: failure,
                 details: error.hint,
                 context: error.bridgeContext)
         }
@@ -520,7 +514,7 @@ public final class PeekabooBridgeServer {
             context: context)
     }
 
-    private func validatePeerAuthorization(_ peer: PeekabooBridgePeer?) throws {
+    func validatePeerAuthorization(_ peer: PeekabooBridgePeer?) throws {
         guard !self.allowlistedTeams.isEmpty || !self.allowlistedBundles.isEmpty else { return }
         guard let peer else {
             throw PeekabooBridgeErrorEnvelope(
@@ -553,11 +547,14 @@ public final class PeekabooBridgeServer {
         }
     }
 
-    private func handleAuthorizedWithDesktopMutationBarrier(
+    func handleAuthorizedWithDesktopMutationBarrier(
         _ request: PeekabooBridgeRequest,
         peer: PeekabooBridgePeer?,
         permissions: PermissionsStatus) async throws -> PeekabooBridgeHandledResponse
     {
+        if request.bypassesOuterDesktopMutationLane {
+            return try await self.handleAuthorized(request, peer: peer, permissions: permissions)
+        }
         let nativeLeafOwnsLane = request.nativeLeafOwnsDesktopOperationLane &&
             self.services.ownsDesktopOperationLane(for: request.operation)
         if let proposedReadLane = request.desktopReadOperationLane, !nativeLeafOwnsLane {
@@ -599,12 +596,10 @@ public final class PeekabooBridgeServer {
         }
 
         guard let desktopMutationWatermarkStore else {
-            try PeekabooBridgeRequestContext.checkRequestIsActive()
-            try self.validatePinnedWindowMutation(request)
+            try self.validatePreDispatchState(for: request)
             return try await self.handleAuthorized(request, peer: peer, permissions: permissions)
         }
-        try PeekabooBridgeRequestContext.checkRequestIsActive()
-        try self.validatePinnedWindowMutation(request)
+        try self.validatePreDispatchState(for: request)
         let mutation: DesktopMutationWatermarkStore.PendingMutation
         do {
             mutation = try await desktopMutationWatermarkStore.beginMutationCancellable(
@@ -617,8 +612,7 @@ public final class PeekabooBridgeServer {
         }
 
         do {
-            try PeekabooBridgeRequestContext.checkRequestIsActive()
-            try self.validatePinnedWindowMutation(request)
+            try self.validatePreDispatchState(for: request)
         } catch {
             do {
                 try desktopMutationWatermarkStore.cancelMutation(mutation)
@@ -677,6 +671,23 @@ public final class PeekabooBridgeServer {
         return completedLegacyResponse.map(response.replacingResponse) ?? response
     }
 
+    private func validatePreDispatchState(for request: PeekabooBridgeRequest) throws {
+        do {
+            try PeekabooBridgeRequestContext.checkRequestIsActive()
+            try self.validatePinnedWindowMutation(request)
+        } catch is CancellationError {
+            throw PeekabooBridgeOperationResultSemantics.canonicalFailure(
+                .init(code: .timeout, message: "Bridge request was cancelled before dispatch"),
+                request: request,
+                stage: .preDispatch(.requestCancelled))
+        } catch let envelope as PeekabooBridgeErrorEnvelope {
+            throw PeekabooBridgeOperationResultSemantics.canonicalFailure(
+                envelope,
+                request: request,
+                stage: .preDispatch(PeekabooBridgeOperationResultSemantics.preDispatchReason(for: envelope)))
+        }
+    }
+
     private func validatePinnedWindowMutation(_ request: PeekabooBridgeRequest) throws {
         guard let pinned = request.pinnedWindowMutation else { return }
         let identity = pinned.identity
@@ -715,7 +726,7 @@ public final class PeekabooBridgeServer {
             completion = try store.completeMutation(mutation, through: completedAt)
         } catch {
             self.logger.error(
-                "Desktop mutation barrier finalization failed: \(error.localizedDescription, privacy: .public)")
+                "Desktop mutation barrier finalization failed: \(error.localizedDescription, privacy: .private)")
             throw PeekabooBridgeErrorEnvelope(
                 code: .internalError,
                 message: "The desktop operation completed, but its snapshot safety barrier could not be finalized",
@@ -737,7 +748,7 @@ public final class PeekabooBridgeServer {
             } catch {
                 let failure = error.localizedDescription
                 self.logger.error(
-                    "Failed to preserve bridge observation after desktop mutation: \(failure, privacy: .public)")
+                    "Failed to preserve bridge observation after desktop mutation: \(failure, privacy: .private)")
             }
         }
         return completedResponse
@@ -773,7 +784,8 @@ public final class PeekabooBridgeServer {
                     stateSnapshot: result.diagnostics.stateSnapshot,
                     target: result.diagnostics.target,
                     desktopMutationCompletedAt: completion.cutoff,
-                    desktopMutationPreservationAllowed: completion.allowsObservationPreservation)))
+                    desktopMutationPreservationAllowed: completion.allowsObservationPreservation),
+                captureContentDigest: result.captureContentDigest))
         default:
             response
         }
@@ -800,8 +812,9 @@ public final class PeekabooBridgeServer {
                 desktopMutationPreservationAllowed: completion.allowsObservationPreservation))
     }
 
-    private func validateOperationAccess(
+    func validateOperationAccess(
         for request: PeekabooBridgeRequest,
+        peer: PeekabooBridgePeer? = nil,
         permissions: PermissionsStatus,
         effectiveOps: Set<PeekabooBridgeOperation>) throws
     {
@@ -814,6 +827,29 @@ public final class PeekabooBridgeServer {
             throw PeekabooBridgeErrorEnvelope(
                 code: .operationNotSupported,
                 message: "Operation \(op.rawValue) is not supported by this host")
+        }
+        if let minimumVersion = request.minimumNegotiatedProtocolVersion {
+            let session = PeekabooBridgeRequestContext.negotiatedSessionCapabilities
+            let negotiatedVersion = session?.protocolVersion ?? self.receiptlessProtocolVersion(for: peer)
+            guard (negotiatedVersion ?? .init(major: 0, minor: 0)) >= minimumVersion,
+                  !request.requiresBackgroundStatelessClickVariantSupport || session?.statelessClickVariants == true,
+                  !request.requiresExactWindowHeldPointerLifecycleSupport ||
+                  session?.exactWindowHeldPointerLifecycle == true
+            else {
+                throw PeekabooBridgeErrorEnvelope(
+                    code: .operationNotSupported,
+                    message:
+                    "Operation \(op.rawValue) requires its negotiated Bridge protocol " +
+                        "\(minimumVersion.major).\(minimumVersion.minor) capability")
+            }
+        }
+        if PeekabooBridgeRequestContext.usesAttestedOperationResultSemantics,
+           op == .exactDialogEnterText,
+           !self.services.dialogs.supportsBackgroundExactDialogInput
+        {
+            throw PeekabooBridgeErrorEnvelope(
+                code: .operationNotSupported,
+                message: "Operation \(op.rawValue) is not supported by this host's background dialog provider")
         }
 
         if request.requiresPinnedWindowMutationReceipt, request.pinnedWindowMutation == nil {
@@ -847,15 +883,35 @@ public final class PeekabooBridgeServer {
             for: request,
             hostCapabilities: self.hostCapabilities,
             allowedOperations: self.allowedOperations)
-        guard effectiveOps.contains(op) || defersClassicScreenRecordingPermission else {
-            let missingPermission = op.requiredPermissions
-                .subtracting(Self.grantedPermissions(from: permissions))
-                .min { $0.rawValue < $1.rawValue }
+        let requiredPermissions = Self.requiredPermissions(for: request)
+        let missingPermissions = requiredPermissions
+            .subtracting(Self.grantedPermissions(from: permissions))
+        let undeferredMissingPermissions = defersClassicScreenRecordingPermission
+            ? missingPermissions.subtracting([.screenRecording])
+            : missingPermissions
+        guard effectiveOps.contains(op) || defersClassicScreenRecordingPermission,
+              undeferredMissingPermissions.isEmpty
+        else {
+            let missingPermission = undeferredMissingPermissions.min { $0.rawValue < $1.rawValue }
             throw PeekabooBridgeErrorEnvelope(
                 code: .permissionDenied,
                 message: "Operation \(op.rawValue) is not allowed with current permissions",
                 permission: missingPermission)
         }
+    }
+
+    static func requiredPermissions(
+        for request: PeekabooBridgeRequest) -> Set<PeekabooBridgePermissionKind>
+    {
+        if PeekabooBridgeRequestContext.usesAttestedOperationResultSemantics,
+           request.operation == .exactDialogEnterText
+        {
+            return [.accessibility]
+        }
+        if request.operation == .exactDialogEnterText {
+            return [.accessibility, .postEvent]
+        }
+        return request.operation.requiredPermissions
     }
 
     nonisolated static func defersClassicScreenRecordingPermission(
@@ -873,14 +929,17 @@ public final class PeekabooBridgeServer {
         _ request: PeekabooBridgeTargetedClickRequest,
         permissions: PermissionsStatus) throws
     {
-        // All background clicks are delivered through accessibility actions; positioned
-        // pid-routed mouse events are broken on modern macOS (they land at the window corner),
-        // so Event Synthesizing permission no longer enables any targeted click path.
         guard permissions.accessibility else {
             throw PeekabooBridgeErrorEnvelope(
                 code: .permissionDenied,
                 message: "Background clicks require Accessibility permission",
                 permission: .accessibility)
+        }
+        guard !request.requiresPostEventPermission || permissions.postEvent else {
+            throw PeekabooBridgeErrorEnvelope(
+                code: .permissionDenied,
+                message: "This background click requires Event Synthesizing permission",
+                permission: .postEvent)
         }
     }
 }
@@ -905,6 +964,15 @@ private func protocolHostCapabilities(
     if supportedVersions.upperBound >= PeekabooBridgeConstants.exactForcedDialogDismissExecutionVersion {
         capabilities.insert(PeekabooBridgeHostCapability.exactForcedDialogDismissExecution)
         capabilities.insert(PeekabooBridgeHostCapability.dialogInputFocusPolicy)
+    }
+    if supportedVersions.upperBound >= PeekabooBridgeConstants.plannerInventoryTransportVersion {
+        capabilities.insert(PeekabooBridgeHostCapability.plannerInventoryTransport)
+    }
+    if supportedVersions.upperBound >= PeekabooBridgeConstants.exactWindowHeldPointerLifecycleVersion {
+        capabilities.insert(PeekabooBridgeHostCapability.exactWindowHeldPointerLifecycle)
+    }
+    if supportedVersions.upperBound >= PeekabooBridgeConstants.statelessClickVariantVersion {
+        capabilities.insert(PeekabooBridgeHostCapability.statelessClickVariants)
     }
     return capabilities
 }

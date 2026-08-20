@@ -237,7 +237,7 @@ struct ActionInputDriver: ActionInputDriving {
     }
 
     nonisolated static func shouldContinueTryingScrollAction(after error: ActionInputError) -> Bool {
-        error.isUnsupported || error == .targetUnavailable
+        error.isUnsupported
     }
 
     nonisolated static func canFocusForClick(
@@ -264,10 +264,43 @@ struct ActionInputDriver: ActionInputDriving {
     }
 
     nonisolated static func scrollFallbackError(from error: ActionInputError?) -> ActionInputError {
-        if error == .targetUnavailable {
-            return .unsupported(.actionUnsupported)
+        error ?? .unsupported(.actionUnsupported)
+    }
+
+    private nonisolated static func scrollFailureMayHaveDispatched(_ error: ActionInputError) -> Bool {
+        switch error {
+        case .targetUnavailable, .failed:
+            true
+        case .unsupported, .staleElement, .permissionDenied:
+            false
         }
-        return error ?? .unsupported(.actionUnsupported)
+    }
+
+    private nonisolated static func scrollProgressFailure(
+        completedUnitCount: Int,
+        currentUnitMayHaveDispatched: Bool,
+        requestedUnitCount: Int,
+        delivery: DesktopActionOutcome.Delivery,
+        cause: ActionInputError) -> DesktopActionFailure
+    {
+        let possibleUnitCount = completedUnitCount + (currentUnitMayHaveDispatched ? 1 : 0)
+        let message = "Scroll stopped after \(completedUnitCount) of \(requestedUnitCount) requested units"
+        let hint = "Observe the target before taking another scroll action."
+        if currentUnitMayHaveDispatched {
+            return .indeterminate(
+                delivery: delivery,
+                evidence: .completionUnknown,
+                unitCount: DesktopActionOutcome.DispatchUnitCount(possibleUnitCount),
+                message: message,
+                hint: hint,
+                causeDescription: cause.localizedDescription)
+        }
+        return .partial(
+            delivery: delivery,
+            unitCount: DesktopActionOutcome.DispatchUnitCount(completedUnitCount),
+            message: message,
+            hint: hint,
+            causeDescription: cause.localizedDescription)
     }
 
     private func performAction(_ actionName: String, on element: any AutomationElementRepresenting)
@@ -282,7 +315,8 @@ struct ActionInputDriver: ActionInputDriving {
             return UIInputExecutionResult.Action(
                 outcome: .dispatchedUnverified(
                     delivery: Self.accessibilityActionDelivery,
-                    evidence: .deliveryAccepted),
+                    evidence: .deliveryAccepted,
+                    unitCount: .one),
                 actionName: actionName,
                 anchorPoint: element.anchorPoint,
                 elementRole: element.role)
@@ -355,18 +389,18 @@ struct ActionInputDriver: ActionInputDriving {
                 let requested = try Self.booleanValue(value, role: element.role)
                 let selectedBefore = element.selectedValue
                 let alreadyMatched = selectedBefore == requested
-                if !alreadyMatched {
-                    try element.setAutomationSelected(requested)
+                if alreadyMatched {
+                    return UIInputExecutionResult.Action(
+                        outcome: .confirmedNoChange(),
+                        actionName: kAXSelectedAttribute as String,
+                        anchorPoint: element.anchorPoint,
+                        elementRole: element.role)
                 }
+                try element.setAutomationSelected(requested)
                 guard element.selectedValue == requested else {
-                    throw ActionInputError.failed(
-                        "Accessibility selection did not change to the requested value. " +
-                            "This control may require input events; click or focus it, then use targeted typing, " +
-                            "or retry with explicit foreground delivery.")
+                    throw Self.unverifiedValueMutationFailure(attribute: kAXSelectedAttribute as String)
                 }
-                let outcome = Self.valueMutationOutcome(
-                    alreadyMatched: alreadyMatched,
-                    preStateKnown: selectedBefore != nil)
+                let outcome = Self.dispatchedValueMutationOutcome(preStateKnown: selectedBefore != nil)
                 return UIInputExecutionResult.Action(
                     outcome: outcome,
                     actionName: kAXSelectedAttribute as String,
@@ -377,35 +411,41 @@ struct ActionInputDriver: ActionInputDriving {
             let valueBefore = element.value
             let requested = try Self.coerceValue(value, currentValue: valueBefore, role: element.role)
             let alreadyMatched = Self.value(valueBefore, matches: requested)
-            if !alreadyMatched {
-                try element.setAutomationValue(requested)
+            if alreadyMatched {
+                return UIInputExecutionResult.Action(
+                    outcome: .confirmedNoChange(),
+                    actionName: AXActionNames.kAXSetValueAction,
+                    anchorPoint: element.anchorPoint,
+                    elementRole: element.role)
             }
+            try element.setAutomationValue(requested)
             guard Self.value(element.value, matches: requested) else {
-                throw ActionInputError.failed(
-                    "Accessibility value did not change to the requested value. " +
-                        "This control may require input events; click or focus it, then use targeted typing, " +
-                        "or retry with explicit foreground delivery.")
+                throw Self.unverifiedValueMutationFailure(attribute: AXActionNames.kAXSetValueAction)
             }
-            let outcome = Self.valueMutationOutcome(
-                alreadyMatched: alreadyMatched,
-                preStateKnown: valueBefore != nil)
+            let outcome = Self.dispatchedValueMutationOutcome(preStateKnown: valueBefore != nil)
             return UIInputExecutionResult.Action(
                 outcome: outcome,
                 actionName: AXActionNames.kAXSetValueAction,
                 anchorPoint: element.anchorPoint,
                 elementRole: element.role)
+        } catch let failure as DesktopActionFailure {
+            throw failure
         } catch {
             throw Self.classify(error)
         }
     }
 
-    private static func valueMutationOutcome(
-        alreadyMatched: Bool,
-        preStateKnown: Bool) -> DesktopActionOutcome
-    {
-        if alreadyMatched {
-            return .confirmedNoChange()
-        }
+    private static func unverifiedValueMutationFailure(attribute: String) -> DesktopActionFailure {
+        .indeterminate(
+            delivery: self.accessibilityValueDelivery,
+            evidence: .completionUnknown,
+            unitCount: .one,
+            message: "The accessibility value write was accepted, but its requested result could not be verified.",
+            hint: "Observe the exact target before deciding whether to retry; do not reuse the prior snapshot.",
+            causeDescription: "Post-dispatch readback did not confirm \(attribute).")
+    }
+
+    private static func dispatchedValueMutationOutcome(preStateKnown: Bool) -> DesktopActionOutcome {
         if preStateKnown {
             return .confirmedChange(delivery: self.accessibilityValueDelivery)
         }
@@ -620,34 +660,63 @@ struct ActionInputDriver: ActionInputDriving {
         pages: Int) throws -> UIInputExecutionResult.Action
     {
         let actions = self.scrollActionNames(for: direction)
+        let requestedPages = max(1, pages)
         var lastError: ActionInputError?
         var performedActionName: String?
+        var completedPages = 0
 
-        for _ in 0..<max(1, pages) {
+        for _ in 0..<requestedPages {
             var performed = false
             for action in actions {
                 do {
                     _ = try self.performAction(action, on: element)
                     performedActionName = action
                     performed = true
+                    completedPages += 1
                     break
                 } catch let error as ActionInputError {
                     lastError = error
+                    if Self.scrollFailureMayHaveDispatched(error) {
+                        throw Self.scrollProgressFailure(
+                            completedUnitCount: completedPages,
+                            currentUnitMayHaveDispatched: true,
+                            requestedUnitCount: requestedPages,
+                            delivery: Self.accessibilityActionDelivery,
+                            cause: error)
+                    }
                     if !Self.shouldContinueTryingScrollAction(after: error) {
+                        if completedPages > 0 {
+                            throw Self.scrollProgressFailure(
+                                completedUnitCount: completedPages,
+                                currentUnitMayHaveDispatched: false,
+                                requestedUnitCount: requestedPages,
+                                delivery: Self.accessibilityActionDelivery,
+                                cause: error)
+                        }
                         throw error
                     }
                 }
             }
 
             if !performed {
-                throw Self.scrollFallbackError(from: lastError)
+                let error = Self.scrollFallbackError(from: lastError)
+                if completedPages > 0 {
+                    throw Self.scrollProgressFailure(
+                        completedUnitCount: completedPages,
+                        currentUnitMayHaveDispatched: false,
+                        requestedUnitCount: requestedPages,
+                        delivery: Self.accessibilityActionDelivery,
+                        cause: error)
+                }
+                throw error
             }
         }
 
         return UIInputExecutionResult.Action(
             outcome: .dispatchedUnverified(
                 delivery: Self.accessibilityActionDelivery,
-                evidence: .deliveryAccepted),
+                evidence: .deliveryAccepted,
+                unitCount: DesktopActionOutcome.DispatchUnitCount(completedPages)),
             actionName: performedActionName,
             anchorPoint: element.anchorPoint,
             elementRole: element.role)
@@ -673,20 +742,42 @@ struct ActionInputDriver: ActionInputDriving {
             AXActionNames.kAXDecrementAction
         }
         if scrollBar.supportsAction(actionName) {
-            do {
-                for _ in 0..<max(1, pages) {
+            let requestedPages = max(1, pages)
+            var completedPages = 0
+            for _ in 0..<requestedPages {
+                do {
                     _ = try self.performAction(actionName, on: scrollBar)
+                    completedPages += 1
+                } catch let error as ActionInputError {
+                    if Self.scrollFailureMayHaveDispatched(error) {
+                        throw Self.scrollProgressFailure(
+                            completedUnitCount: completedPages,
+                            currentUnitMayHaveDispatched: true,
+                            requestedUnitCount: requestedPages,
+                            delivery: Self.accessibilityActionDelivery,
+                            cause: error)
+                    }
+                    if completedPages > 0 {
+                        throw Self.scrollProgressFailure(
+                            completedUnitCount: completedPages,
+                            currentUnitMayHaveDispatched: false,
+                            requestedUnitCount: requestedPages,
+                            delivery: Self.accessibilityActionDelivery,
+                            cause: error)
+                    }
+                    guard Self.shouldContinueTryingScrollAction(after: error) else { throw error }
+                    break
                 }
+            }
+            if completedPages == requestedPages {
                 return UIInputExecutionResult.Action(
                     outcome: .dispatchedUnverified(
                         delivery: Self.accessibilityActionDelivery,
-                        evidence: .deliveryAccepted),
+                        evidence: .deliveryAccepted,
+                        unitCount: DesktopActionOutcome.DispatchUnitCount(completedPages)),
                     actionName: actionName,
                     anchorPoint: scrollBar.anchorPoint,
                     elementRole: scrollBar.role)
-            } catch let error as ActionInputError where Self.shouldContinueTryingScrollAction(after: error) {
-                // Some controls advertise increment/decrement but reject invocation. A settable AXValue
-                // remains a native background path and is verified below.
             }
         }
 
@@ -720,20 +811,39 @@ struct ActionInputDriver: ActionInputDriving {
             do {
                 try scrollBar.setAutomationValue(.double(requestedValue))
             } catch {
-                throw Self.classify(error)
+                let classified = Self.classify(error)
+                if Self.scrollFailureMayHaveDispatched(classified) {
+                    throw Self.scrollProgressFailure(
+                        completedUnitCount: 0,
+                        currentUnitMayHaveDispatched: true,
+                        requestedUnitCount: 1,
+                        delivery: Self.accessibilityValueDelivery,
+                        cause: classified)
+                }
+                throw classified
             }
         }
 
-        if requestedValue != currentValue,
-           let observedValue = Self.numericValue(scrollBar.value),
-           abs(observedValue - currentValue) < 1e-9
-        {
-            throw ActionInputError.failed("Accessibility scroll bar value did not change")
+        let observedValue = Self.numericValue(scrollBar.value)
+        if requestedValue != currentValue, let observedValue, abs(observedValue - currentValue) < 1e-9 {
+            throw DesktopActionFailure.indeterminate(
+                delivery: Self.accessibilityValueDelivery,
+                evidence: .completionUnknown,
+                unitCount: .one,
+                message: "Accessibility scroll bar value did not change after dispatch",
+                hint: "Observe the target before taking another scroll action.")
         }
 
-        let outcome: DesktopActionOutcome = alreadyMatched
-            ? .confirmedNoChange()
-            : .confirmedChange(delivery: Self.accessibilityValueDelivery)
+        let outcome: DesktopActionOutcome = if alreadyMatched {
+            .confirmedNoChange()
+        } else if observedValue != nil {
+            .confirmedChange(delivery: Self.accessibilityValueDelivery, unitCount: .one)
+        } else {
+            .dispatchedUnverified(
+                delivery: Self.accessibilityValueDelivery,
+                evidence: .deliveryAccepted,
+                unitCount: .one)
+        }
         return UIInputExecutionResult.Action(
             outcome: outcome,
             actionName: "AXSetValue",

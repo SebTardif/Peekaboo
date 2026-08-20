@@ -1,7 +1,37 @@
 import Commander
 import Foundation
 import PeekabooCore
+import PeekabooFoundation
 import TachikomaMCP
+
+private struct BrowserCommandInputError: LocalizedError, ResultEnvelopeError {
+    let errorDescription: String?
+    let envelopeHint: String?
+
+    nonisolated var envelopeCode: ErrorCode? {
+        .VALIDATION_ERROR
+    }
+
+    nonisolated var envelopeEffect: ActionEffect? {
+        nil
+    }
+
+    nonisolated var envelopeRetrySafe: Bool? {
+        true
+    }
+
+    nonisolated var envelopeMutationDispatched: Bool? {
+        false
+    }
+
+    static func invalidBrowserURL() -> Self {
+        Self(
+            errorDescription: "Invalid --browser-url. Expected http://127.0.0.1:<port>, " +
+                "http://[::1]:<port>, or http://localhost:<port>.",
+            envelopeHint: "Run `peekaboo browser connect --browser-url http://127.0.0.1:9222 --foreground`."
+        )
+    }
+}
 
 @MainActor
 struct BrowserCommand: ErrorHandlingCommand, OutputFormattable, RuntimeOptionsConfigurable,
@@ -65,9 +95,12 @@ InjectedRuntimeBackedCommand {
 
         Examples:
           peekaboo browser status --json
-          peekaboo browser connect --channel stable
+          peekaboo browser connect --channel stable --foreground
           peekaboo browser new-page --url https://example.com
           peekaboo browser snapshot --page-id 2 --path /tmp/page.txt
+
+        Browser actions reuse an existing exact connection by default and never auto-connect.
+        Connecting or allowing any foreground browser effect requires explicit --foreground.
         """
     )
 
@@ -86,7 +119,10 @@ InjectedRuntimeBackedCommand {
             if Self.actionMayMutate(self.action) {
                 self.resolvedRuntime.beginInteractionMutation()
             }
-            let context = MCPToolContext(services: self.services)
+            let context = MCPToolContext(
+                services: self.services,
+                executionPolicy: self.toolExecutionPolicy
+            )
             let tool = BrowserTool(context: context)
             let response = try await tool.execute(arguments: ToolArguments(raw: arguments))
             try MCPToolCommandOutput.output(
@@ -109,12 +145,20 @@ InjectedRuntimeBackedCommand {
             .replacingOccurrences(of: "-", with: "_")
         guard let action = BrowserAction(rawValue: normalized) else { return false }
         switch action {
-        case .status, .connect, .disconnect, .listPages, .waitFor, .snapshot, .console, .network, .screenshot:
+        case .status, .disconnect, .listPages, .waitFor, .snapshot, .console, .network, .screenshot:
             return false
-        case .selectPage, .closePage, .newPage, .navigate, .click, .fill, .fillForm, .drag, .hover, .type,
+        case .connect, .selectPage, .closePage, .newPage, .navigate, .click, .fill, .fillForm, .drag, .hover, .type,
              .pressKey, .uploadFile, .handleDialog, .performanceTrace, .call:
             return true
         }
+    }
+
+    var toolExecutionPolicy: MCPToolExecutionPolicy {
+        self.foreground ? .foregroundAllowed : .backgroundOnly
+    }
+
+    func validateBeforeRuntime() throws {
+        _ = try self.arguments()
     }
 
     private func arguments() throws -> [String: Any] {
@@ -127,6 +171,11 @@ InjectedRuntimeBackedCommand {
         if let channel, BrowserMCPChannel(rawValue: channel) == nil {
             let choices = BrowserMCPChannel.allCases.map(\.rawValue).joined(separator: "|")
             throw ValidationError("Unsupported browser channel '\(channel)' (expected \(choices))")
+        }
+        if normalizedAction == BrowserAction.connect.rawValue,
+           let browserUrl,
+           BrowserLoopbackEndpoint(browserURL: browserUrl) == nil {
+            throw BrowserCommandInputError.invalidBrowserURL()
         }
 
         var arguments: [String: Any] = ["action": normalizedAction]
@@ -212,6 +261,7 @@ InjectedRuntimeBackedCommand {
 
 extension BrowserCommand: ParsableCommand {}
 extension BrowserCommand: AsyncRuntimeCommand {}
+extension BrowserCommand: PreRuntimeValidatingCommand {}
 
 extension BrowserCommand: CommanderSignatureProviding {
     static func commanderSignature() -> CommandSignature {
@@ -298,7 +348,11 @@ extension BrowserCommand: CommanderSignatureProviding {
                     long: "no-bring-to-front"
                 ),
                 .commandFlag("background", help: "Open new page in background (default)", long: "background"),
-                .commandFlag("foreground", help: "Open new page in foreground", long: "foreground"),
+                .commandFlag(
+                    "foreground",
+                    help: "Allow foreground browser effects; opens new pages in the foreground",
+                    long: "foreground"
+                ),
                 .commandFlag(
                     "includePreserved",
                     help: "Include preserved console/network data",

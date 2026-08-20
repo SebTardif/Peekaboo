@@ -2,7 +2,6 @@ import Darwin
 import Dispatch
 import Foundation
 import OSLog
-import Security
 
 public enum PeekabooBridgeHostError: Error, LocalizedError, Sendable {
     case socketAlreadyOwned(path: String)
@@ -35,16 +34,34 @@ public enum PeekabooBridgeHostStopOutcome: Sendable, Equatable {
     case ownershipRetained(pendingRequestCount: Int, oldestRequestAgeSeconds: TimeInterval)
 }
 
-private struct PeekabooBridgeClientContext: @unchecked Sendable {
+struct PeekabooBridgeClientContext: @unchecked Sendable {
     let server: PeekabooBridgeServer
     let allowedTeamIDs: Set<String>
     let maxMessageBytes: Int
     let requestTimeoutSec: TimeInterval
     let connectionTracker: PeekabooBridgeConnectionTracker
     let requestTracker: PeekabooBridgeRequestTracker
+    let bodyReadLimiter: PeekabooBridgeCapacityLimiter
+    let admissionRefusalLimiter: PeekabooBridgeCapacityLimiter
+    let acceptedConnectionLimiter: PeekabooBridgeCapacityLimiter
+    let operationReceiptAuthority: PeekabooBridgeOperationReceiptAuthority?
+    let authentication: PeekabooBridgeHostAuthentication
 }
 
-private actor PeekabooBridgeConnectionTracker {
+struct PeekabooBridgeHostAuthentication: @unchecked Sendable {
+    let liveIdentity: @Sendable (Int32) throws -> PeekabooBridgeLivePeerIdentity
+    let coldPeer: @Sendable (PeekabooBridgeLivePeerIdentity, Set<String>) -> PeekabooBridgePeer?
+
+    static let live = PeekabooBridgeHostAuthentication(
+        liveIdentity: { try PeekabooBridgeSocketIO.livePeerIdentity(fd: $0) },
+        coldPeer: { liveIdentity, allowedTeamIDs in
+            PeekabooBridgeHost.peerInfoIfAllowed(
+                liveIdentity: liveIdentity,
+                allowedTeamIDs: allowedTeamIDs)
+        })
+}
+
+actor PeekabooBridgeConnectionTracker {
     private var activeConnections: [UUID: PeekabooBridgeConnectionLiveness] = [:]
     private var idleContinuations: [CheckedContinuation<Void, Never>] = []
 
@@ -241,12 +258,17 @@ enum PeekabooBridgeAcceptLoop {
             guard !Task.isCancelled else { return }
             let outcome = await self.drainConnections(
                 listenFD: listenFD,
-                acceptConnection: self.acceptConnection,
+                acceptConnection: {
+                    await self.acceptConnection(
+                        $0,
+                        limiter: context.acceptedConnectionLimiter)
+                },
                 registerConnection: { connection in
                     await context.connectionTracker.begin(connection: connection)
                 },
                 unregisterConnection: { connection in
                     await context.connectionTracker.end(connection: connection)
+                    context.acceptedConnectionLimiter.finish()
                 },
                 clientHandler: clientHandler)
             guard outcome == .rearm else { return }
@@ -290,12 +312,23 @@ enum PeekabooBridgeAcceptLoop {
         return .stop
     }
 
-    private static func acceptConnection(_ listenFD: Int32) async -> AcceptResult {
+    private static func acceptConnection(
+        _ listenFD: Int32,
+        limiter: PeekabooBridgeCapacityLimiter) async -> AcceptResult
+    {
         var addr = sockaddr()
         var len = socklen_t(MemoryLayout<sockaddr>.size)
         let client = accept(listenFD, &addr, &len)
         if client >= 0 {
-            return self.prepareConnection(client).map(AcceptResult.prepared) ?? .retry
+            guard limiter.begin() else {
+                close(client)
+                return .retry
+            }
+            guard let prepared = self.prepareConnection(client) else {
+                limiter.finish()
+                return .retry
+            }
+            return .prepared(prepared)
         }
         if errno == EINTR {
             return .retry
@@ -315,14 +348,16 @@ enum PeekabooBridgeAcceptLoop {
         do {
             try PeekabooBridgeSocketIO.configureConnectedSocket(client)
         } catch {
-            self.logger.error("failed to configure bridge client socket: \(error.localizedDescription)")
+            self.logger.error(
+                "failed to configure bridge client socket: \(error.localizedDescription, privacy: .private)")
             close(client)
             return nil
         }
         do {
             return try (client, PeekabooBridgeConnectionLiveness(fd: client))
         } catch {
-            self.logger.error("failed to create bridge liveness probe: \(error.localizedDescription)")
+            self.logger.error(
+                "failed to create bridge liveness probe: \(error.localizedDescription, privacy: .private)")
             close(client)
             return nil
         }
@@ -354,9 +389,10 @@ public final actor PeekabooBridgeHost {
         let status: UInt32
     }
 
-    struct PeerSigningIdentity {
+    struct PeerSigningIdentity: Equatable, Sendable {
         let bundleIdentifier: String?
         let teamIdentifier: String?
+        let codeSignatureHash: String?
     }
 
     typealias PeerSigningInformationProvider = (_ processIdentifier: pid_t) -> [String: Any]?
@@ -383,7 +419,7 @@ public final actor PeekabooBridgeHost {
         let recordedIdentity: SocketIdentity?
     }
 
-    private nonisolated static let logger = Logger(subsystem: "boo.peekaboo.bridge", category: "host")
+    nonisolated static let logger = Logger(subsystem: "boo.peekaboo.bridge", category: "host")
     private nonisolated static let leaseMarkerPrefix = "peekaboo-bridge-lease-v1"
 
     private var listenFD: Int32 = -1
@@ -393,8 +429,12 @@ public final actor PeekabooBridgeHost {
     private var listenerReadiness: PeekabooBridgeListenerReadiness?
     private var stopTask: Task<PeekabooBridgeHostStopOutcome, Never>?
     private var ownershipCleanupTask: Task<Void, Never>?
+    private var operationReceiptAuthority: PeekabooBridgeOperationReceiptAuthority?
     private let connectionTracker = PeekabooBridgeConnectionTracker()
-    private let requestTracker = PeekabooBridgeRequestTracker()
+    private let requestTracker: PeekabooBridgeRequestTracker
+    private let bodyReadLimiter: PeekabooBridgeCapacityLimiter
+    private let admissionRefusalLimiter: PeekabooBridgeCapacityLimiter
+    private let acceptedConnectionLimiter: PeekabooBridgeCapacityLimiter
 
     private let socketPath: String
     private let maxMessageBytes: Int
@@ -402,6 +442,7 @@ public final actor PeekabooBridgeHost {
     private let requestTimeoutSec: TimeInterval
     private let requestDrainTimeoutSec: TimeInterval
     private let server: PeekabooBridgeServer
+    private var authentication = PeekabooBridgeHostAuthentication.live
 
     public init(
         socketPath: String = PeekabooBridgeConstants.peekabooSocketPath,
@@ -409,7 +450,8 @@ public final actor PeekabooBridgeHost {
         maxMessageBytes: Int = 64 * 1024 * 1024,
         allowedTeamIDs: Set<String> = PeekabooBridgeConstants.trustedReleaseTeamIDs,
         requestTimeoutSec: TimeInterval = PeekabooBridgeConstants.defaultRequestTimeoutSeconds,
-        requestDrainTimeoutSec: TimeInterval = 1.0)
+        requestDrainTimeoutSec: TimeInterval = 1.0,
+        maximumConcurrentRequests: Int = 32)
     {
         self.socketPath = socketPath
         self.server = server
@@ -417,14 +459,35 @@ public final actor PeekabooBridgeHost {
         self.allowedTeamIDs = allowedTeamIDs
         self.requestTimeoutSec = requestTimeoutSec
         self.requestDrainTimeoutSec = max(0.01, requestDrainTimeoutSec)
+        let normalizedRequestCapacity = max(1, maximumConcurrentRequests)
+        let connectionCapacity = normalizedRequestCapacity.addingReportingOverflow(
+            min(8, normalizedRequestCapacity))
+        self.requestTracker = PeekabooBridgeRequestTracker(
+            maximumActiveRequestCount: normalizedRequestCapacity)
+        self.bodyReadLimiter = PeekabooBridgeCapacityLimiter(
+            maximumCount: max(4, normalizedRequestCapacity))
+        self.admissionRefusalLimiter = PeekabooBridgeCapacityLimiter(
+            maximumCount: min(4, normalizedRequestCapacity))
+        self.acceptedConnectionLimiter = PeekabooBridgeCapacityLimiter(
+            maximumCount: max(8, connectionCapacity.overflow ? Int.max : connectionCapacity.partialValue))
     }
+
+    #if DEBUG
+    func setAuthenticationForTesting(_ authentication: PeekabooBridgeHostAuthentication) {
+        precondition(self.listenFD == -1)
+        self.authentication = authentication
+    }
+    #endif
 
     public func start() {
         do {
             try self.startChecked()
         } catch {
             Self.logger.error(
-                "Failed to start bridge host at \(self.socketPath, privacy: .public): \(error.localizedDescription)")
+                """
+                Failed to start bridge host at \(self.socketPath, privacy: .private): \
+                \(error.localizedDescription, privacy: .private)
+                """)
         }
     }
 
@@ -437,7 +500,8 @@ public final actor PeekabooBridgeHost {
         guard self.listenFD == -1 else { return }
         guard self.ownershipCleanupTask == nil,
               self.leaseFD == -1,
-              self.requestTracker.activeCount == 0
+              self.requestTracker.activeCount == 0,
+              self.operationReceiptAuthority == nil
         else {
             throw PeekabooBridgeHostError.requestsStillDraining(
                 path: self.socketPath,
@@ -466,6 +530,22 @@ public final actor PeekabooBridgeHost {
             close(lease.fd)
             throw error
         }
+        let operationReceiptAuthority: PeekabooBridgeOperationReceiptAuthority?
+        if self.server.supportedVersions.upperBound >= PeekabooBridgeConstants.attestedOperationReceiptVersion {
+            do {
+                operationReceiptAuthority = try PeekabooBridgeOperationReceiptAuthority(
+                    socketPath: path,
+                    maximumClaimCount: self.server.operationReceiptSessionCapacity)
+                self.operationReceiptAuthority = operationReceiptAuthority
+            } catch {
+                close(self.listenFD)
+                self.listenFD = -1
+                self.releaseOwnership()
+                throw error
+            }
+        } else {
+            operationReceiptAuthority = nil
+        }
 
         let fd = self.listenFD
         let listenerReadiness = PeekabooBridgeListenerReadiness(fileDescriptor: fd)
@@ -478,7 +558,12 @@ public final actor PeekabooBridgeHost {
             maxMessageBytes: self.maxMessageBytes,
             requestTimeoutSec: self.requestTimeoutSec,
             connectionTracker: self.connectionTracker,
-            requestTracker: self.requestTracker)
+            requestTracker: self.requestTracker,
+            bodyReadLimiter: self.bodyReadLimiter,
+            admissionRefusalLimiter: self.admissionRefusalLimiter,
+            acceptedConnectionLimiter: self.acceptedConnectionLimiter,
+            operationReceiptAuthority: operationReceiptAuthority,
+            authentication: self.authentication)
 
         self.acceptTask = Task.detached(priority: .userInitiated) {
             await PeekabooBridgeAcceptLoop.run(
@@ -575,12 +660,13 @@ public final actor PeekabooBridgeHost {
             } catch {
                 Self.logger.error(
                     """
-                    Failed to remove bridge socket at \(self.socketPath, privacy: .public): \
-                    \(error.localizedDescription)
+                    Failed to remove bridge socket at \(self.socketPath, privacy: .private): \
+                    \(error.localizedDescription, privacy: .private)
                     """)
             }
         }
         self.socketIdentity = nil
+        self.operationReceiptAuthority = nil
         if self.leaseFD != -1 {
             if canClearLeaseIdentity {
                 do {
@@ -588,8 +674,8 @@ public final actor PeekabooBridgeHost {
                 } catch {
                     Self.logger.error(
                         """
-                        Failed to clear bridge lease at \(self.socketPath, privacy: .public): \
-                        \(error.localizedDescription)
+                        Failed to clear bridge lease at \(self.socketPath, privacy: .private): \
+                        \(error.localizedDescription, privacy: .private)
                         """)
                 }
             }
@@ -606,6 +692,28 @@ public final actor PeekabooBridgeHost {
 
     func activeRequestCountForTesting() -> Int {
         self.requestTracker.activeCount
+    }
+
+    func activeBodyReadCountForTesting() -> Int {
+        self.bodyReadLimiter.activeCount
+    }
+
+    func admissionRefusalCapacityForTesting() -> (active: Int, peak: Int, maximum: Int) {
+        (
+            active: self.admissionRefusalLimiter.activeCount,
+            peak: self.admissionRefusalLimiter.peakActiveCount,
+            maximum: self.admissionRefusalLimiter.maximumCount)
+    }
+
+    func acceptedConnectionCapacityForTesting() -> (active: Int, peak: Int, maximum: Int) {
+        (
+            active: self.acceptedConnectionLimiter.activeCount,
+            peak: self.acceptedConnectionLimiter.peakActiveCount,
+            maximum: self.acceptedConnectionLimiter.maximumCount)
+    }
+
+    func stopAcceptingRequestsForTesting() {
+        self.requestTracker.stopAcceptingAndCancelAll()
     }
 
     func listenerReadinessNotificationCountForTesting() -> Int? {
@@ -953,7 +1061,7 @@ public final actor PeekabooBridgeHost {
         }
         self.logger.info(
             """
-            Replaced stale bridge socket path=\(finalPath, privacy: .public) \
+            Replaced stale bridge socket path=\(finalPath, privacy: .private) \
             inode=\(recoverableStatus.identity.inode, privacy: .public)
             """)
     }
@@ -1472,154 +1580,5 @@ public final actor PeekabooBridgeHost {
         return descriptors.prefix(count).contains {
             $0.proc_fd == fd && $0.proc_fdtype == PROX_FDTYPE_SOCKET
         }
-    }
-
-    private nonisolated static func handleClient(
-        fd: Int32,
-        connection: PeekabooBridgeConnectionLiveness,
-        context: PeekabooBridgeClientContext) async
-    {
-        let peer = self.peerInfoIfAllowed(fd: fd, allowedTeamIDs: context.allowedTeamIDs)
-
-        do {
-            let requestData = try PeekabooBridgeSocketIO.readAll(
-                fd: fd,
-                maxBytes: context.maxMessageBytes,
-                deadline: Date().addingTimeInterval(context.requestTimeoutSec))
-
-            guard let peer else {
-                let envelope = PeekabooBridgeErrorEnvelope(
-                    code: .unauthorizedClient,
-                    message: "Bridge client is not authorized",
-                    details: """
-                    The host rejected the client before processing the request. Ensure the client is signed by an \
-                    allowlisted TeamID (\(context.allowedTeamIDs.sorted()
-                        .joined(separator: ", "))) or launch the host with \
-                    PEEKABOO_ALLOW_UNSIGNED_SOCKET_CLIENTS=1 for local development.
-                    """)
-
-                let responseData = PeekabooBridgeResponse.encodeError(envelope)
-                try PeekabooBridgeSocketIO.writeAll(
-                    fd: fd,
-                    data: responseData,
-                    deadline: Date().addingTimeInterval(context.requestTimeoutSec))
-                return
-            }
-
-            guard let responseData = await PeekabooBridgeConnectedRequest.handle(
-                requestData: requestData,
-                server: context.server,
-                peer: peer,
-                connection: connection,
-                requestTracker: context.requestTracker)
-            else {
-                return
-            }
-
-            try PeekabooBridgeSocketIO.writeAll(
-                fd: fd,
-                data: responseData,
-                deadline: Date().addingTimeInterval(context.requestTimeoutSec))
-        } catch {
-            self.logger.error("bridge socket request failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private nonisolated static func peerInfoIfAllowed(fd: Int32, allowedTeamIDs: Set<String>) -> PeekabooBridgePeer? {
-        var pid: pid_t = 0
-        var pidSize = socklen_t(MemoryLayout<pid_t>.size)
-        let r = getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &pidSize)
-        guard r == 0, pid > 0 else { return nil }
-
-        let signingIdentity = self.signingIdentity(pid: pid)
-
-        if allowedTeamIDs.isEmpty, let callerUID = self.uid(for: pid), callerUID == getuid() {
-            return PeekabooBridgePeer(
-                processIdentifier: pid,
-                userIdentifier: callerUID,
-                bundleIdentifier: signingIdentity?.bundleIdentifier,
-                teamIdentifier: signingIdentity?.teamIdentifier)
-        }
-
-        let teamID = signingIdentity?.teamIdentifier
-        if let teamID, allowedTeamIDs.contains(teamID) {
-            let uid = self.uid(for: pid)
-            return PeekabooBridgePeer(
-                processIdentifier: pid,
-                userIdentifier: uid,
-                bundleIdentifier: signingIdentity?.bundleIdentifier,
-                teamIdentifier: teamID)
-        }
-
-        #if DEBUG
-        let env = ProcessInfo.processInfo.environment["PEEKABOO_ALLOW_UNSIGNED_SOCKET_CLIENTS"]
-        if env == "1", let callerUID = self.uid(for: pid), callerUID == getuid() {
-            self.logger.warning(
-                "allowing unsigned bridge client pid=\(pid, privacy: .public) (debug override)")
-            return PeekabooBridgePeer(
-                processIdentifier: pid,
-                userIdentifier: callerUID,
-                bundleIdentifier: signingIdentity?.bundleIdentifier,
-                teamIdentifier: nil)
-        }
-        #endif
-
-        if let callerUID = self.uid(for: pid) {
-            self.logger.error("bridge client rejected pid=\(pid, privacy: .public) uid=\(callerUID, privacy: .public)")
-        } else {
-            self.logger.error("bridge client rejected pid=\(pid, privacy: .public) (uid unknown)")
-        }
-        return nil
-    }
-
-    private nonisolated static func uid(for pid: pid_t) -> uid_t? {
-        var info = kinfo_proc()
-        var size = MemoryLayout.size(ofValue: info)
-        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-        let ok = mib.withUnsafeMutableBufferPointer { mibPtr -> Bool in
-            sysctl(mibPtr.baseAddress, u_int(mibPtr.count), &info, &size, nil, 0) == 0
-        }
-        return ok ? info.kp_eproc.e_ucred.cr_uid : nil
-    }
-
-    nonisolated static func signingIdentity(
-        pid: pid_t,
-        signingInformationProvider: PeerSigningInformationProvider = signingInformation) -> PeerSigningIdentity?
-    {
-        guard let info = signingInformationProvider(pid) else { return nil }
-
-        let teamIdentifier: String? = if let teamID = info[kSecCodeInfoTeamIdentifier as String] as? String {
-            teamID
-        } else if let entitlements = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any],
-                  let appIdentifier = entitlements["application-identifier"] as? String,
-                  let prefix = appIdentifier.split(separator: ".").first
-        {
-            String(prefix)
-        } else {
-            nil
-        }
-        return PeerSigningIdentity(
-            bundleIdentifier: info[kSecCodeInfoIdentifier as String] as? String,
-            teamIdentifier: teamIdentifier)
-    }
-
-    private nonisolated static func signingInformation(pid: pid_t) -> [String: Any]? {
-        let attrs: NSDictionary = [kSecGuestAttributePid: pid]
-        var secCode: SecCode?
-        guard SecCodeCopyGuestWithAttributes(nil, attrs, SecCSFlags(), &secCode) == errSecSuccess,
-              let code = secCode
-        else { return nil }
-
-        var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess,
-              let sCode = staticCode
-        else { return nil }
-
-        var infoCF: CFDictionary?
-        let flags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
-        guard SecCodeCopySigningInformation(sCode, flags, &infoCF) == errSecSuccess,
-              let info = infoCF as? [String: Any]
-        else { return nil }
-        return info
     }
 }

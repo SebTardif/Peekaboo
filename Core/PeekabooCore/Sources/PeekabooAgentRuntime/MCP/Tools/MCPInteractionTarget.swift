@@ -17,13 +17,15 @@ enum MCPInteractionTargetError: LocalizedError, Equatable {
     case backgroundWindowTargetAmbiguous
     case backgroundWindowTargetMismatch
     case backgroundTargetIneligible
+    case backgroundTargetPlanningFailed(String)
 
     var refusalReason: DesktopActionOutcome.RefusalReason {
         switch self {
         case .targetProcessNotFound,
              .backgroundWindowTargetAmbiguous,
              .backgroundWindowTargetMismatch,
-             .backgroundTargetIneligible:
+             .backgroundTargetIneligible,
+             .backgroundTargetPlanningFailed:
             .targetUnavailable
         case .targetProcessIdentityUnavailable:
             .runtimeIncompatible
@@ -73,7 +75,160 @@ enum MCPInteractionTargetError: LocalizedError, Equatable {
         case .backgroundTargetIneligible:
             "The target cannot receive background input because it is a prohibited helper or its metadata is " +
                 "incomplete."
+        case let .backgroundTargetPlanningFailed(message):
+            message
         }
+    }
+}
+
+struct MCPInteractionFocusResult {
+    let target: WindowTarget
+    let actionResult: UIAutomationActionResult<Void>
+
+    var outcome: DesktopActionOutcome {
+        guard let outcome = self.actionResult.outcome else {
+            preconditionFailure("A validated interaction focus result must retain its outcome")
+        }
+        return outcome
+    }
+
+    var targetIdentity: DesktopTargetIdentity {
+        guard let targetIdentity = self.actionResult.targetIdentity else {
+            preconditionFailure("A validated interaction focus result must retain its target")
+        }
+        return targetIdentity
+    }
+
+    func record(into sequence: inout DesktopActionSequenceAccumulator) {
+        sequence.record(.reportedOutcome(self.outcome, defaultDispatchedUnitCount: .one))
+    }
+
+    func preservingFailure(
+        _ error: any Error,
+        operation: String) -> DesktopActionFailure
+    {
+        let leaf = error as? DesktopActionFailure ?? .preDispatchRefusal(
+            reason: .operationUnsupported,
+            message: error.localizedDescription,
+            causeDescription: String(describing: error))
+        let sequence = self.resultSequence()
+        return sequence.failure(
+            combining: leaf,
+            operation: operation,
+            requiresCompatibleOperationTarget: true,
+            message: "\(operation) failed after its exact setup focus completed.",
+            hint: "Observe the focused target before deciding whether to retry.",
+            causeDescription: leaf.causeDescription ?? error.localizedDescription)
+    }
+
+    /// Composes an exact setup focus with a global pointer failure without attributing the
+    /// shared-pointer leaf to the focused window.
+    func preservingGlobalFailure(
+        _ error: any Error,
+        operation: String) -> DesktopActionFailure
+    {
+        let leaf = error as? DesktopActionFailure ?? .preDispatchRefusal(
+            reason: .operationUnsupported,
+            message: error.localizedDescription,
+            causeDescription: String(describing: error))
+        var sequence = self.resultSequence()
+        sequence.record(
+            outcome: nil,
+            attribution: .targetless)
+        return sequence.failure(
+            combining: leaf,
+            operation: operation,
+            message: "\(operation) failed after its exact setup focus completed.",
+            hint: "Observe the desktop before deciding whether to retry.",
+            causeDescription: leaf.causeDescription ?? error.localizedDescription)
+    }
+
+    func attributing(_ failure: DesktopActionFailure) -> DesktopActionFailure {
+        var sequence = UIAutomationActionResultSequenceAccumulator()
+        sequence.record(
+            outcome: nil,
+            targetIdentity: self.targetIdentity,
+            attribution: .operationTarget)
+        return sequence.reconcilingTarget(of: failure)
+    }
+
+    func combining<Payload: Sendable>(
+        _ leaf: UIAutomationActionResult<Payload>,
+        operation: String) throws -> UIAutomationActionResult<Payload>
+    {
+        guard let leafOutcome = leaf.outcome else {
+            throw self.preservingFailure(
+                DesktopActionFailure.indeterminate(
+                    evidence: .completionUnknown,
+                    message: "\(operation) returned without a canonical outcome.",
+                    hint: "Observe the target before retrying and update the runtime host."),
+                operation: operation)
+        }
+        var sequence = self.resultSequence(targetProjectionPolicy: .coalescedIdentity)
+        let step = DesktopActionSequenceAccumulator.Step.reportedOutcome(
+            leafOutcome,
+            defaultDispatchedUnitCount: .one)
+        if let targetIdentity = leaf.targetIdentity {
+            sequence.record(
+                step,
+                targetIdentity: targetIdentity,
+                attribution: .operationTarget)
+        } else {
+            sequence.record(step)
+        }
+        return try sequence.result(
+            payload: leaf.payload,
+            operation: operation,
+            requiresOutcome: true,
+            requiresCompatibleTarget: true,
+            failureMessage:
+            "\(operation) returned untrustworthy target evidence after its exact setup focus completed.",
+            failureHint: "Observe the focused target before deciding whether to retry.")
+    }
+
+    func preservingLeafResultFailure(
+        _ error: any Error,
+        leafOutcome: DesktopActionOutcome,
+        leafTarget: DesktopActionTargetReceipt?,
+        operation: String) -> DesktopActionFailure
+    {
+        let leafFailure = error as? DesktopActionFailure ?? .preDispatchRefusal(
+            reason: .operationUnsupported,
+            message: error.localizedDescription,
+            causeDescription: String(describing: error))
+        var sequence = self.resultSequence()
+        let step = DesktopActionSequenceAccumulator.Step.reportedOutcome(
+            leafOutcome,
+            defaultDispatchedUnitCount: .one)
+        if let leafTarget {
+            sequence.record(
+                step,
+                targetIdentity: nil,
+                targetReceipt: leafTarget,
+                attribution: .operationTarget)
+        } else {
+            sequence.record(step)
+        }
+        return sequence.failure(
+            combining: leafFailure,
+            operation: operation,
+            message: "\(operation) returned untrustworthy target evidence after its exact setup focus completed.",
+            hint: "Observe the focused target before deciding whether to retry.",
+            causeDescription: leafFailure.causeDescription ?? error.localizedDescription)
+    }
+
+    private func resultSequence(
+        targetProjectionPolicy: UIAutomationActionResultSequenceAccumulator.TargetProjectionPolicy = .commonScope)
+        -> UIAutomationActionResultSequenceAccumulator
+    {
+        var sequence = UIAutomationActionResultSequenceAccumulator(
+            targetProjectionPolicy: targetProjectionPolicy)
+        sequence.record(
+            outcome: self.outcome,
+            targetIdentity: self.targetIdentity,
+            attribution: .sequenceTarget,
+            defaultDispatchedUnitCount: .one)
+        return sequence
     }
 }
 
@@ -172,10 +327,42 @@ struct MCPInteractionTarget {
     }
 
     func focusIfRequested(windows: any WindowManagementServiceProtocol) async throws -> WindowTarget? {
-        let target = try self.toWindowTarget()
-        guard let target else { return nil }
-        try await windows.focusWindow(target: target)
-        return target
+        try await self.focusResultIfRequested(windows: windows)?.target
+    }
+
+    func focusResultIfRequested(
+        windows: any WindowManagementServiceProtocol,
+        onlyWhenTargeted: Bool = false) async throws -> MCPInteractionFocusResult?
+    {
+        guard !onlyWhenTargeted || self.hasTarget else { return nil }
+        guard let requestedTarget = try self.toWindowTarget() else { return nil }
+        let matches = try await windows.listWindows(target: requestedTarget)
+        if self.selector.normalizedWindowTitle != nil, matches.count != 1 {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .targetUnavailable,
+                message: "Foreground window-title targeting must resolve exactly one window.",
+                hint: "Use a more specific title or select the window by ID after refreshing the window inventory.")
+        }
+        guard let window = matches.first,
+              let identity = window.mutationIdentity,
+              identity.windowID == window.windowID,
+              let bounds = identity.capturedBounds,
+              bounds == window.bounds
+        else {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .targetUnavailable,
+                message: "Foreground focus requires one window with a stable exact target receipt.",
+                hint: "Refresh the window inventory before retrying.")
+        }
+        let target = WindowTarget.windowId(window.windowID)
+        let result = try await windows.focusWindowResult(
+            target: target,
+            expectedIdentity: identity)
+        let validated = try windows.validatedWindowMutationResult(
+            result,
+            expectedIdentity: identity,
+            operation: "Foreground setup focus")
+        return MCPInteractionFocusResult(target: target, actionResult: validated)
     }
 
     func processIdentifier(
@@ -308,6 +495,7 @@ struct MCPInteractionTarget {
         return identity
     }
 
+    @MainActor
     func requireBackgroundKeyboardTarget(
         applications: any ApplicationServiceProtocol,
         windows: any WindowManagementServiceProtocol,
@@ -316,133 +504,45 @@ struct MCPInteractionTarget {
         requiresExplicitExactWindow: Bool = false) async throws -> UIAutomationTarget
     {
         try self.validate()
-        let selectedWindow: UIAutomationTarget.ExactWindow? = if self.hasWindowSelector {
-            try await self.requireSelectedExactWindow(windows: windows)
-        } else {
-            nil
-        }
-        let exactWindow: UIAutomationTarget.ExactWindow?
-        if let snapshotExactWindow, let selectedWindow {
-            let merged: DesktopTargetIdentity?
-            do {
-                merged = try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.coalesce([
-                    DesktopTargetIdentity(exactWindow: snapshotExactWindow),
-                    DesktopTargetIdentity(exactWindow: selectedWindow),
-                ])
-            } catch {
-                throw MCPInteractionTargetError.backgroundWindowTargetMismatch
-            }
-            guard let mergedWindow = merged?.exactWindow else {
-                throw MCPInteractionTargetError.backgroundWindowTargetMismatch
-            }
-            exactWindow = mergedWindow
-        } else {
-            exactWindow = snapshotExactWindow ?? selectedWindow
-        }
-
-        let selectedProcessIdentity = try await self.selectedProcessIdentity(applications: applications)
-        let stableIdentities: [DesktopTargetIdentity?]
+        let planner = DesktopTargetPlanning.BackgroundKeyboardTargetPlanner(
+            applications: applications,
+            windows: windows)
         do {
-            stableIdentities = try [selectedProcessIdentity, snapshotProcessIdentity].map { identity in
-                guard let identity else { return nil }
-                return try DesktopTargetIdentity(processIdentity: identity)
-            } + [
-                snapshotExactWindow.map(DesktopTargetIdentity.init(exactWindow:)),
-                selectedWindow.map(DesktopTargetIdentity.init(exactWindow:)),
-            ]
-        } catch {
-            throw MCPInteractionTargetError.backgroundWindowTargetMismatch
-        }
-        let stableIdentity: DesktopTargetIdentity?
-        do {
-            stableIdentity = try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.coalesce(stableIdentities)
-        } catch {
-            throw MCPInteractionTargetError.backgroundWindowTargetMismatch
-        }
-        guard let processIdentity = stableIdentity?.processIdentity else {
+            return try await planner.plan(
+                selector: self.selector,
+                snapshotProcessIdentity: snapshotProcessIdentity,
+                snapshotExactWindow: snapshotExactWindow,
+                requiresExplicitExactWindow: requiresExplicitExactWindow).target
+        } catch DesktopTargetPlanning.BackgroundKeyboardTargetPlanningError.targetRequired {
             throw MCPInteractionTargetError.backgroundTargetRequired
-        }
-
-        let listedApplications = try await applications.listApplications().data.applications
-        guard let application = listedApplications.first(where: {
-            $0.processIdentifier == processIdentity.processIdentifier
-        }) else {
-            throw MCPInteractionTargetError.targetProcessNotFound
-        }
-        guard application.processIdentity == processIdentity else {
-            throw MCPInteractionTargetError.targetProcessIdentityUnavailable
-        }
-        guard application.isEligibleForBackgroundInput else {
+        } catch DesktopTargetPlanning.BackgroundKeyboardTargetPlanningError.applicationIneligible {
             throw MCPInteractionTargetError.backgroundTargetIneligible
-        }
-
-        let process = try UIAutomationTarget.Process(
-            processIdentifier: processIdentity.processIdentifier,
-            identity: processIdentity)
-        if let exactWindow {
-            return try UIAutomationTarget.backgroundKeyboard(
-                process: process,
-                exactWindow: exactWindow)
-        }
-
-        let eligibleWindows: [UIAutomationTarget.ExactWindow]
-        if requiresExplicitExactWindow {
-            eligibleWindows = []
-        } else {
-            let listed = try await windows.listWindows(
-                target: .application("PID:\(processIdentity.processIdentifier)"))
-            eligibleWindows = try ObservationTargetResolver.captureCandidates(from: listed).map {
-                try UIAutomationTarget.ExactWindow(window: $0)
-            }
-        }
-        return try UIAutomationTarget.backgroundKeyboard(
-            process: process,
-            eligibleWindows: eligibleWindows,
-            requiresExplicitExactWindow: requiresExplicitExactWindow)
-    }
-
-    private func selectedProcessIdentity(
-        applications: any ApplicationServiceProtocol) async throws -> ApplicationProcessIdentity?
-    {
-        let application: ServiceApplicationInfo
-        if let pid {
-            application = try await applications.findApplication(identifier: "PID:\(pid)")
-            guard application.processIdentifier == pid else {
-                throw MCPInteractionTargetError.targetProcessNotFound
-            }
-        } else if let app = self.app?.trimmingCharacters(in: .whitespacesAndNewlines), !app.isEmpty {
-            application = try await applications.findApplication(identifier: app)
-        } else {
-            return nil
-        }
-        guard let identity = application.processIdentity else {
-            throw MCPInteractionTargetError.targetProcessIdentityUnavailable
-        }
-        return identity
-    }
-
-    private func requireSelectedExactWindow(
-        windows: any WindowManagementServiceProtocol) async throws -> UIAutomationTarget.ExactWindow
-    {
-        guard let windowTarget = try self.toWindowTarget() else {
-            throw MCPInteractionTargetError.backgroundWindowTargetUnsupported
-        }
-        let matches = try await windows.listWindows(target: windowTarget)
-        guard matches.count == 1, let window = matches.first else {
-            throw MCPInteractionTargetError.backgroundWindowTargetAmbiguous
-        }
-        do {
-            return try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.exactWindow(from: window)
-        } catch {
+        } catch is DesktopTargetIdentityError {
             throw MCPInteractionTargetError.backgroundWindowTargetMismatch
+        } catch let error as DesktopTargetPlanningError {
+            switch error {
+            case .applicationNotFound:
+                throw MCPInteractionTargetError.targetProcessNotFound
+            case .missingProcessIdentity, .invalidProcessIdentity, .staleApplication:
+                throw MCPInteractionTargetError.targetProcessIdentityUnavailable
+            case .windowNotFound, .ambiguousWindow:
+                throw MCPInteractionTargetError.backgroundWindowTargetAmbiguous
+            case .missingWindowIdentity, .incompleteWindowIdentity, .windowOwnerMismatch, .staleWindow:
+                throw MCPInteractionTargetError.backgroundWindowTargetMismatch
+            default:
+                throw MCPInteractionTargetError.backgroundTargetPlanningFailed(error.localizedDescription)
+            }
+        } catch let error as DesktopTargetPlanning.BackgroundKeyboardTargetPlanningError {
+            throw MCPInteractionTargetError.backgroundTargetPlanningFailed(error.localizedDescription)
         }
     }
 
     func focusIfRequested(windows: any WindowManagementServiceProtocol, onlyWhenTargeted: Bool) async throws
         -> WindowTarget?
     {
-        guard !onlyWhenTargeted || self.hasTarget else { return nil }
-        return try await self.focusIfRequested(windows: windows)
+        try await self.focusResultIfRequested(
+            windows: windows,
+            onlyWhenTargeted: onlyWhenTargeted)?.target
     }
 
     func processIdentifierIfTargeted(

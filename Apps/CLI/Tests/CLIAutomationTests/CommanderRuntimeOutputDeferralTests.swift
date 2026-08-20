@@ -161,7 +161,7 @@ struct CommanderRuntimeOutputDeferralTests {
         )
 
         #expect(result.exitStatus == 0)
-        #expect(result.stdout.contains("Click successful"))
+        #expect(result.stdout.contains("Click dispatched; application effect is unverifiable"))
         #expect(!result.stderr.contains("invalidation unavailable"))
         #expect(result.stderr == "\(CommanderRuntimeExecutorMessage.snapshotInvalidationWarning)\n")
         #expect(!result.stderr.contains("Error:"))

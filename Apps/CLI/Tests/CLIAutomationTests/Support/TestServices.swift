@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import PeekabooAutomationKitTestSupport
 import PeekabooFoundation
 import UniformTypeIdentifiers
 @testable import PeekabooCLI
@@ -244,6 +245,7 @@ ExactWindowTargetedClickServiceProtocol, ElementActionAutomationServiceProtocol 
     var targetedTypeRequiresEventSynthesizingPermission = false
     var supportsTargetedClicks = true
     var supportsProcessGenerationPinnedClicks = true
+    var supportsStatelessClickVariants = true
     var targetedClickUnavailableReason: String?
     var targetedClickRequiresEventSynthesizingPermission = false
     var clickError: (any Error)?
@@ -576,11 +578,7 @@ ExactWindowTargetedClickServiceProtocol, ElementActionAutomationServiceProtocol 
 }
 
 @MainActor
-class StubApplicationService: ApplicationServiceProtocol {
-    let supportsApplicationLaunchOptions = true
-    let supportsApplicationRelaunch = true
-    var applications: [ServiceApplicationInfo]
-    var windowsByApp: [String: [ServiceWindowInfo]]
+class StubApplicationService: ScriptedApplicationInventoryService {
     var launchResults: [String: ServiceApplicationInfo]
     var launchCalls: [String] = []
     var activateCalls: [String] = []
@@ -595,83 +593,19 @@ class StubApplicationService: ApplicationServiceProtocol {
     var showAllCallCount = 0
 
     init(applications: [ServiceApplicationInfo], windowsByApp: [String: [ServiceWindowInfo]] = [:]) {
-        self.applications = applications
-        self.windowsByApp = windowsByApp
         self.launchResults = [:]
-    }
-
-    func listApplications() async throws -> UnifiedToolOutput<ServiceApplicationListData> {
-        let data = ServiceApplicationListData(applications: applications)
-        let summary = UnifiedToolOutput<ServiceApplicationListData>.Summary(
-            brief: "Stub application list",
-            status: .success,
-            counts: ["applications": self.applications.count]
-        )
-        return UnifiedToolOutput(
-            data: data,
-            summary: summary,
-            metadata: .init(duration: 0)
+        super.init(
+            applications: applications,
+            windowsByIdentifier: windowsByApp,
+            propagatesApplicationMetadataWarnings: false,
+            supportsApplicationLaunchOptions: true,
+            supportsApplicationRelaunch: true,
+            supportsProcessGenerationPinnedApplicationQuit: true,
+            supportsProcessGenerationPinnedApplicationActivation: true
         )
     }
 
-    func findApplication(identifier: String) async throws -> ServiceApplicationInfo {
-        if let pid = Self.parsePID(identifier),
-           let match = applications.first(where: { $0.processIdentifier == pid }) {
-            return match
-        }
-
-        if let match = applications.first(where: { $0.name == identifier || $0.bundleIdentifier == identifier }) {
-            return match
-        }
-        throw PeekabooError.appNotFound(identifier)
-    }
-
-    private static func parsePID(_ identifier: String) -> pid_t? {
-        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pidString: String = if trimmed.uppercased().hasPrefix("PID:") {
-            String(trimmed.dropFirst(4))
-        } else {
-            trimmed
-        }
-
-        guard let rawPID = Int32(pidString), rawPID > 0 else { return nil }
-        return pid_t(rawPID)
-    }
-
-    func listWindows(
-        for appIdentifier: String,
-        timeout: Float?
-    ) async throws -> UnifiedToolOutput<ServiceWindowListData> {
-        let targetApp = self.applications.first {
-            $0.name == appIdentifier || $0.bundleIdentifier == appIdentifier
-        }
-        let windows = self.windowsByApp[appIdentifier]
-            ?? targetApp.flatMap { self.windowsByApp[$0.name] } ?? []
-        let data = ServiceWindowListData(windows: windows, targetApplication: targetApp)
-        let summary = UnifiedToolOutput<ServiceWindowListData>.Summary(
-            brief: "Stub window list",
-            status: .success,
-            counts: ["windows": windows.count]
-        )
-        return UnifiedToolOutput(
-            data: data,
-            summary: summary,
-            metadata: .init(duration: 0)
-        )
-    }
-
-    func getFrontmostApplication() async throws -> ServiceApplicationInfo {
-        guard let first = applications.first else {
-            throw PeekabooError.appNotFound("frontmost")
-        }
-        return first
-    }
-
-    func isApplicationRunning(identifier: String) async -> Bool {
-        self.applications.contains { $0.name == identifier || $0.bundleIdentifier == identifier }
-    }
-
-    func launchApplication(identifier: String) async throws -> ServiceApplicationInfo {
+    override func launchApplication(identifier: String) async throws -> ServiceApplicationInfo {
         self.launchCalls.append(identifier)
         if let result = launchResults[identifier] {
             return result
@@ -687,26 +621,43 @@ class StubApplicationService: ApplicationServiceProtocol {
         )
     }
 
-    func launchApplication(request: ApplicationLaunchRequest) async throws -> ServiceApplicationInfo {
+    override func launchApplication(request: ApplicationLaunchRequest) async throws -> ServiceApplicationInfo {
         let identifier = request.applicationBundleIdentifier ?? request.applicationIdentifier ?? "default handler"
         return try await self.launchApplication(identifier: identifier)
     }
 
-    func relaunchApplication(request: ApplicationRelaunchRequest) async throws -> ServiceApplicationInfo {
+    override func relaunchApplication(request: ApplicationRelaunchRequest) async throws -> ServiceApplicationInfo {
         try await self.launchApplication(request: request.launchRequest)
     }
 
-    func activateApplication(identifier: String) async throws {
+    override func getFrontmostApplication() async throws -> ServiceApplicationInfo {
+        guard let application = self.applications.first else {
+            throw PeekabooError.appNotFound("frontmost")
+        }
+        return application
+    }
+
+    override func activateApplication(identifier: String) async throws {
         self.activateCalls.append(identifier)
         try await self.activateApplicationHandler?(identifier)
     }
 
-    func quitApplication(identifier: String, force: Bool) async throws -> Bool {
+    override func activateApplication(request: ApplicationActivationRequest) async throws {
+        if let expectedIdentity = request.expectedIdentity {
+            let application = try await self.findApplication(identifier: request.identifier)
+            guard application.processIdentity == expectedIdentity else {
+                throw PeekabooError.commandFailed("Application process generation changed before activation")
+            }
+        }
+        try await self.activateApplication(identifier: request.identifier)
+    }
+
+    override func quitApplication(identifier: String, force: Bool) async throws -> Bool {
         self.quitCalls.append((identifier: identifier, force: force))
         return self.quitShouldSucceed
     }
 
-    func quitApplication(request: ApplicationQuitRequest) async throws -> Bool {
+    override func quitApplication(request: ApplicationQuitRequest) async throws -> Bool {
         self.quitRequests.append(request)
         guard let expectedIdentity = request.expectedIdentity,
               self.applications.first(where: {
@@ -722,19 +673,19 @@ class StubApplicationService: ApplicationServiceProtocol {
         return self.quitShouldSucceed
     }
 
-    func hideApplication(identifier: String) async throws {
+    override func hideApplication(identifier: String) async throws {
         self.hideCalls.append(identifier)
     }
 
-    func unhideApplication(identifier: String) async throws {
+    override func unhideApplication(identifier: String) async throws {
         self.unhideCalls.append(identifier)
     }
 
-    func hideOtherApplications(identifier: String) async throws {
+    override func hideOtherApplications(identifier: String) async throws {
         self.hideOtherCalls.append(identifier)
     }
 
-    func showAllApplications() async throws {
+    override func showAllApplications() async throws {
         self.showAllCallCount += 1
     }
 }
@@ -750,6 +701,7 @@ final class StubSnapshotManager: SnapshotManagerProtocol, @unchecked Sendable {
     private(set) var storedAnnotatedScreenshots: [String: [String]] = [:]
     var mostRecentSnapshotId: String?
     var uiAutomationSnapshotError: PeekabooError?
+    var uiAutomationSnapshotCancellation = false
     var invalidationError: (any Error)?
     var mutationFinishError: (any Error)?
     var snapshotCreationDelay: Duration?
@@ -1030,6 +982,9 @@ final class StubSnapshotManager: SnapshotManagerProtocol, @unchecked Sendable {
     }
 
     func getUIAutomationSnapshot(snapshotId _: String) async throws -> UIAutomationSnapshot? {
+        if self.uiAutomationSnapshotCancellation {
+            throw CancellationError()
+        }
         if let uiAutomationSnapshotError {
             throw uiAutomationSnapshotError
         }
@@ -1073,7 +1028,7 @@ final class StubFileService: FileServiceProtocol {
 }
 
 @MainActor
-final class StubDockService: DockServiceProtocol {
+class StubDockService: DockServiceProtocol {
     var items: [DockItem]
     var autoHidden: Bool
 
@@ -1225,7 +1180,7 @@ final class StubClipboardService: ClipboardServiceProtocol {
 }
 
 @MainActor
-final class StubMenuService: MenuServiceProtocol {
+class StubMenuService: MenuServiceProtocol {
     var menusByApp: [String: MenuStructure]
     var frontmostMenus: MenuStructure?
     var menuExtras: [MenuExtraInfo]
@@ -1307,6 +1262,7 @@ final class StubMenuService: MenuServiceProtocol {
 
 @MainActor
 final class StubDialogService: DialogServiceProtocol {
+    let supportsBackgroundExactDialogInput = true
     var dialogElements: DialogElements?
     var clickButtonResult: DialogActionResult?
     var handleFileDialogResult: DialogActionResult?
@@ -1314,12 +1270,15 @@ final class StubDialogService: DialogServiceProtocol {
     var dismissResult: DialogActionResult?
     var enterTextResult: DialogActionResult?
     private(set) var exactInputRequests: [DialogInputExecutionRequest] = []
+    private(set) var foregroundExactInputRequests: [DialogInputExecutionRequest] = []
     var exactForcedDismissRequests: [DialogForcedDismissExecutionRequest] = []
     var legacyInputFocusPolicies: [DialogForegroundFocusPolicy] = []
+    private var preparedDialogRequest: DialogActionPreparationRequest?
 
     private(set) var recordedButtonClicks: [(button: String, window: String?)] = []
     private(set) var clickFallbackRequests: [Bool] = []
     private(set) var enterTextCallCount = 0
+    private(set) var handleFileDialogCallCount = 0
 
     init(elements: DialogElements? = nil) {
         self.dialogElements = elements
@@ -1382,6 +1341,56 @@ final class StubDialogService: DialogServiceProtocol {
         throw DialogError.fieldNotFound
     }
 
+    func enterTextForegroundCompatible(_ request: DialogInputExecutionRequest) async throws -> DialogActionResult {
+        self.foregroundExactInputRequests.append(request)
+        self.enterTextCallCount += 1
+        guard self.dialogElements != nil else {
+            throw DialogError.noActiveDialog
+        }
+        if let result = self.enterTextResult {
+            return result
+        }
+        throw DialogError.fieldNotFound
+    }
+
+    func prepareDialogAction(_ request: DialogActionPreparationRequest) async throws -> PreparedDialogActionReceipt {
+        self.preparedDialogRequest = request
+        let bounds = CGRect(x: 10, y: 20, width: 400, height: 300)
+        let identity = WindowMutationIdentity(
+            windowID: request.target.windowID ?? 73,
+            ownerProcessIdentifier: request.target.processIdentifier ?? 42,
+            ownerProcessStartIdentity: 9001,
+            capturedBounds: bounds
+        )
+        return try PreparedDialogActionReceipt(
+            token: UUID(),
+            kind: request.kind,
+            target: .init(identity: identity, bounds: bounds)
+        )
+    }
+
+    func performPreparedDialogAction(_ receipt: PreparedDialogActionReceipt) async throws -> DialogActionResult {
+        let provided = receipt.kind == .clickButton ? self.clickButtonResult : self.dismissResult
+        let action: DialogActionType = receipt.kind == .clickButton ? .clickButton : .dismiss
+        if receipt.kind == .clickButton, let button = self.preparedDialogRequest?.buttonText {
+            self.recordedButtonClicks.append((button, nil))
+        }
+        return DialogActionResult(
+            success: provided?.success ?? true,
+            action: provided?.action ?? action,
+            details: provided?.details ?? [:],
+            outcome: provided?.outcome ?? .confirmedChange(
+                delivery: .init(mechanism: .accessibilityAction, mode: .background),
+                unitCount: .one
+            ),
+            targetReceipt: provided?.targetReceipt ?? DialogCommand.targetReceipt(receipt.target),
+            targetWindowIdentity: provided?.targetWindowIdentity ?? receipt.target.identity,
+            targetWindowBounds: provided?.targetWindowBounds ?? receipt.target.bounds,
+            focusedElement: provided?.focusedElement,
+            resolvedTarget: provided?.resolvedTarget
+        )
+    }
+
     func handleFileDialog(
         path: String?,
         filename: String?,
@@ -1389,6 +1398,7 @@ final class StubDialogService: DialogServiceProtocol {
         ensureExpanded: Bool,
         appName: String?
     ) async throws -> DialogActionResult {
+        self.handleFileDialogCallCount += 1
         guard let elements = dialogElements else {
             throw DialogError.noActiveDialog
         }
@@ -1420,11 +1430,20 @@ final class StubDialogService: DialogServiceProtocol {
         }
         return elements
     }
+
+    func listDialogElements(target _: DialogTargetSelector) async throws -> DialogElements {
+        guard let elements = self.dialogElements else {
+            throw DialogError.noActiveDialog
+        }
+        return elements
+    }
 }
 
 @MainActor
-class StubWindowService: WindowManagementServiceProtocol {
+class StubWindowService: WindowManagementServiceProtocol, WindowMutationInventoryProviding {
     var windowsByApp: [String: [ServiceWindowInfo]]
+    var inventoryCompleteness: DesktopTargetPlanning.Inventory<ServiceWindowInfo>.Completeness = .complete
+    var inventoryWarnings: [String] = []
     var focusCalls: [WindowTarget] = []
     var closeFallbackRequests: [Bool] = []
     var moveCalls: [WindowTarget] = []
@@ -1545,6 +1564,16 @@ class StubWindowService: WindowManagementServiceProtocol {
         }
     }
 
+    func windowMutationInventory(
+        target: WindowTarget
+    ) async throws -> DesktopTargetPlanning.Inventory<ServiceWindowInfo> {
+        try await .init(
+            items: self.listWindows(target: target),
+            completeness: self.inventoryCompleteness,
+            warnings: self.inventoryWarnings
+        )
+    }
+
     func getFocusedWindow() async throws -> ServiceWindowInfo? {
         nil
     }
@@ -1610,7 +1639,16 @@ class StubWindowService: WindowManagementServiceProtocol {
 
 extension ServiceWindowInfo {
     fileprivate func withBounds(_ bounds: CGRect) -> ServiceWindowInfo {
-        ServiceWindowInfo(
+        let refreshedIdentity = self.mutationIdentity.map {
+            WindowMutationIdentity(
+                windowID: $0.windowID,
+                ownerProcessIdentifier: $0.ownerProcessIdentifier,
+                ownerProcessStartIdentity: $0.ownerProcessStartIdentity,
+                capturedBounds: bounds,
+                isMinimized: $0.isMinimized
+            )
+        }
+        return ServiceWindowInfo(
             windowID: windowID,
             title: title,
             bounds: bounds,
@@ -1623,11 +1661,14 @@ extension ServiceWindowInfo {
             spaceName: spaceName,
             screenIndex: screenIndex,
             screenName: screenName,
-            mutationIdentity: mutationIdentity
+            mutationIdentity: refreshedIdentity
         )
     }
 
-    fileprivate func withMutationIdentityForTesting() -> ServiceWindowInfo {
+    func withMutationIdentityForTesting(
+        ownerProcessIdentifier: Int32 = 42,
+        ownerProcessStartIdentity: UInt64 = 7
+    ) -> ServiceWindowInfo {
         guard self.mutationIdentity == nil else { return self }
         return ServiceWindowInfo(
             windowID: self.windowID,
@@ -1652,8 +1693,8 @@ extension ServiceWindowInfo {
             isExcludedFromWindowsMenu: self.isExcludedFromWindowsMenu,
             mutationIdentity: WindowMutationIdentity(
                 windowID: self.windowID,
-                ownerProcessIdentifier: 42,
-                ownerProcessStartIdentity: 7,
+                ownerProcessIdentifier: ownerProcessIdentifier,
+                ownerProcessStartIdentity: ownerProcessStartIdentity,
                 capturedBounds: self.bounds
             )
         )
@@ -1665,6 +1706,17 @@ final class StubSpaceService: SpaceCommandSpaceService {
     let spaces: [SpaceInfo]
     let windowSpaces: [Int: [SpaceInfo]]
     var switchCalls: [CGSSpaceID] = []
+    var switchOutcome: DesktopActionOutcome = .dispatchedUnverified(
+        delivery: .init(mechanism: .nativeFramework, mode: .foreground),
+        evidence: .deliveryAccepted,
+        unitCount: .one
+    )
+    var switchFailure: DesktopActionFailure?
+    var moveOutcome: DesktopActionOutcome = .dispatchedUnverified(
+        delivery: .init(mechanism: .nativeFramework, mode: .background),
+        evidence: .deliveryAccepted,
+        unitCount: .one
+    )
     var moveWindowCalls: [(windowID: CGWindowID, spaceID: CGSSpaceID?)] = []
     var moveToCurrentCalls: [CGWindowID] = []
 
@@ -1681,16 +1733,51 @@ final class StubSpaceService: SpaceCommandSpaceService {
         self.windowSpaces[Int(windowID)] ?? []
     }
 
-    func moveWindowToCurrentSpace(windowID: CGWindowID) async throws {
+    func moveWindowToCurrentSpaceResult(
+        windowID: CGWindowID,
+        expectedIdentity: WindowMutationIdentity
+    ) async throws -> UIAutomationActionResult<Void> {
         self.moveToCurrentCalls.append(windowID)
+        return try Self.moveResult(outcome: self.moveOutcome, expectedIdentity: expectedIdentity)
     }
 
-    func moveWindowToSpace(windowID: CGWindowID, spaceID: CGSSpaceID) async throws {
+    func moveWindowToSpaceResult(
+        windowID: CGWindowID,
+        expectedIdentity: WindowMutationIdentity,
+        spaceID: CGSSpaceID
+    ) async throws -> UIAutomationActionResult<Void> {
         self.moveWindowCalls.append((windowID, spaceID))
+        return try Self.moveResult(outcome: self.moveOutcome, expectedIdentity: expectedIdentity)
     }
 
-    func switchToSpace(_ spaceID: CGSSpaceID) async throws {
+    func switchToSpaceResult(_ spaceID: CGSSpaceID) async throws -> DesktopActionResult<Void> {
         self.switchCalls.append(spaceID)
+        if let switchFailure {
+            throw switchFailure
+        }
+        return DesktopActionResult(outcome: self.switchOutcome)
+    }
+
+    private static func moveResult(
+        outcome: DesktopActionOutcome,
+        expectedIdentity: WindowMutationIdentity
+    ) throws -> UIAutomationActionResult<Void> {
+        guard let bounds = expectedIdentity.capturedBounds else {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .targetUnavailable,
+                message: "Test Space target is missing exact bounds."
+            )
+        }
+        return try UIAutomationActionResult(
+            payload: (),
+            outcome: outcome,
+            targetIdentity: DesktopTargetIdentity(
+                exactWindow: UIAutomationTarget.ExactWindow(
+                    identity: expectedIdentity,
+                    bounds: bounds
+                )
+            )
+        )
     }
 }
 

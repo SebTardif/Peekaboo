@@ -9,12 +9,20 @@ import PeekabooFoundation
 /// Service for handling keyboard shortcuts and hotkeys.
 @MainActor
 public final class HotkeyService {
+    private struct HeldHotkeyState {
+        var pressedModifierKeyCodes: Set<Int64> = []
+        var primaryKeyIsDown = false
+        var emittedUnitCount = 0
+    }
+
     private let logger = Logger(subsystem: "boo.peekaboo.core", category: "HotkeyService")
     private let postEventAccessEvaluator: @MainActor @Sendable () -> Bool
     private let eventPoster: @MainActor @Sendable (CGEvent, pid_t) -> Void
     private let frontmostApplicationResolver: @MainActor @Sendable () -> NSRunningApplication?
     private let runningApplicationResolver: @MainActor @Sendable (pid_t) -> NSRunningApplication?
     private let processStartIdentityProvider: @Sendable (pid_t) -> UInt64?
+    private let holdSleeper: @MainActor @Sendable (UInt64) async throws -> Void
+    private let heldInterEventDelay: @MainActor @Sendable () -> Void
     let inputPolicy: UIInputPolicy
     private let actionInputDriver: any ActionInputDriving
     private let desktopOperationExecutor: DesktopOperationExecutor
@@ -53,6 +61,10 @@ public final class HotkeyService {
         },
         processStartIdentityProvider: @escaping @Sendable (pid_t) -> UInt64? =
             SystemIdentityResolver.processStartIdentity,
+        holdSleeper: @escaping @MainActor @Sendable (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        },
+        heldInterEventDelay: @escaping @MainActor @Sendable () -> Void = { usleep(1000) },
         desktopOperationExecutor: DesktopOperationExecutor = DesktopOperationExecutor(),
         operationFinalizer: @escaping @MainActor () -> Void = {})
     {
@@ -63,6 +75,8 @@ public final class HotkeyService {
         self.frontmostApplicationResolver = frontmostApplicationResolver
         self.runningApplicationResolver = runningApplicationResolver
         self.processStartIdentityProvider = processStartIdentityProvider
+        self.holdSleeper = holdSleeper
+        self.heldInterEventDelay = heldInterEventDelay
         self.desktopOperationExecutor = desktopOperationExecutor
         self.operationFinalizer = operationFinalizer
     }
@@ -230,7 +244,8 @@ public final class HotkeyService {
                     plan,
                     holdNanoseconds: holdNanoseconds,
                     targetProcessIdentifier: targetProcessIdentifier,
-                    deliveryValidator: targetValidator)
+                    deliveryValidator: targetValidator,
+                    cleanupProcessIdentity: automationTarget.exactWindow?.identity.processIdentity)
 
                 do {
                     if holdDuration <= 0 {
@@ -248,10 +263,11 @@ public final class HotkeyService {
                         causeDescription: error.localizedDescription)
                 }
                 return .dispatchedUnverified(
-                    delivery: DesktopActionOutcome.Delivery(
-                        mechanism: .processTargetedEvents,
-                        mode: .background),
-                    evidence: .deliveryAccepted)
+                    delivery: automationTarget.keyboardDelivery,
+                    evidence: .deliveryAccepted,
+                    unitCount: holdNanoseconds > 0 && automationTarget.exactWindow != nil
+                        ? DesktopActionOutcome.DispatchUnitCount(emittedUnitCount)
+                        : nil)
             },
             finalize: self.operationFinalizer)
         let result = try await self.desktopOperationExecutor.execute(plan)
@@ -297,7 +313,8 @@ public final class HotkeyService {
         _ plan: HotkeyPlan,
         holdNanoseconds: UInt64,
         targetProcessIdentifier: pid_t,
-        deliveryValidator: (@MainActor @Sendable () async throws -> Void)? = nil) async throws
+        deliveryValidator: (@MainActor @Sendable () async throws -> Void)? = nil,
+        cleanupProcessIdentity: ApplicationProcessIdentity? = nil) async throws
         -> Int
     {
         guard self.postEventAccessEvaluator() else {
@@ -308,6 +325,15 @@ public final class HotkeyService {
             keyCode: plan.keyCode,
             flags: plan.modifierFlags,
             targetProcessIdentifier: targetProcessIdentifier)
+
+        if holdNanoseconds > 0, let cleanupProcessIdentity {
+            return try await self.postHeldHotkey(
+                eventPlan,
+                holdNanoseconds: holdNanoseconds,
+                targetProcessIdentifier: targetProcessIdentifier,
+                deliveryValidator: deliveryValidator,
+                cleanupProcessIdentity: cleanupProcessIdentity)
+        }
 
         var pressedModifierKeyCodes: Set<Int64> = []
         var primaryKeyIsDown = false
@@ -366,6 +392,102 @@ public final class HotkeyService {
                 operation: .hotkey,
                 emittedUnitCount: emittedUnitCount,
                 causeDescription: error.localizedDescription)
+        }
+    }
+
+    private func postHeldHotkey(
+        _ eventPlan: BackgroundInputDriver.KeyboardEventPlan,
+        holdNanoseconds: UInt64,
+        targetProcessIdentifier: pid_t,
+        deliveryValidator: (@MainActor @Sendable () async throws -> Void)?,
+        cleanupProcessIdentity: ApplicationProcessIdentity) async throws -> Int
+    {
+        var state = HeldHotkeyState()
+
+        do {
+            for event in eventPlan.modifierKeyDownEvents {
+                if state.emittedUnitCount > 0 {
+                    self.heldInterEventDelay()
+                }
+                try await self.validateDelivery(
+                    deliveryValidator,
+                    emittedUnitCount: state.emittedUnitCount)
+                state.pressedModifierKeyCodes.insert(event.getIntegerValueField(.keyboardEventKeycode))
+                self.eventPoster(event, targetProcessIdentifier)
+                state.emittedUnitCount += 1
+            }
+
+            if state.emittedUnitCount > 0 {
+                self.heldInterEventDelay()
+            }
+            try await self.validateDelivery(
+                deliveryValidator,
+                emittedUnitCount: state.emittedUnitCount)
+            state.primaryKeyIsDown = true
+            self.eventPoster(eventPlan.primaryKeyDownEvent, targetProcessIdentifier)
+            state.emittedUnitCount += 1
+
+            try await self.holdSleeper(holdNanoseconds)
+            try self.releaseHeldHotkey(
+                eventPlan,
+                targetProcessIdentifier: targetProcessIdentifier,
+                cleanupProcessIdentity: cleanupProcessIdentity,
+                state: &state)
+            return state.emittedUnitCount
+        } catch {
+            guard state.emittedUnitCount > 0 else { throw error }
+            let operationCause = error.localizedDescription
+            do {
+                try self.releaseHeldHotkey(
+                    eventPlan,
+                    targetProcessIdentifier: targetProcessIdentifier,
+                    cleanupProcessIdentity: cleanupProcessIdentity,
+                    state: &state)
+            } catch {
+                throw InputDeliveryIndeterminateError(
+                    operation: .hotkey,
+                    emittedUnitCount: state.emittedUnitCount,
+                    causeDescription: "\(operationCause) Cleanup failed closed: \(error.localizedDescription)")
+            }
+            throw InputDeliveryIndeterminateError(
+                operation: .hotkey,
+                emittedUnitCount: state.emittedUnitCount,
+                causeDescription: "\(operationCause) Held keys were released to the original process generation.")
+        }
+    }
+
+    private func releaseHeldHotkey(
+        _ eventPlan: BackgroundInputDriver.KeyboardEventPlan,
+        targetProcessIdentifier: pid_t,
+        cleanupProcessIdentity: ApplicationProcessIdentity,
+        state: inout HeldHotkeyState) throws
+    {
+        guard cleanupProcessIdentity.processIdentifier == targetProcessIdentifier else {
+            throw PeekabooError.operationError(
+                message: "Held hotkey cleanup process receipt does not match its target PID")
+        }
+
+        if state.primaryKeyIsDown {
+            try self.requireCleanupProcessGeneration(cleanupProcessIdentity)
+            self.eventPoster(eventPlan.primaryKeyUpEvent, targetProcessIdentifier)
+            state.emittedUnitCount += 1
+            state.primaryKeyIsDown = false
+        }
+        for event in eventPlan.modifierKeyUpEvents {
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            guard state.pressedModifierKeyCodes.contains(keyCode) else { continue }
+            self.heldInterEventDelay()
+            try self.requireCleanupProcessGeneration(cleanupProcessIdentity)
+            self.eventPoster(event, targetProcessIdentifier)
+            state.emittedUnitCount += 1
+            state.pressedModifierKeyCodes.remove(keyCode)
+        }
+    }
+
+    private func requireCleanupProcessGeneration(_ identity: ApplicationProcessIdentity) throws {
+        guard self.processStartIdentityProvider(identity.processIdentifier) == identity.processStartIdentity else {
+            throw PeekabooError.snapshotStale(
+                "Original hotkey process generation disappeared; cleanup was not retargeted to the recycled PID")
         }
     }
 

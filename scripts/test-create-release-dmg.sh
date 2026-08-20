@@ -4,17 +4,27 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/peekaboo-dmg-test.XXXXXX)"
-trap 'rm -rf "$TEST_DIR"' EXIT
+FIXTURE_MOUNT=""
+
+cleanup() {
+  if [[ -n "$FIXTURE_MOUNT" && -d "$FIXTURE_MOUNT" ]]; then
+    hdiutil detach "$FIXTURE_MOUNT" -quiet >/dev/null 2>&1 || true
+  fi
+  rm -rf "$TEST_DIR"
+}
+trap cleanup EXIT
 
 FAKE_BIN="$TEST_DIR/bin"
 COUNTER_FILE="$TEST_DIR/detach-count"
 UV_ARGS_FILE="$TEST_DIR/uv-args"
 DMG_PATH="$TEST_DIR/Peekaboo-3.9.5.dmg"
 BUILT_DMG_PATH="$TEST_DIR/Peekaboo-3.9.5-built.dmg"
+BAD_DMG_PATH="$TEST_DIR/Peekaboo-3.9.5-bad-xattrs.dmg"
+BAD_DMG_OUTPUT="$TEST_DIR/bad-xattrs-output"
 APP_ZIP="$TEST_DIR/Peekaboo-3.9.5.app.zip"
 BACKGROUND="$TEST_DIR/dmg-background.png"
 mkdir -p "$FAKE_BIN"
-touch "$DMG_PATH" "$APP_ZIP" "$BACKGROUND"
+touch "$DMG_PATH" "$BAD_DMG_PATH" "$APP_ZIP" "$BACKGROUND"
 
 cat >"$FAKE_BIN/codesign" <<'EOF'
 #!/usr/bin/env bash
@@ -52,6 +62,9 @@ case "${1:-}" in
       "$mount_dir/Peekaboo.app/Contents/Info.plist"
     touch "$mount_dir/Peekaboo.app/Contents/MacOS/Peekaboo"
     chmod 755 "$mount_dir/Peekaboo.app/Contents/MacOS/Peekaboo"
+    if [[ "${PEEKABOO_TEST_ATTACH_FINDERINFO:-}" == "1" ]]; then
+      /usr/bin/SetFile -a E "$mount_dir/Peekaboo.app"
+    fi
     ln -s /Applications "$mount_dir/Applications"
     touch \
       "$mount_dir/.background.png" \
@@ -60,6 +73,11 @@ case "${1:-}" in
     ;;
   detach)
     mount_dir="$2"
+    if [[ "${PEEKABOO_TEST_DETACH_IMMEDIATE:-}" == "1" ]]; then
+      find "$mount_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+      rmdir "$mount_dir"
+      exit 0
+    fi
     count=0
     [[ ! -f "$PEEKABOO_TEST_DETACH_COUNTER" ]] || count="$(<"$PEEKABOO_TEST_DETACH_COUNTER")"
     count=$((count + 1))
@@ -174,6 +192,20 @@ PEEKABOO_TEST_DETACH_COUNTER="$COUNTER_FILE" \
   exit 1
 }
 
+if PEEKABOO_TEST_ATTACH_FINDERINFO=1 \
+  PEEKABOO_TEST_DETACH_IMMEDIATE=1 \
+  PATH="$FAKE_BIN:$PATH" \
+  "$ROOT_DIR/scripts/create-release-dmg.sh" \
+  --version 3.9.5 \
+  --background "$BACKGROUND" \
+  --no-notarize \
+  --verify-only "$BAD_DMG_PATH" >"$BAD_DMG_OUTPUT" 2>&1; then
+  printf 'Expected FinderInfo-contaminated app verification to fail\n' >&2
+  exit 1
+fi
+rg -Fq 'Disallowed code xattrs found' "$BAD_DMG_OUTPUT"
+rg -Fq 'com.apple.FinderInfo' "$BAD_DMG_OUTPUT"
+
 PEEKABOO_TEST_DETACH_COUNTER="$COUNTER_FILE" \
 PEEKABOO_TEST_UV_ARGS="$UV_ARGS_FILE" \
 APP_STORE_CONNECT_API_KEY_P8=fixture-p8 \
@@ -227,7 +259,7 @@ assert settings["icon_locations"] == {
     "Peekaboo.app": (180, 230),
     "Applications": (540, 230),
 }
-assert settings["hide_extensions"] == ["Peekaboo.app"]
+assert settings.get("hide_extensions", []) == []
 assert settings["format"] == "UDZO"
 assert settings["filesystem"] == "HFS+"
 PY
@@ -237,5 +269,70 @@ rg -Fq '"ds-store==1.3.3"' "$ROOT_DIR/scripts/dmgbuild-runner.py"
 rg -Fq '"mac-alias==2.2.3"' "$ROOT_DIR/scripts/dmgbuild-runner.py"
 rg -Fq 'uv --no-config run --locked "$DMGBUILD_RUNNER"' "$ROOT_DIR/scripts/create-release-dmg.sh"
 [[ -f "$ROOT_DIR/scripts/dmgbuild-runner.py.lock" ]]
+
+FIXTURE_DIR="$TEST_DIR/fixture"
+FIXTURE_DMG="$TEST_DIR/Peekaboo-Fixture.dmg"
+FIXTURE_MOUNT="$TEST_DIR/fixture-mount"
+mkdir -p "$FIXTURE_DIR/Peekaboo.app/Contents/MacOS" "$FIXTURE_MOUNT"
+printf 'fixture\n' >"$FIXTURE_DIR/Peekaboo.app/Contents/MacOS/Peekaboo"
+chmod 755 "$FIXTURE_DIR/Peekaboo.app/Contents/MacOS/Peekaboo"
+
+env \
+  -u APP_STORE_CONNECT_API_KEY_P8 \
+  -u APP_STORE_CONNECT_KEY_ID \
+  -u APP_STORE_CONNECT_ISSUER_ID \
+  -u NPM_TOKEN \
+  -u OP_SERVICE_ACCOUNT_TOKEN \
+  -u MOLTY_OP_SERVICE_ACCOUNT_TOKEN \
+  uv --no-config run --locked "$ROOT_DIR/scripts/dmgbuild-runner.py" \
+  --no-hidpi \
+  --detach-retries 5 \
+  --settings "$ROOT_DIR/scripts/dmgbuild-settings.py" \
+  -D 'app_name=Peekaboo' \
+  -D "app_path=$FIXTURE_DIR/Peekaboo.app" \
+  -D "background=$ROOT_DIR/assets/dmg-background.png" \
+  -D "volume_icon=$ROOT_DIR/assets/dmg-background.png" \
+  'Peekaboo Fixture' \
+  "$FIXTURE_DMG" >/dev/null
+
+hdiutil attach -readonly -nobrowse -noautoopen \
+  -mountpoint "$FIXTURE_MOUNT" "$FIXTURE_DMG" >/dev/null
+[[ -L "$FIXTURE_MOUNT/Applications" ]]
+[[ "$(readlink "$FIXTURE_MOUNT/Applications")" == "/Applications" ]]
+cmp "$ROOT_DIR/assets/dmg-background.png" "$FIXTURE_MOUNT/.background.png"
+[[ -f "$FIXTURE_MOUNT/.VolumeIcon.icns" ]]
+[[ -f "$FIXTURE_MOUNT/.DS_Store" ]]
+
+fixture_xattrs="$(xattr -r "$FIXTURE_MOUNT/Peekaboo.app")"
+if printf '%s\n' "$fixture_xattrs" | rg -q ': com\.apple\.(FinderInfo|ResourceFork)$'; then
+  printf 'Fixture app contains disallowed Finder metadata or a resource fork\n' >&2
+  printf '%s\n' "$fixture_xattrs" >&2
+  exit 1
+fi
+
+uv --no-config run \
+  --with 'ds-store==1.3.3' \
+  --with 'mac-alias==2.2.3' \
+  python - "$FIXTURE_MOUNT/.DS_Store" <<'PY'
+from ds_store import DSStore
+import sys
+
+records = {}
+with DSStore.open(sys.argv[1], "r") as store:
+    for entry in store:
+        records[(entry.filename, entry.code)] = entry.value
+
+assert records[(".", b"bwsp")]["WindowBounds"] == "{{200, 120}, {720, 460}}"
+icon_view = records[(".", b"icvp")]
+assert icon_view["backgroundType"] == 2
+assert icon_view["iconSize"] == 128.0
+assert icon_view["textSize"] == 13.0
+assert records[("Peekaboo.app", b"Iloc")] == (180, 230)
+assert records[("Applications", b"Iloc")] == (540, 230)
+PY
+
+hdiutil detach "$FIXTURE_MOUNT" -quiet
+rmdir "$FIXTURE_MOUNT"
+FIXTURE_MOUNT=""
 
 printf 'test-create-release-dmg: ok\n'

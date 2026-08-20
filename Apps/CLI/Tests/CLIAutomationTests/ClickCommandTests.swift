@@ -1,5 +1,6 @@
 import Foundation
 import PeekabooCore
+import PeekabooFoundation
 import Testing
 @testable import PeekabooCLI
 
@@ -23,7 +24,6 @@ struct ClickCommandTests {
             ["click", "--at", "100,200", "--foreground", "--json"],
             services: context.services
         )
-
         #expect(result.exitStatus == 0)
         let calls = await automationState(context) { $0.clickCalls }
         let call = try #require(calls.first)
@@ -136,6 +136,114 @@ struct ClickCommandTests {
     }
 
     @Test
+    func `All conflicting click variants refuse before runtime mutation`() async throws {
+        let variants = ["--double", "--right", "--middle", "--triple", "--long-press"]
+        for first in variants.indices {
+            for second in variants.indices where first < second {
+                let context = await makeContext()
+                let result = try await InProcessCommandRunner.run(
+                    ["click", "--at", "100,200", "--foreground", variants[first], variants[second], "--json"],
+                    services: context.services
+                )
+
+                #expect(result.exitStatus == 1)
+                #expect(result.combinedOutput.contains("mutually exclusive"))
+                #expect(await self.automationState(context) { $0.clickCalls }.isEmpty)
+                #expect(await self.automationState(context) { $0.targetedClickCalls }.isEmpty)
+                #expect(context.snapshots.invalidationCutoffs.isEmpty)
+            }
+        }
+    }
+
+    @Test
+    func `Foreground middle and triple variants forward their exact click types`() async throws {
+        for (flag, expected) in [("--middle", ClickType.middle), ("--triple", .triple)] {
+            let context = await makeContext()
+            let result = try await InProcessCommandRunner.run(
+                ["click", "--at", "100,200", "--foreground", flag, "--json"],
+                services: context.services
+            )
+
+            #expect(result.exitStatus == 0)
+            let call = try #require(await self.automationState(context) { $0.clickCalls.first })
+            #expect(call.clickType == expected)
+            #expect(await self.automationState(context) { $0.targetedClickCalls }.isEmpty)
+        }
+    }
+
+    @Test
+    func `Background middle and triple variants preserve exact snapshot window`() async throws {
+        let application = Self.makeApplication()
+        let selectedWindow = Self.makeWindow(id: 42, title: "Editor", index: 0)
+
+        for (flag, expected) in [("--middle", ClickType.middle), ("--triple", .triple)] {
+            let context = await makeContext(application: application, windows: [selectedWindow])
+            let snapshotId = try await storeSnapshot(
+                element: DetectedElement(
+                    id: "B1",
+                    type: .button,
+                    label: "Target",
+                    bounds: CGRect(x: 20, y: 30, width: 80, height: 30)
+                ),
+                windowID: selectedWindow.windowID,
+                windowTitle: selectedWindow.title,
+                in: context.snapshots
+            )
+            let result = try await InProcessCommandRunner.run(
+                ["click", "--on", "B1", "--snapshot", snapshotId, flag, "--json"],
+                services: context.services
+            )
+
+            #expect(result.exitStatus == 0)
+            let call = try #require(await self.automationState(context) { $0.targetedClickCalls.first })
+            #expect(call.clickType == expected)
+            #expect(call.targetWindowID == selectedWindow.windowID)
+        }
+    }
+
+    @Test
+    func `Background stateless click rejects same ID generation and bounds drift`() async throws {
+        let application = Self.makeApplication()
+        let snapshotWindow = Self.makeWindow(id: 42, title: "Editor", index: 0)
+        let mismatchedWindows = [
+            Self.makeWindow(id: 42, title: "Editor", index: 0, processStartIdentity: 8),
+            Self.makeWindow(
+                id: 42,
+                title: "Editor",
+                index: 0,
+                bounds: CGRect(x: 30, y: 40, width: 400, height: 300)
+            ),
+        ]
+
+        for selectedWindow in mismatchedWindows {
+            let context = await makeContext(application: application, windows: [selectedWindow])
+            let snapshotId = try await storeSnapshot(
+                element: DetectedElement(
+                    id: "B1",
+                    type: .button,
+                    label: "Target",
+                    bounds: CGRect(x: 20, y: 30, width: 80, height: 30)
+                ),
+                windowID: snapshotWindow.windowID,
+                windowTitle: snapshotWindow.title,
+                in: context.snapshots
+            )
+
+            let result = try await InProcessCommandRunner.run(
+                [
+                    "click", "--on", "B1", "--snapshot", snapshotId,
+                    "--window-id", String(selectedWindow.windowID), "--middle", "--json",
+                ],
+                services: context.services
+            )
+
+            #expect(result.exitStatus == 1)
+            #expect(result.combinedOutput.contains("no longer matches"))
+            #expect(await self.automationState(context) { $0.targetedClickCalls }.isEmpty)
+        }
+    }
+
+    @Test
     func `Click command refuses PID only background coordinates without snapshot`() async throws {
         for snapshotArguments in [[], ["--snapshot", ""]] {
             let context = await makeContext()
@@ -172,8 +280,7 @@ struct ClickCommandTests {
             ],
             services: context.services
         )
-
-        #expect(result.exitStatus == 0)
+        #expect(result.exitStatus == 0, "Unexpected click refusal: \(result.combinedOutput)")
         let calls = await automationState(context) { $0.targetedClickCalls }
         let call = try #require(calls.first)
         if case let .coordinates(point) = call.target {
@@ -596,7 +703,7 @@ struct ClickCommandTests {
 
         #expect(result.exitStatus == 1)
         let applications = try #require(context.services.applications as? StubApplicationService)
-        #expect(applications.activateCalls == [application.name])
+        #expect(applications.activateCalls == ["PID:\(application.processIdentifier)"])
         #expect(context.snapshots.invalidationCutoffs.count == 1)
         #expect(await context.snapshots.getMostRecentSnapshot() == nil)
     }
@@ -645,6 +752,12 @@ struct ClickCommandTests {
         windows: [ServiceWindowInfo] = []
     ) async -> TestServicesFactory.AutomationTestContext {
         await MainActor.run {
+            let automation = OutcomeStubAutomationService()
+            automation.actionOutcome = .dispatchedUnverified(
+                delivery: .init(mechanism: .accessibilityAction, mode: .background),
+                evidence: .deliveryAccepted,
+                unitCount: .one
+            )
             let resolvedApplication = application ?? Self.makeApplication()
             let applications = [resolvedApplication]
             var windowsByApp: [String: [ServiceWindowInfo]] = [:]
@@ -654,6 +767,7 @@ struct ClickCommandTests {
                 windowsByApp[bundleIdentifier] = windows
             }
             return TestServicesFactory.makeAutomationTestContext(
+                automation: automation,
                 applications: StubApplicationService(applications: applications, windowsByApp: windowsByApp),
                 windows: StubWindowService(windowsByApp: windowsByApp)
             )
@@ -668,11 +782,30 @@ struct ClickCommandTests {
         in snapshots: StubSnapshotManager
     ) async throws -> String {
         let snapshotId = try await snapshots.createSnapshot()
+        let windowBounds = windowID == nil ? nil : CGRect(x: 10, y: 20, width: 400, height: 300)
         let mutationIdentity: WindowMutationIdentity? = if includeMutationIdentity, let windowID {
             WindowMutationIdentity(
                 windowID: windowID,
                 ownerProcessIdentifier: 12345,
-                ownerProcessStartIdentity: 7
+                ownerProcessStartIdentity: 7,
+                capturedBounds: windowBounds
+            )
+        } else {
+            nil
+        }
+        let captureCoordinateContext: CaptureCoordinateContext? = if let windowID, let windowBounds {
+            CaptureCoordinateContext(
+                metadata: CaptureMetadata(
+                    size: windowBounds.size,
+                    mode: .window,
+                    windowInfo: ServiceWindowInfo(
+                        windowID: windowID,
+                        title: windowTitle ?? "",
+                        bounds: windowBounds,
+                        mutationIdentity: mutationIdentity
+                    )
+                ),
+                referenceID: snapshotId
             )
         } else {
             nil
@@ -691,9 +824,11 @@ struct ClickCommandTests {
                     applicationProcessId: 12345,
                     windowTitle: windowTitle,
                     windowID: windowID,
-                    windowBounds: windowID == nil ? nil : CGRect(x: 10, y: 20, width: 400, height: 300),
+                    windowBounds: windowBounds,
                     windowMutationIdentity: mutationIdentity
-                )
+                ),
+                truncationInfo: nil,
+                captureCoordinateContext: captureCoordinateContext
             )
         )
         try await snapshots.storeDetectionResult(snapshotId: snapshotId, result: detection)
@@ -712,17 +847,24 @@ struct ClickCommandTests {
         )
     }
 
-    private static func makeWindow(id: Int, title: String, index: Int) -> ServiceWindowInfo {
+    private static func makeWindow(
+        id: Int,
+        title: String,
+        index: Int,
+        bounds: CGRect = CGRect(x: 10, y: 20, width: 400, height: 300),
+        processStartIdentity: UInt64 = 7
+    ) -> ServiceWindowInfo {
         ServiceWindowInfo(
             windowID: id,
             title: title,
-            bounds: CGRect(x: 10, y: 20, width: 400, height: 300),
+            bounds: bounds,
             isMainWindow: index == 0,
             index: index,
             mutationIdentity: WindowMutationIdentity(
                 windowID: id,
                 ownerProcessIdentifier: 12345,
-                ownerProcessStartIdentity: 7
+                ownerProcessStartIdentity: processStartIdentity,
+                capturedBounds: bounds
             )
         )
     }
@@ -734,5 +876,30 @@ struct ClickCommandTests {
         await MainActor.run {
             operation(context.automation)
         }
+    }
+}
+
+extension ClickCommandTests {
+    @Test
+    func `background click refuses a fuzzy application selector before dispatch`() async throws {
+        let application = Self.makeApplication()
+        let context = await self.makeContext(application: application)
+        let element = DetectedElement(
+            id: "B1",
+            type: .button,
+            label: "Save",
+            bounds: CGRect(x: 20, y: 30, width: 80, height: 30)
+        )
+        _ = try await self.storeSnapshot(element: element, windowID: 42, in: context.snapshots)
+
+        let result = try await InProcessCommandRunner.run(
+            ["click", "Save", "--app", "Test", "--json"],
+            services: context.services
+        )
+
+        #expect(result.exitStatus == 1)
+        #expect(result.combinedOutput.contains("not allowed for mutation"))
+        #expect(await self.automationState(context) { $0.targetedClickCalls }.isEmpty)
+        #expect(await self.automationState(context) { $0.clickCalls }.isEmpty)
     }
 }

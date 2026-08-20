@@ -57,10 +57,30 @@ var targets: [Target] = [
                 "-Xlinker", "-random_uuid",
             ]),
         ]),
+    .executableTarget(
+        name: "PeekabooCertificationController",
+        dependencies: [
+            .product(name: "PeekabooBridge", package: "PeekabooCore"),
+            .product(name: "PeekabooAutomationKit", package: "PeekabooAutomationKit"),
+            .product(name: "PeekabooFoundation", package: "PeekabooFoundation"),
+        ],
+        path: "Sources/PeekabooCertificationController",
+        swiftSettings: concurrencyBaseSettings,
+        linkerSettings: [
+            .linkedFramework("Security"),
+            .unsafeFlags([
+                "-Xlinker", "-sectcreate",
+                "-Xlinker", "__TEXT",
+                "-Xlinker", "__info_plist",
+                "-Xlinker", infoPlistPath,
+                "-Xlinker", "-random_uuid",
+            ]),
+        ]),
     .testTarget(
         name: "CoreCLITests",
         dependencies: [
             "PeekabooCLI",
+            .product(name: "PeekabooAutomationKit", package: "PeekabooAutomationKit"),
             .product(name: "PeekabooBridgeTestSupport", package: "PeekabooCore"),
             .product(name: "PeekabooAutomationKitTestSupport", package: "PeekabooAutomationKit"),
             .product(name: "PeekabooFoundation", package: "PeekabooFoundation"),
@@ -70,6 +90,9 @@ var targets: [Target] = [
             .product(name: "PeekabooCore", package: "PeekabooCore"),
         ],
         path: "Tests/CoreCLITests",
+        resources: [
+            .copy("Fixtures"),
+        ],
         swiftSettings: swiftTestingSettings),
     .testTarget(
         name: "CLIRuntimeTests",
@@ -80,6 +103,15 @@ var targets: [Target] = [
             .product(name: "Subprocess", package: "swift-subprocess"),
         ],
         path: "Tests/CLIRuntimeTests",
+        swiftSettings: swiftTestingSettings),
+    .testTarget(
+        name: "CertificationControllerTests",
+        dependencies: [
+            "PeekabooCertificationController",
+            .product(name: "PeekabooAutomationKit", package: "PeekabooAutomationKit"),
+            .product(name: "PeekabooFoundation", package: "PeekabooFoundation"),
+        ],
+        path: "Tests/CertificationControllerTests",
         swiftSettings: swiftTestingSettings),
 ]
 
@@ -117,6 +149,9 @@ let package = Package(
         .executable(
             name: "peekaboo",
             targets: ["peekaboo"]),
+        .executable(
+            name: "peekaboo-certification-controller",
+            targets: ["PeekabooCertificationController"]),
     ],
     dependencies: [
         .package(path: "../../Commander"),

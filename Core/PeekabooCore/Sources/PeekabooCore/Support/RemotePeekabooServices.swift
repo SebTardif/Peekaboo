@@ -8,6 +8,7 @@ import PeekabooFoundation
 
 @MainActor
 public final class RemotePeekabooServices: PeekabooServiceProviding {
+    public let executionHost: PeekabooServiceExecutionHost = .remote
     public let logging: any LoggingServiceProtocol
     public let desktopObservation: any DesktopObservationServiceProtocol
     public let screenCapture: any ScreenCaptureServiceProtocol
@@ -41,6 +42,7 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
         targetedTypeUnavailableReason: String? = nil,
         targetedTypeRequiresEventSynthesizingPermission: Bool = false,
         supportsTargetedClicks: Bool = false,
+        supportsStatelessClickVariants: Bool = false,
         targetedClickUnavailableReason: String? = nil,
         targetedClickRequiresEventSynthesizingPermission: Bool = false,
         supportsExactWindowTargetedClicks: Bool = false,
@@ -54,6 +56,7 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
         inspectAccessibilityTreeUnavailableReason: String? = nil,
         supportsExactWindowTargetedKeyboard: Bool = false,
         exactWindowTargetedKeyboardUnavailableReason: String? = nil,
+        supportsExactWindowHeldPointerLifecycle: Bool = false,
         supportsPostEventPermissionRequest: Bool = false,
         supportsElementActions: Bool = false,
         supportsDesktopObservation: Bool = false,
@@ -70,6 +73,7 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
         supportsApplicationRelaunch: Bool = false,
         supportsProcessGenerationPinnedApplicationQuit: Bool = false,
         supportsProcessGenerationPinnedApplicationActivation: Bool = false,
+        supportsProcessGenerationPinnedApplicationHide: Bool = false,
         allowLocalApplicationFallback: Bool = false,
         desktopMutationWatermarkStore: DesktopMutationWatermarkStore? = nil)
     {
@@ -90,7 +94,8 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
             supportsWindowReadiness: supportsApplicationWindowReadiness,
             supportsRelaunch: supportsApplicationRelaunch,
             supportsPinnedQuit: supportsProcessGenerationPinnedApplicationQuit,
-            supportsPinnedActivation: supportsProcessGenerationPinnedApplicationActivation)
+            supportsPinnedActivation: supportsProcessGenerationPinnedApplicationActivation,
+            supportsPinnedHide: supportsProcessGenerationPinnedApplicationHide)
         self.automation = if supportsElementActions {
             RemoteElementActionUIAutomationService(
                 client: client,
@@ -106,6 +111,7 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
                 supportsTargetedClicks: supportsTargetedClicks,
                 supportsProcessGenerationPinnedClicks: supportsProcessGenerationPinnedInteractions &&
                     supportsTargetedClicks,
+                supportsStatelessClickVariants: supportsStatelessClickVariants,
                 targetedClickUnavailableReason: targetedClickUnavailableReason,
                 targetedClickRequiresEventSynthesizingPermission: targetedClickRequiresEventSynthesizingPermission,
                 supportsExactWindowTargetedClicks: supportsExactWindowTargetedClicks,
@@ -113,7 +119,8 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
                 supportsInspectAccessibilityTree: supportsInspectAccessibilityTree,
                 inspectAccessibilityTreeUnavailableReason: inspectAccessibilityTreeUnavailableReason,
                 supportsExactWindowTargetedKeyboard: supportsExactWindowTargetedKeyboard,
-                exactWindowTargetedKeyboardUnavailableReason: exactWindowTargetedKeyboardUnavailableReason)
+                exactWindowTargetedKeyboardUnavailableReason: exactWindowTargetedKeyboardUnavailableReason,
+                supportsExactWindowHeldPointerLifecycle: supportsExactWindowHeldPointerLifecycle)
         } else {
             RemoteUIAutomationService(
                 client: client,
@@ -129,6 +136,7 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
                 supportsTargetedClicks: supportsTargetedClicks,
                 supportsProcessGenerationPinnedClicks: supportsProcessGenerationPinnedInteractions &&
                     supportsTargetedClicks,
+                supportsStatelessClickVariants: supportsStatelessClickVariants,
                 targetedClickUnavailableReason: targetedClickUnavailableReason,
                 targetedClickRequiresEventSynthesizingPermission: targetedClickRequiresEventSynthesizingPermission,
                 supportsExactWindowTargetedClicks: supportsExactWindowTargetedClicks,
@@ -136,7 +144,8 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
                 supportsInspectAccessibilityTree: supportsInspectAccessibilityTree,
                 inspectAccessibilityTreeUnavailableReason: inspectAccessibilityTreeUnavailableReason,
                 supportsExactWindowTargetedKeyboard: supportsExactWindowTargetedKeyboard,
-                exactWindowTargetedKeyboardUnavailableReason: exactWindowTargetedKeyboardUnavailableReason)
+                exactWindowTargetedKeyboardUnavailableReason: exactWindowTargetedKeyboardUnavailableReason,
+                supportsExactWindowHeldPointerLifecycle: supportsExactWindowHeldPointerLifecycle)
         }
         self.windows = RemoteWindowManagementService(
             client: client,
@@ -176,6 +185,7 @@ public final class RemotePeekabooServices: PeekabooServiceProviding {
             exactClick: dialogCapabilities.exactClick,
             exactDismiss: dialogCapabilities.exactDismiss,
             exactInput: dialogCapabilities.exactInput,
+            backgroundExactInput: dialogCapabilities.backgroundExactInput,
             exactForceDismiss: dialogCapabilities.exactForceDismiss,
             legacyInputFocusPolicy: dialogCapabilities.legacyInputFocusPolicy)
         self.dialogs = RemoteDialogService(client: client, capabilities: resolvedDialogCapabilities)

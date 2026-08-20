@@ -57,6 +57,7 @@ struct CommandRuntimeOptions {
     /// Protocol 1.16 carries a process-generation receipt with application quit requests.
     var requiresProcessGenerationPinnedApplicationQuit = false
     var requiresProcessGenerationPinnedApplicationActivation = false
+    var requiresProcessGenerationPinnedApplicationHide = false
     /// Protocol 1.19 carries a process-generation receipt with targeted hotkey requests.
     var requiresProcessGenerationPinnedHotkeys = false
     /// Protocol 1.22 carries a process-generation receipt with targeted typing requests.
@@ -70,6 +71,10 @@ struct CommandRuntimeOptions {
     var requiresCallerDesktopMutationBarrier = false
     var usesPerToolSnapshotInvalidation = false
     var requiresExactWindowTargetedClicks = false
+    /// Protocol 1.30 is required before encoding middle/triple click cases.
+    var requiresStatelessClickVariants = false
+    /// Background middle/triple clicks additionally require exact-window targeted-click support.
+    var requiresBackgroundStatelessClickVariants = false
     var requiresTargetedScroll = false
     var requiresPostEventPermission = false
     var requiresAccessibilityPermission = false
@@ -147,7 +152,7 @@ struct CommandRuntime {
     static let defaultDaemonIdleTimeoutSeconds: TimeInterval = 300
 
     @TaskLocal
-    private static var serviceOverride: PeekabooServices?
+    private static var serviceOverride: (any PeekabooServiceProviding)?
 
     struct Configuration {
         var verbose: Bool
@@ -298,7 +303,7 @@ extension CommandRuntime {
 
     @MainActor
     static func withInjectedServices<T>(
-        _ services: PeekabooServices,
+        _ services: any PeekabooServiceProviding,
         perform operation: () async throws -> T
     ) async rethrows -> T {
         try await self.$serviceOverride.withValue(services) {
@@ -367,6 +372,10 @@ extension CommandRuntime {
 
     static func supportsTargetedClicks(for handshake: PeekabooBridgeHandshakeResponse) -> Bool {
         BridgeCapabilityPolicy.supportsTargetedClicks(for: handshake)
+    }
+
+    static func supportsStatelessClickVariants(for handshake: PeekabooBridgeHandshakeResponse) -> Bool {
+        BridgeCapabilityPolicy.supportsStatelessClickVariants(for: handshake)
     }
 
     static func supportsApplicationLaunchOptions(for handshake: PeekabooBridgeHandshakeResponse) -> Bool {

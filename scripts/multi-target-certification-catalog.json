@@ -1,0 +1,184 @@
+{
+  "version": 2,
+  "certification_kind": "live-physical",
+  "claim_scope": "multi-target-background-with-attributed-foreground-overlap",
+  "minimum_controlled_targets": 2,
+  "protocol": {
+    "host_handshake": {"major": 1, "minor": 30},
+    "receipt_protocol_floor": {"major": 1, "minor": 29},
+    "required_operation": "exactWindowTargetedClick"
+  },
+  "trusted_first_party_validator_team_ids": [
+    "FWJYW4S8P8"
+  ],
+  "trusted_bridge_host_team_ids": [
+    "FWJYW4S8P8"
+  ],
+  "trusted_monitor_team_ids": [
+    "FWJYW4S8P8"
+  ],
+  "trusted_controller_team_ids": [
+    "FWJYW4S8P8"
+  ],
+  "protocol_source": {
+    "commit": "aef709fea3d18f7ca989c3ab6c1a60428f2f3e51",
+    "tree": "2f3bed03cb1fc1538e473dfd4d28c5a98b0dab8d",
+    "peer_binding": "darwin-audit-token-pidversion-euid-cdhash-v1",
+    "operation_semantic_plan_sha256": "651768f4a73176b9ecbbfe71906c2fe380a42603e6c5b32d17efac3c62514989",
+    "operation_receipts_sha256": "46ca46b1ef173237f04b51c8bc7db3a462c482c9f35fca53fe48cc1be1a70630",
+    "operation_receipt_models_sha256": "b107c717066c3521ce3db2315cdd26ada5e36e62174208c9f9bde2d1f954b5f9",
+    "operation_receipt_archive_maintenance_sha256": "5a607e6acbcaaaec9adb6194d99b4e288a3a93de6911ed84a6c43a96d884cec9",
+    "socket_io_sha256": "3cb418a2337b4c6a9da10bd02d06e37ab2adf207b19c9a7bc89d715bda55d37e",
+    "host_clients_sha256": "3a77db2547f4344b0aa4bc1d0fbb2259b2f4a74ffd957b800e987e58c6351f18",
+    "private_archive_sha256": "40ef72a3cf1ce57e8da245b2fa1f620dfa1c3104dff9f9ac1e8d23d3c6a5d039",
+    "bridge_constants_sha256": "82f545dde6f2ef95fbbbed906cc7a4632b1620340eb0bbf283bd1d94f3bfa728",
+    "bridge_models_sha256": "0ba663f685d497c44c878c78cf594d5128be7981a7eb0d58da8b2f531acebe4e",
+    "server_handshake_sha256": "fa0f0b0566105f90e71e758024d69be04ba22e3d016c6de67fe02a8853033c0a",
+    "operation_session_claim_sha256": "28a375031fd0d428a865609577de4f8bf255f171d502bbdd56c17dd7d0fcc348",
+    "server_operation_receipts_sha256": "ee205b5734192552478eaf826295b5d2ac690f8c7a3d4eafe4afc3e3bf28f854",
+    "request_desktop_mutation_sha256": "47c1c350816f8236f82e9a74149139ffc74defef5ab80da214dbbf41416bb867",
+    "bridge_server_sha256": "8ae7f53a27e794b0a5a3faa1eba6e2781fe68411bbe4e73bf4841cd1a29b9b10"
+  },
+  "monitor_source": {
+    "commit": "4a9b3405f542e00b408a5b03f50a8616094648ff",
+    "probe_sha256": "ede864a138f9f292f0ee0287708aff252e7aed0ed4c9c991265f4645aea8e1b1"
+  },
+  "current_build_source": {
+    "kind": "peekaboo-current-build-source",
+    "version": 1,
+    "commit_derivation": "clean-git-head",
+    "controller_source_manifest": [
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/CodeIdentityRunner.swift", "sha256": "dc5dfb5e024198f97afccc30b7d664173bf4e51dad293aee0d1fde504f4f86e2"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ControllerBuildIdentity.swift", "sha256": "c0bb05b3875a634ba686a474958a7ff5443ffadf1ddce1c911298f922a1c305c"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ControllerEvidence.swift", "sha256": "c86d350a8c84736653537d907cd23caff1ae796f59f280f13da7b961b3e61777"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ControllerMain.swift", "sha256": "e6a217e668f0e49be5ca6ba168652d5b35b76db4f95e34087da441fe0dc74aa8"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ControllerPlan.swift", "sha256": "a6f8a7c9ad710d03d13368c37fa5dbded3e5f8d009982b703df22f8217dea54b"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ControllerRunner.swift", "sha256": "d6cc448c0d0c63f76fbc7d5c5c2598159f35dd066dd62685a0baf832c332cbba"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ForegroundSemanticObserver.swift", "sha256": "0605e651f44d05bb79e4f3ae08fad02ea54ded2f640e3beac6a329cbe793cd37"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/HeldPointerPlan.swift", "sha256": "4b3d47a79e160edc9e190cb9c95e38b3f9ffe972b2dfb027cb2f15ec5d624310"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/HeldPointerRunner.swift", "sha256": "2f42bb4346e9b3d9b9ac7e3462611993c2120fc0908af8099519fc79a05397da"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/LiveCertificationBridge.swift", "sha256": "e917930691b696a2228e263971fef31a189d39eae920315e6f34423748c3807b"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/LocalPIDAttestation.swift", "sha256": "cfd0c9c9da937b3abc05a79a6c84c58954c88c88eb0b4fbd270ea6b474b5db31"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/MonitorAttestationRunner.swift", "sha256": "1c5e6d6a0968e2acca14398d0b838a32522dcde43c8a6eaee256b0a164595068"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ObserveOnlyRunner.swift", "sha256": "0dc67e661f1dd5cb783db5084f77684c2dfb7ade65862228f330262596abcac0"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/ObserverPlan.swift", "sha256": "47ef7214b0b6e9892ad4cd3aa1bad9f76f922799395cc9cc569b169e4103b224"},
+      {"path": "Apps/CLI/Sources/PeekabooCertificationController/PrivateArtifacts.swift", "sha256": "bab561a68301c96c6e180a58cd61962e39b983516bf4bda474e5e15ef65fd017"}
+    ],
+    "coordinator": {
+      "path": "scripts/run-live-multi-target-certification.mjs",
+      "sha256": "09b34808bd4dc65490c5f3274f480209407b678bd154232e7bf97e107217faa0"
+    },
+    "receipt_validator": {
+      "path": "Apps/CLI/Sources/PeekabooCLI/Commands/Core/BridgeCommand+Receipt.swift",
+      "sha256": "618b6f18c7d770773e62a879c34e402fbd576ddd1a3ca2ddea01e374fbcb82f8"
+    },
+    "finalizer": {
+      "path": "scripts/finalize-multi-target-certification.mjs",
+      "projection": "normalize-builtin-catalog-sha256-to-zero-v1",
+      "projected_sha256": "58d448ef5eed06c2806f0a8b0b237d9f1e0c002f8a890ba1f019dcd5446e37bf"
+    }
+  },
+  "monitor_contract": {
+    "version": 1,
+    "required_fences": [
+      "baseline-stable",
+      "grant-stable",
+      "operations-start",
+      "operations-complete",
+      "revoke-stable",
+      "final-stable"
+    ],
+    "overlap_slot_ids": [
+      "controller-a-mutation-001",
+      "controller-b-mutation-001"
+    ],
+    "crash_report_prefixes": [
+      "Peekaboo",
+      "PeekabooPlayground",
+      "Playground",
+      "OpenClaw",
+      "peekaboo-certification-controller"
+    ],
+    "physical_input_policy": "mouse-move-observational",
+    "require_foreground_activity": true,
+    "require_distinct_foreground_target": true
+  },
+  "controlled_target_ids": [
+    "target-a",
+    "target-b"
+  ],
+  "slots": [
+    {
+      "slot_id": "controller-a-mutation-001",
+      "kind": "operation",
+      "controller_id": "controller-a",
+      "target_id": "target-a",
+      "operation": "exactWindowTargetedTypeActions",
+      "request_binding_path": ["projectedAction", "_0", "request", "exactWindowTargetedTypeActions", "_0", "snapshotId"],
+      "checkpoint": null
+    },
+    {
+      "slot_id": "controller-b-mutation-001",
+      "kind": "operation",
+      "controller_id": "controller-b",
+      "target_id": "target-b",
+      "operation": "exactWindowTargetedTypeActions",
+      "request_binding_path": ["projectedAction", "_0", "request", "exactWindowTargetedTypeActions", "_0", "snapshotId"],
+      "checkpoint": null
+    },
+    {
+      "slot_id": "controller-a-protocol-130-001",
+      "kind": "operation",
+      "controller_id": "controller-a",
+      "target_id": "target-a",
+      "operation": "exactWindowTargetedClick",
+      "request_binding_path": ["projectedAction", "_0", "request", "targetedClick", "_0", "snapshotId"],
+      "checkpoint": null
+    },
+    {
+      "slot_id": "controller-b-protocol-130-001",
+      "kind": "operation",
+      "controller_id": "controller-b",
+      "target_id": "target-b",
+      "operation": "exactWindowTargetedClick",
+      "request_binding_path": ["projectedAction", "_0", "request", "targetedClick", "_0", "snapshotId"],
+      "checkpoint": null
+    },
+    {
+      "slot_id": "controller-a-checkpoint-001",
+      "kind": "checkpoint",
+      "controller_id": "controller-a",
+      "target_id": "target-a",
+      "operation": "desktopObservation",
+      "request_binding_path": ["desktopObservation", "_0", "output", "snapshotID"],
+      "checkpoint": "post-mutation"
+    },
+    {
+      "slot_id": "controller-b-checkpoint-001",
+      "kind": "checkpoint",
+      "controller_id": "controller-b",
+      "target_id": "target-b",
+      "operation": "desktopObservation",
+      "request_binding_path": ["desktopObservation", "_0", "output", "snapshotID"],
+      "checkpoint": "post-mutation"
+    },
+    {
+      "slot_id": "controller-a-final-bounds",
+      "kind": "checkpoint",
+      "controller_id": "controller-a",
+      "target_id": "target-a",
+      "operation": "desktopObservation",
+      "request_binding_path": ["desktopObservation", "_0", "output", "snapshotID"],
+      "checkpoint": "final-bounds"
+    },
+    {
+      "slot_id": "controller-b-final-bounds",
+      "kind": "checkpoint",
+      "controller_id": "controller-b",
+      "target_id": "target-b",
+      "operation": "desktopObservation",
+      "request_binding_path": ["desktopObservation", "_0", "output", "snapshotID"],
+      "checkpoint": "final-bounds"
+    }
+  ]
+}

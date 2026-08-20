@@ -96,10 +96,12 @@ public enum DesktopTargetIdentityError: LocalizedError, Equatable, Sendable {
     case contradictoryWindowIdentity
     case contradictoryWindowBounds
     case contradictoryFocusedElement
+    case invalidFocusedElement
     case missingProcessGeneration
     case incompleteExactWindow
     case invalidatedSnapshotReceipt
     case invalidSnapshotIdentifier
+    case snapshotSourceMismatch
     case coordinateReferenceMismatch
     case coordinateWindowMismatch
     case coordinateBoundsMismatch
@@ -122,6 +124,8 @@ public enum DesktopTargetIdentityError: LocalizedError, Equatable, Sendable {
             "Target receipt sources contain contradictory exact-window bounds."
         case .contradictoryFocusedElement:
             "Target receipt sources contain contradictory focused-element identities."
+        case .invalidFocusedElement:
+            "Target receipt contains an invalid focused-element identity."
         case .missingProcessGeneration:
             "Target receipt has no process-generation identity."
         case .incompleteExactWindow:
@@ -130,6 +134,8 @@ public enum DesktopTargetIdentityError: LocalizedError, Equatable, Sendable {
             "Snapshot target receipt was invalidated by contradictory or removed metadata."
         case .invalidSnapshotIdentifier:
             "Snapshot identifier must not be empty."
+        case .snapshotSourceMismatch:
+            "Snapshot receipt sources refer to a different snapshot identifier."
         case .coordinateReferenceMismatch:
             "Capture coordinate reference does not identify the selected snapshot."
         case .coordinateWindowMismatch:
@@ -305,6 +311,9 @@ public enum DesktopTargetPlanning {
                     fragment.processIdentity != nil || fragment.windowID != nil || fragment.windowIdentity != nil ||
                     fragment.windowBounds != nil || fragment.focusedElement != nil
 
+                if let incomingProcessIdentifier = fragment.processIdentifier {
+                    try self.requireValidProcessIdentifier(incomingProcessIdentifier)
+                }
                 try self.merge(fragment.processIdentifier, into: &processIdentifier) {
                     .contradictoryProcessIdentifier
                 }
@@ -367,6 +376,9 @@ public enum DesktopTargetPlanning {
             guard resolvedProcessIdentity.processIdentifier > 0 else {
                 throw DesktopTargetIdentityError.invalidProcessIdentifier
             }
+            guard resolvedProcessIdentity.processStartIdentity > 0 else {
+                throw DesktopTargetIdentityError.missingProcessGeneration
+            }
 
             let hasWindowEvidence = windowID != nil || windowIdentity != nil || windowBounds != nil ||
                 focusedElement != nil
@@ -376,7 +388,9 @@ public enum DesktopTargetPlanning {
             guard let windowIdentity,
                   let windowID,
                   let windowBounds,
-                  let capturedBounds = windowIdentity.capturedBounds
+                  let capturedBounds = windowIdentity.capturedBounds,
+                  !windowBounds.isEmpty,
+                  !capturedBounds.isEmpty
             else {
                 throw DesktopTargetIdentityError.incompleteExactWindow
             }
@@ -386,6 +400,11 @@ public enum DesktopTargetPlanning {
             guard capturedBounds == windowBounds else {
                 throw DesktopTargetIdentityError.contradictoryWindowBounds
             }
+            try self.validateFocusedElement(
+                focusedElement,
+                processIdentity: resolvedProcessIdentity,
+                windowID: windowID,
+                windowBounds: windowBounds)
             let exactWindow = try UIAutomationTarget.ExactWindow(
                 processIdentifier: resolvedProcessIdentity.processIdentifier,
                 windowID: windowID,
@@ -417,6 +436,34 @@ public enum DesktopTargetPlanning {
         private static func requireValidWindowIdentifier(_ windowID: Int) throws {
             guard windowID > 0, UInt32(exactly: windowID) != nil else {
                 throw DesktopTargetIdentityError.invalidWindowIdentifier
+            }
+        }
+
+        private static func requireValidProcessIdentifier(_ processIdentifier: Int32) throws {
+            guard processIdentifier > 0 else {
+                throw DesktopTargetIdentityError.invalidProcessIdentifier
+            }
+        }
+
+        private static func validateFocusedElement(
+            _ focusedElement: FocusedElementIdentity?,
+            processIdentity: ApplicationProcessIdentity,
+            windowID: Int,
+            windowBounds: CGRect) throws
+        {
+            guard let focusedElement else { return }
+            guard focusedElement.processIdentifier == processIdentity.processIdentifier,
+                  focusedElement.windowID == windowID
+            else {
+                throw DesktopTargetIdentityError.contradictoryFocusedElement
+            }
+            guard !focusedElement.role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !focusedElement.frame.isEmpty,
+                  windowBounds.contains(CGPoint(
+                      x: focusedElement.frame.midX,
+                      y: focusedElement.frame.midY))
+            else {
+                throw DesktopTargetIdentityError.invalidFocusedElement
             }
         }
     }

@@ -51,13 +51,12 @@ peekaboo see --app Finder --json
 
 That is the core loop: observe the current screen, choose an element from the result, and act on it.
 
-## What's new in 4.0
+## What's new in 4.2
 
-Peekaboo 4 has an exact 33-command root surface, consistent duration and
-coordinate grammar, native `verify` polling, and honest JSON effects after an action request has been
-parsed and classified. Pre-dispatch argument parse/bind failures may omit `effect`. If you have
-existing scripts or agent instructions, use the [Peekaboo 4 migration guide](docs/v4-migration.md)
-for the complete old-to-new command and flag map.
+Peekaboo 4.2 deepens background automation with exact, generation-bound receipts for browser
+connections, dialogs, coordinate snapshots, and opaque web-view scrolling. These protocol upgrades
+keep long-lived Bridge sessions pinned to the process, window, and semantic target they actually
+validated, so stale or ambiguous work fails before dispatch instead of drifting to the active app.
 
 ## Automate an app
 
@@ -69,14 +68,18 @@ peekaboo type "github.com/openclaw/Peekaboo" --app Safari
 peekaboo press Return --app Safari --foreground
 ```
 
-Targeted semantic and typed input uses background delivery when Peekaboo can resolve the process, so the app does not have to become frontmost. Raw `press` chords always require explicit `--foreground`; prefer a semantic action such as `menu click` in background workflows. See the [automation guide](docs/automation.md) for element IDs, coordinates, snapshots, waits, and input behavior.
+Targeted semantic and typed CLI input uses background delivery when Peekaboo can resolve the process, so the app does
+not have to become frontmost. Raw `press` chords can also stay background with a fresh exact non-dialog snapshot
+receipt; app/PID-only, window-selector-only under Agent/MCP policy, and targetless chords require explicit foreground
+consent. Prefer a semantic action such as `menu click` when one exists. See the
+[automation guide](docs/automation.md) for element IDs, coordinates, snapshots, waits, and input behavior.
 
 ## Agent and MCP
 
 The agent combines the same observation and action tools into a natural-language run:
 
 ```sh
-peekaboo agent "Open Safari, go to github.com, and search for Peekaboo"
+peekaboo agent "Open Safari, go to github.com, and search for Peekaboo" --allow-foreground
 ```
 
 Agent runs need a configured model provider. See [agent setup](docs/commands/agent.md) for providers and sessions, or [MCP setup](docs/MCP.md) to expose Peekaboo's tools to another client.

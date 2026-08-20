@@ -94,18 +94,18 @@ struct MCPCommandTests {
         let payload = try JSONDecoder().decode(JSONResponse.self, from: data)
         #expect(payload.success == false)
         #expect(payload.error?.code == ErrorCode.VALIDATION_ERROR.rawValue)
-        #expect(payload.error?.message == "Transport '\(transport)' is not implemented. Use stdio.")
+        #expect(payload.error?.message == "Transport '\(transport)' is not implemented.")
+        #expect(payload.error?.hint == "Use stdio.")
     }
 
     // MARK: - Validation Tests
 
     @Test
-    func `Invalid port number throws error`() throws {
-        #expect(throws: (any Error).self) {
-            try CLIOutputCapture.suppressStderr {
-                _ = try MCPCommand.Serve.parse(["--port=-1"])
-            }
+    func `Reserved port accepts values until a network transport is implemented`() throws {
+        let command = try CLIOutputCapture.suppressStderr {
+            try MCPCommand.Serve.parse(["--port=-1"])
         }
+        #expect(command.port == -1)
     }
 }
 

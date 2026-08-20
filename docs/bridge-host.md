@@ -90,15 +90,29 @@ try await runtime.startChecked()
 The standard assembly uses one durable desktop-mutation watermark with one in-memory snapshot manager, copies retained
 capture artifacts into manager-owned storage, and defaults action-capable input to accessibility-first background
 delivery. Its allowlist is native-only: browser MCP, daemon control, interactive permission prompts, and the legacy
-AppleScript probe cannot be enabled by configuration. The containing app remains responsible for presenting permission
-UI and choosing an app-specific socket path; embedded hosts never compete for Peekaboo.app's socket by default. The
-runtime always advertises the `backgroundBridgeHost` capability; caller-supplied capabilities are additive and cannot
-remove that routing contract.
+AppleScript probe cannot be enabled by configuration. Protocol 1.31 Agent execution is also excluded: the embedded
+native Bridge deliberately has no Agent or provider surface. The containing app remains responsible for presenting
+permission UI and choosing an app-specific socket path; embedded hosts never compete for Peekaboo.app's socket by
+default. The runtime always advertises the `backgroundBridgeHost` capability; caller-supplied capabilities are additive
+and cannot remove that routing contract.
 
 Retain the runtime for the full host lifetime. `startChecked()` returns only after the private UNIX listener is ready,
 and `stopChecked()` waits for non-cooperative in-flight requests to release the socket lease. Concurrent start, stop,
 and restart intents execute in arrival order, so a later stop cannot be undone by an older suspended restart. A failed
 signing-capability registration or bind leaves the runtime stopped and does not publish a partial host.
+
+Native embedding clients that need a split pointer down/up sequence can use
+`ExactWindowHeldPointerLifecycleServiceProtocol`. This API is intentionally absent from the standalone CLI and MCP
+tool catalog. The source-bound `peekaboo-certification-controller --held-pointer-plan` mode exercises this same
+embedding API for physical release qualification; it is not an end-user input command. Create one opaque owner,
+begin with an exact process-generation/window/bounds target and a bounded
+expiry, then release or revoke with the returned opaque hold receipt. Mouse-down retains that exact window's mutation
+lane across calls. A matching release, explicit owner disconnect, caller cancellation, target drift, or watchdog expiry
+wins terminal cleanup exactly once. Mouse-up is sent only while the original process generation remains live; if its
+PID was recycled, cleanup fails with a typed partial outcome instead of targeting the replacement process. Disconnect
+the owner before releasing the embedding client. Terminal results remain available in a bounded replay cache so
+concurrent or retried release/revoke calls return the first result without another mouse-up; idle-owner disconnect
+closes the owner as a signed no-change operation.
 
 Peekaboo.app and the reusable daemon still use the full `PeekabooServices` registry because they also own agent,
 browser, configuration, audio, and visualizer state. A follow-up can make that registry compose this native bundle once
@@ -123,6 +137,9 @@ those app-only services are injected separately; moving them into the embedded r
 - Shutdown removes the socket only when its filesystem identity still matches the listener that created it.
 - Connect, request read, and response write paths are nonblocking and deadline-bound so abandoned clients release their
   connection tasks instead of exhausting the host.
+- Authenticated connections acquire one bounded request admission before the host reads or decodes their body. The
+  default limit is 32 concurrent requests (`maximumConcurrentRequests`), and draining or saturated listeners close the
+  connection without allocating a max-sized JSON payload or invoking the decoder.
 - Listener acceptance is kernel-readiness-driven: one coalesced notification drains the queued connection backlog to
   `EAGAIN`, while source cancellation owns descriptor closure and bounded shutdown waits for queued handlers to drain.
 
@@ -189,6 +206,137 @@ and run its default backend. `auto` remains compatible, and request-scoped selec
 the long-lived daemon's fallback policy.
 
 Protocol `1.22` adds process-generation receipts to process-targeted typing and clicks. Current CLI, Agent, and MCP background input retain the application discovery receipt through Bridge admission and native dispatch. Typing revalidates it before every emitted unit; clicks validate before dispatch and report a retry-unsafe indeterminate outcome if the generation changes after dispatch. Process-targeted Cmd+V uses the generation-pinned hotkey contract introduced in 1.19. New clients refuse older hosts before sending these inputs because an older decoder could otherwise ignore the optional receipt and route input using only a reusable PID. Legacy raw-PID payloads remain decodable for old clients, but current user-facing paths never select them.
+
+Protocol `1.29` adds listener-signed operation receipts without imposing a lifetime request limit on a long-running
+host. The handshake returns a stable ephemeral listener attestation and a peer-bound logical operation-session
+attestation. The session binds the listener, client-instance UUID, exact peer process generation and CDHash, bounded
+request capacity, and optional predecessor session. Protocol 1.28 and older handshakes omit both attestations and keep
+their existing raw, receiptless request/response behavior.
+
+Protocol `1.30` adds separate application and window mutation-inventory requests and responses. These responses carry
+the planner's catalog rows together with explicit `complete` or `partial` state and bounded warnings. The legacy
+`listApplications` and `listWindows` request bytes, response families, operations, and protocol 1.29 receipt contract
+remain unchanged. A client uses the new cases only after negotiating 1.30 plus the `plannerInventoryTransport`
+capability and the corresponding enabled list operation. Otherwise it converts the legacy row array into an explicit
+partial inventory: broad name, title, index, or automatic selection then fails closed, while the planner may still use
+a direct exact-PID or exact-window-ID provider. The selected mutation plan remains local; Bridge transports evidence,
+not a second host-owned selector policy.
+
+Protocol `1.30` also adds the embedding-only exact-window held-pointer lifecycle. The host registers a random bearer
+owner bound to the authenticated Bridge client generation and returns a separate opaque receipt after routing primer
+and mouse-down dispatch. Release, revoke, and disconnect accept only the matching owner and receipt, carry exact target
+and cleanup outcomes through signed operation receipts, and refuse zero-dispatch against protocol 1.29 or older hosts.
+The host retains the exact-window write lane until terminal cleanup; a short watchdog handles expiry, window drift,
+client-generation exit, and target-generation exit without ever posting mouse-up to a recycled PID.
+
+Protocol `1.31` adds the capability-gated `agentExecutionTrace` operation for one long-running, signed background Agent
+execution. It is a single Bridge request from launch through terminal reap, not a prepare/start or other two-call
+lifecycle. The host derives the executable from the exact authenticated Peekaboo CLI peer and accepts only the task and
+bounded coordination inputs. It never accepts an executable path, shell command, AppleScript, JXA, arbitrary arguments,
+or environment overrides. Because the task is carried in `argv`, its UTF-8 encoding is limited to 256 KiB and the host
+also caps the complete argument, environment, terminator, and pointer payload at 512 KiB before `posix_spawn`; this
+retains half of macOS's 1 MiB `ARG_MAX` as headroom instead of exposing a late `E2BIG`. The closed provider environment
+accepts canonical `X_AI_API_KEY` as well as the `XAI_API_KEY` and `GROK_API_KEY` aliases. The child invocation is fixed
+to background-only `agent run --no-cache --bridge-socket
+<serving-host> --json`; there is no foreground-authority flag, session resume, or cache write.
+
+The host creates bounded anonymous stdout and stderr pipes plus separate anonymous lockdown-readiness and release
+pipes. It spawns the exact CLI with `START_SUSPENDED | SETSID`, then sends `SIGCONT` only to enter the CLI's trusted
+earliest gate. Before command routing, that gate requires an untainted non-root process with equal real and effective
+UIDs, irreversibly lowers both soft and hard `RLIMIT_NPROC` to zero, verifies the readback, removes the private gate
+variables, and writes the exact challenge plus EOF to the lockdown pipe. The host requires that readiness before it
+publishes the owner-private coordination file. Only after the connected client acknowledges the locked-down child and
+all identities are revalidated does the host provision the nested operation-receipt directory. Preparation retains a
+nonblocking exclusive lock on the exact owner-private run-root descriptor but creates no directory, so any refusal
+before coordination publication leaves the same root retryable without deleting caller-visible state. After a valid
+acknowledgement, the host creates an unguessable staging directory, binds its descriptor and inode, and atomically
+publishes it at the canonical receipt path immediately before release. A replacement, nonempty entry, symlink, or
+publish race is preserved and refused rather than removed. The host then writes the challenge plus EOF to the release
+pipe. A stray same-user
+`SIGCONT` can therefore start only the fail-closed gate; it cannot authorize Agent command routing.
+
+Hard `RLIMIT_NPROC = 0` is inherited and cannot be raised by the non-root child. It denies `fork`, `vfork`, and ordinary
+`posix_spawn`, while threads, files, provider networking, and nested Bridge sockets remain available. The fresh session
+therefore contains one process for its entire lifetime; the fixed background Agent also exposes no Shell tool. The host
+observes that exact leader with `waitid(..., WNOWAIT)` and reaps it with `waitpid`; cancellation, timeout, and output
+overflow signal only the leader. If the kernel wait anchor is unexpectedly lost, cleanup never signals an unverified
+numeric PID: it uses the retained PID-version audit token for a generation-bound signal and reaps only after the exact
+WNOWAIT child is reacquired. A future Agent tool that needs child processes requires a new protocol policy or a separate
+broker; it must not weaken this launch contract.
+
+The process limit is not rollback for effects already accepted by external apps, launchd, XPC services, or nested
+Bridge tools, and it is not a containment claim for a compromised signed CLI. Those effects remain governed by their
+own exact target, receipt, permission, and retry semantics.
+
+The signed terminal v1 response commits the exact request, process identity, fixed argv, task and closed-environment
+commitments, coordination and acknowledgement bytes plus hashes, complete bounded stdout/stderr bytes plus hashes and
+sizes, exit status or terminating signal, and launch/lockdown/release/terminal-observation timestamps. Its canonical
+`responseSHA256` binds those fields into the protocol 1.29 receipt chain. The hidden qualification adapter writes the
+canonical `PeekabooBridgeOperationReceiptBundle` itself, not a newly encoded semantic response, so its exact canonical
+request/response bytes and listener/session signatures remain independently checkable. The connected listener
+attestation captured during the authenticated handshake remains the external trust anchor; a bundle's self-carried
+listener proves integrity but not provenance by itself. Once the release pipe accepts the complete challenge, losing
+the response is retry-unsafe: callers must not launch the task again speculatively.
+
+The outer orchestration request deliberately takes no desktop-operation lane or mutation watermark. Each nested Agent
+tool call returns through the same host and acquires its own exact-target lane and signed operation receipt, so a
+long-running Agent does not serialize unrelated desktop work. Protocol 1.30 and older hosts, and 1.31 hosts that do not
+advertise and enable `agentExecutionTrace`, refuse before child launch. The CLI adapter for qualification is hidden and
+deliberately omitted from public help and shell completions.
+
+The client does not treat the response-carried, self-signed listener as provenance by itself. It captures the connected
+socket peer's audit token and requires exact PID/PID-version, process-start, live kernel CDHash, Apple-anchored signing
+identity, trusted team membership, and listener-host agreement before installing a 1.29 session. Bundled Peekaboo
+socket paths use the release-team migration allowlist. Custom socket clients must pass `trustedHostTeamIDs`; omitting
+that policy caps the handshake at receiptless protocol 1.28 so an arbitrary same-user Developer ID process cannot
+replace the socket and mint a trusted-looking receipt chain.
+
+Each protocol 1.29 request reserves one decimal-string sequence in its logical session and carries a deterministic
+RFC 9562 version-8 request UUID derived from the full `(session ID, sequence)` tuple. Replay protection retains the
+tuple in a fixed-size bitset and accepts previously unused slots out of order, so concurrent requests do not depend on
+arrival order. A successful terminal response is inseparable from its Ed25519 receipt: it binds the listener and
+session attestations, exact request and response digests, peer identity, canonical target attribution, desktop-action
+outcome when present, remaining session capacity, and timestamps. A missing or invalid receipt invalidates that client
+session. For a mutating operation, losing the response or receipt after dispatch yields an indeterminate,
+retry-unsafe result rather than a speculative retry.
+
+Window and frontmost capture receipts bind the exact process/window identity returned by capture metadata; a missing
+target or a window ID that contradicts the request is rejected. Screen and area captures remain targetless global reads.
+
+Browser execution is bound atomically to the connection receipt observed before dispatch. Protocol 1.29 requires an
+explicit DevTools URL resolved to the complete normalized browser URL, WebSocket debugger URL, DevTools browser ID,
+browser version, protocol version, and channel. Channel auto-connect and isolated-profile children remain functional
+for unbound and protocol 1.28 calls, but are refused for receipt-bound execution until the MCP child can attest its
+actual browser identity. The response carries the same endpoint receipt, and any endpoint or channel drift refuses
+before the first tool call. Browser batches also sign separate completed and dispatched-or-accepted call
+counts. If a later call fails, the typed partial or indeterminate outcome preserves that exact prefix and is
+retry-unsafe, so a client cannot safely replay the whole batch.
+
+The current client renews before consuming the final ordinary slot. A successor handshake names and retires its
+predecessor while leaving already-claimed operations able to finish and sign against their captured session. If a
+previously unclaimed request reaches a retired or exhausted session, the listener returns a separate signed rollover
+refusal. That refusal binds the exact attested request and successor attestation and states
+`mutation_dispatched=false` and `retry_safe=true`. The client verifies every field and signature before installing the
+successor, and automatically retries that request at most once. Claimed-slot replay is rejected rather than converted
+to rollover; an invalid refusal, failed successor installation, or second refusal stops before redispatch. A late
+valid receipt from the predecessor still completes its original caller, but cannot regress the current session budget
+or replace the latest-receipt cache.
+
+The listener archive is private and bounded by listener and logical-session retention, with retired session
+directories quarantined before asynchronous cleanup. `PEEKABOO_OPERATION_RECEIPT_DIRECTORY` optionally exports the
+complete verification bundle for each terminal protocol 1.29 request. The export is sensitive and intended for
+private certification. The Swift `validateIntegrity()` API proves canonical encoding, signature-chain integrity, and
+operation semantics, but not listener provenance: the bundle carries its own self-signed listener. Certification uses
+`validate(trustAnchor:)` with an exact listener attestation, public key, or digest obtained from an independently
+authenticated live handshake. `peekaboo bridge receipt validate` exposes that anchored verification and reports the
+authenticated host source commit and negotiated protocol separately from the protocol-1.29 receipt floor. The live
+multi-target coordinator validates every exported bundle against the exact connected listener before certification.
+
+Protocol 1.29 result validation is driven by one exhaustive semantic plan shared by server finalization and receipt
+verification. It classifies the response family, allowed delivery/mode alternatives, fixed or operation-dependent unit
+counts, allowed terminal states and result values, and whether target evidence must come from the request, response, or
+execution handler. Offline verification therefore never feeds a claimed response-resolved target back into its own
+proof, accepts a success for an error-only protocol 1.29 operation, or permits a prepared-dialog kind/target to drift.
 
 ## Security
 

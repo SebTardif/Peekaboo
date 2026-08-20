@@ -1,5 +1,6 @@
 import CoreGraphics
 import PeekabooAutomationKitTestSupport
+import PeekabooFoundation
 import Testing
 @testable import PeekabooAutomationKit
 
@@ -155,6 +156,57 @@ struct DesktopTargetPlanningTests {
         #expect(try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.resolve([]) == nil)
     }
 
+    @Test(arguments: [Int32.zero, -1])
+    func `process fragments reject invalid identifiers before missing generation`(_ processIdentifier: Int32) {
+        #expect(throws: DesktopTargetIdentityError.invalidProcessIdentifier) {
+            _ = try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.resolve([
+                .init(processIdentifier: processIdentifier),
+            ])
+        }
+    }
+
+    @Test
+    func `zero process generation is rejected`() {
+        #expect(throws: DesktopTargetIdentityError.missingProcessGeneration) {
+            _ = try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.resolve([
+                .init(processIdentity: .init(processIdentifier: 42, processStartIdentity: 0)),
+            ])
+        }
+    }
+
+    @Test
+    func `empty exact window bounds are rejected`() {
+        let identity = WindowMutationIdentity(
+            windowID: 73,
+            ownerProcessIdentifier: 42,
+            ownerProcessStartIdentity: 9,
+            capturedBounds: .zero)
+        #expect(throws: DesktopTargetIdentityError.incompleteExactWindow) {
+            _ = try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.resolve([
+                .init(
+                    processIdentity: identity.processIdentity,
+                    windowID: identity.windowID,
+                    windowIdentity: identity,
+                    windowBounds: .zero),
+            ])
+        }
+    }
+
+    @Test
+    func `malformed focused-element evidence is a typed target attribution error`() {
+        let bounds = CGRect(x: 10, y: 20, width: 640, height: 480)
+        let window = AutomationTestFixtures.windowIdentity(bounds: bounds)
+        let focused = AutomationTestFixtures.focusedElement(
+            role: " ",
+            frame: CGRect(x: 30, y: 40, width: 200, height: 30))
+
+        #expect(throws: DesktopTargetIdentityError.invalidFocusedElement) {
+            _ = try DesktopTargetPlanning.DesktopTargetIdentityCoalescer.resolve([
+                .init(windowIdentity: window, windowBounds: bounds, focusedElement: focused),
+            ])
+        }
+    }
+
     @Test
     func `snapshot receipt preserves sticky invalidation instead of treating it as missing`() throws {
         let receipt = try SnapshotTargetReceipt(
@@ -233,5 +285,80 @@ struct DesktopTargetPlanningTests {
                 viewport: viewport))
 
         #expect(try receipt.requireCoordinateAuthority().sourceBounds == window.bounds)
+    }
+
+    @MainActor
+    @Test
+    func `background keyboard planner preserves a snapshot-only exact target`() async throws {
+        let fixture = AutomationTestFixtures.linkedDesktopTarget(
+            applicationName: "Editor",
+            windowID: 42)
+        let planner = self.backgroundKeyboardPlanner(
+            application: fixture.application,
+            windowInventory: .complete([]))
+
+        let plan = try await planner.plan(
+            selector: InteractionTargetSelector(),
+            snapshotExactWindow: fixture.windowTargetIdentity.exactWindow)
+
+        #expect(plan.target == fixture.windowTargetIdentity.target)
+        #expect(plan.application.processIdentity == fixture.processIdentity)
+        #expect(plan.window == nil)
+    }
+
+    @MainActor
+    @Test
+    func `background keyboard planner selects one exact window only from a complete catalog`() async throws {
+        let fixture = AutomationTestFixtures.linkedDesktopTarget(
+            applicationName: "Editor",
+            windowID: 42)
+        let planner = self.backgroundKeyboardPlanner(
+            application: fixture.application,
+            windowInventory: .complete([fixture.window]))
+
+        let plan = try await planner.plan(
+            selector: InteractionTargetSelector(applicationIdentifier: "Editor"))
+
+        #expect(plan.target == fixture.windowTargetIdentity.target)
+        #expect(plan.window == nil)
+    }
+
+    @MainActor
+    @Test
+    func `background keyboard planner refuses one implicit match from a partial catalog`() async throws {
+        let fixture = AutomationTestFixtures.linkedDesktopTarget(
+            applicationName: "Editor",
+            windowID: 42)
+        let planner = self.backgroundKeyboardPlanner(
+            application: fixture.application,
+            windowInventory: .partial([fixture.window], warnings: ["AX enumeration timed out"]))
+
+        await #expect(throws: DesktopTargetPlanningError.incompleteWindowInventory(
+            selector: "the application's eligible keyboard windows",
+            warnings: ["AX enumeration timed out"]))
+        {
+            _ = try await planner.plan(
+                selector: InteractionTargetSelector(applicationIdentifier: "Editor"))
+        }
+    }
+
+    @MainActor
+    private func backgroundKeyboardPlanner(
+        application: ServiceApplicationInfo,
+        windowInventory: DesktopTargetPlanning.Inventory<ServiceWindowInfo>)
+        -> DesktopTargetPlanning.BackgroundKeyboardTargetPlanner
+    {
+        let applicationPlanner = DesktopTargetPlanning.ApplicationMutationPlanner(
+            inventoryProvider: { .complete([application]) },
+            exactIdentifierProvider: { _ in application })
+        let windowProvider: DesktopTargetPlanning.WindowMutationPlanner.WindowInventoryProvider = { _ in
+            windowInventory
+        }
+        return DesktopTargetPlanning.BackgroundKeyboardTargetPlanner(
+            applicationPlanner: applicationPlanner,
+            windowPlanner: DesktopTargetPlanning.WindowMutationPlanner(
+                applicationPlanner: applicationPlanner,
+                windowInventoryProvider: windowProvider),
+            windowInventoryProvider: windowProvider)
     }
 }

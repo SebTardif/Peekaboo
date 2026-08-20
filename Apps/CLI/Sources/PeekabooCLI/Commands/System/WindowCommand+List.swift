@@ -31,11 +31,22 @@ extension WindowCommand {
                 let appInfo = try await self.services.applications.findApplication(identifier: appIdentifier)
 
                 let target = WindowTarget.application(appIdentifier)
-                let rawWindows = try await WindowServiceBridge.listWindows(
+                let inventory = try await WindowServiceBridge.mutationInventory(
                     windows: self.services.windows,
                     target: target
                 )
+                let rawWindows = inventory.items
                 let windows = ObservationTargetResolver.filteredWindows(from: rawWindows, mode: .list)
+                var outputCompleteness = inventory.completeness
+                var outputWarnings = inventory.warnings
+                let omittedRowCount = rawWindows.count - windows.count
+                if omittedRowCount > 0 {
+                    outputCompleteness = .partial
+                    outputWarnings.append(
+                        "Window list omitted \(omittedRowCount) non-renderable or duplicate inventory " +
+                            "row\(omittedRowCount == 1 ? "" : "s")."
+                    )
+                }
 
                 // Convert ServiceWindowInfo to WindowInfo for consistency
                 let windowInfos = windows.map(WindowInfo.init(serviceWindow:))
@@ -47,11 +58,17 @@ extension WindowCommand {
                         app_name: appInfo.name,
                         bundle_id: appInfo.bundleIdentifier,
                         pid: appInfo.processIdentifier
-                    )
+                    ),
+                    inventory_completeness: outputCompleteness.rawValue,
+                    inventory_warnings: outputWarnings
                 )
 
                 output(data) {
                     print("\(data.target_application_info.app_name) has \(data.windows.count) window(s):")
+
+                    for warning in outputWarnings {
+                        print("Warning: \(warning)")
+                    }
 
                     if self.groupBySpace {
                         // Group windows by space

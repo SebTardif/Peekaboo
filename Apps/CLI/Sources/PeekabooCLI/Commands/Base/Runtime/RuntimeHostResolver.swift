@@ -27,6 +27,7 @@ enum RuntimeHostResolver {
         var deferredScreenCaptureKitSafetyBlocker = false
         var captureEngineSafetyOverride: CaptureEnginePreference?
         var toolCapturePreflightRefusal: MCPToolCapturePreflightRefusal?
+        var handshakeCache: RemoteHandshakeCache?
         if self.requiresCallerLocalModernOwnerClaim(options: options, environment: environment) {
             do {
                 if let owner = try dependencies.inspectScreenCaptureKitOwner(),
@@ -43,10 +44,13 @@ enum RuntimeHostResolver {
         if self.requiresCallerLocalScreenCaptureKitSafetyCheck(options: options, environment: environment) {
             let plan = await dependencies.remoteCandidatePlan(options, environment)
             safetyPlan = plan
+            let resolvedHandshakeCache = RemoteHandshakeCache()
+            handshakeCache = resolvedHandshakeCache
             if let oldHost = try await dependencies.inspectScreenCaptureKitSafety(
                 options,
                 environment,
-                self.screenCaptureKitSafetyCandidates(from: plan)
+                self.screenCaptureKitSafetyCandidates(from: plan),
+                resolvedHandshakeCache
             ) {
                 // The live recorder installs an irreversible process-lifetime tombstone. One
                 // discovered old host therefore blocks every later SCK leaf even if another old
@@ -165,18 +169,13 @@ enum RuntimeHostResolver {
             )
         }
 
-        let identity = PeekabooBridgeClientIdentity(
-            bundleIdentifier: Bundle.main.bundleIdentifier,
-            teamIdentifier: nil,
-            processIdentifier: getpid(),
-            hostname: Host.current().name
-        )
-
+        let resolvedHandshakeCache = handshakeCache ?? RemoteHandshakeCache()
         var resolution = try await self.resolveRemoteRouting(context: RemoteResolutionContext(
             options: options,
             environment: environment,
             candidatePlan: candidatePlan,
-            identity: identity,
+            identity: resolvedHandshakeCache.identity,
+            handshakeCache: resolvedHandshakeCache,
             snapshotInvalidationRemoteSocketPaths: snapshotInvalidationRemoteSocketPaths,
             preferredScreenCaptureKitOwner: preferredScreenCaptureKitOwner,
             makeLocalServices: dependencies.makeLocalServices,
@@ -218,7 +217,8 @@ enum RuntimeHostResolver {
            let oldHost = try await context.inspectScreenCaptureKitSafety(
                options,
                context.environment,
-               candidatePlan.candidates
+               candidatePlan.candidates,
+               context.handshakeCache
            ) {
             context.recordScreenCaptureKitSafetyBlocker(oldHost)
             throw self.ownerCapabilityRefusal(host: oldHost, selectedSocket: explicitSocket)
@@ -227,12 +227,9 @@ enum RuntimeHostResolver {
         if let preferredScreenCaptureKitOwner = context.preferredScreenCaptureKitOwner {
             // An explicit socket remains authoritative: validate only that host against the
             // process-lifetime owner instead of silently rerouting to a different Bridge.
-            if let resolved = try await resolveRemoteServices(
+            if let resolved = try await context.resolveRemoteServices(
                 candidates: ownerAwareCandidates,
-                identity: context.identity,
-                options: options,
                 requiredOwner: preferredScreenCaptureKitOwner,
-                snapshotInvalidationRemoteSocketPaths: snapshotInvalidationRemoteSocketPaths,
                 permissionRejections: &permissionRejections
             ) {
                 return await self.finalizeExactBuildScopedResolution(resolved, candidatePlan: candidatePlan)
@@ -262,12 +259,9 @@ enum RuntimeHostResolver {
                 requiredHostKind: .onDemand,
                 requiresValidatedHistoricalDaemon: false
             )
-            if let resolved = try await resolveRemoteServices(
+            if let resolved = try await context.resolveRemoteServices(
                 candidates: [exactCandidate],
-                identity: context.identity,
-                options: options,
                 requiredProtocolVersion: PeekabooBridgeConstants.protocolVersion,
-                snapshotInvalidationRemoteSocketPaths: snapshotInvalidationRemoteSocketPaths,
                 permissionRejections: &permissionRejections
             ) {
                 return await self.finalizeExactBuildScopedResolution(resolved, candidatePlan: candidatePlan)
@@ -281,28 +275,22 @@ enum RuntimeHostResolver {
                    socketPath: buildScopedDaemonSocketPath,
                    environment: context.environment
                ),
-               let resolved = try await resolveRemoteServices(
+               let resolved = try await context.resolveRemoteServices(
                    candidates: [ImplicitRemoteCandidate(
                        socketPath: resolvedDaemonSocket,
                        requireReusableDaemon: true,
                        requiredHostKind: .onDemand,
                        requiresValidatedHistoricalDaemon: false
                    )],
-                   identity: context.identity,
-                   options: options,
                    requiredProtocolVersion: PeekabooBridgeConstants.protocolVersion,
-                   snapshotInvalidationRemoteSocketPaths: snapshotInvalidationRemoteSocketPaths,
                    permissionRejections: &permissionRejections
                ) {
                 return await self.finalizeExactBuildScopedResolution(resolved, candidatePlan: candidatePlan)
             }
         }
 
-        if let resolved = try await resolveRemoteServices(
+        if let resolved = try await context.resolveRemoteServices(
             candidates: candidatePlan.candidates,
-            identity: context.identity,
-            options: options,
-            snapshotInvalidationRemoteSocketPaths: snapshotInvalidationRemoteSocketPaths,
             permissionRejections: &permissionRejections
         ) {
             return await self.finalizeExactBuildScopedResolution(resolved, candidatePlan: candidatePlan)
@@ -310,6 +298,7 @@ enum RuntimeHostResolver {
 
         if let explicitSocket,
            !options.permitsExplicitSocketDiagnosticFallback,
+           options.requiresStatelessClickVariants ||
            self.requiredHostFailure(explicitSocket: explicitSocket, options: options) == nil {
             throw BridgeExplicitSocketUnavailableError(
                 socketPath: NSString(string: explicitSocket).standardizingPath
@@ -329,16 +318,13 @@ enum RuntimeHostResolver {
                 socketPath: autoStartSocketPath,
                 environment: context.environment
             ),
-                let resolved = try await resolveRemoteServices(
+                let resolved = try await context.resolveRemoteServices(
                     candidates: [ImplicitRemoteCandidate(
                         socketPath: resolvedDaemonSocket,
                         requireReusableDaemon: true,
                         requiredHostKind: nil,
                         requiresValidatedHistoricalDaemon: false
                     )],
-                    identity: context.identity,
-                    options: options,
-                    snapshotInvalidationRemoteSocketPaths: snapshotInvalidationRemoteSocketPaths,
                     permissionRejections: &permissionRejections
                 ) {
                 return await self.finalizeExactBuildScopedResolution(resolved, candidatePlan: candidatePlan)
@@ -382,6 +368,14 @@ enum RuntimeHostResolver {
     }
 
     static func requiredHostFailure(explicitSocket: String?, options: CommandRuntimeOptions) -> String? {
+        if options.requiresStatelessClickVariants {
+            if !options.requiresBackgroundStatelessClickVariants {
+                return "No compatible Bridge host negotiates protocol 1.30 middle/triple-click payloads. " +
+                    "Update and relaunch Peekaboo before retrying."
+            }
+            return "No compatible Bridge host advertises protocol 1.30 middle/triple-click support. " +
+                "Update and relaunch Peekaboo on the selected host, or pass --no-remote to run locally."
+        }
         if options.requiresDesktopObservationOCR {
             return "No compatible Bridge host advertises desktopObservationOCR. Update and relaunch Peekaboo " +
                 "on the selected host, or pass --no-remote to explicitly run Vision OCR in the caller process."
@@ -668,18 +662,25 @@ enum RuntimeHostResolver {
         requiredOwner: ScreenCaptureKitOwnerLease.OwnerReceipt? = nil,
         snapshotInvalidationRemoteSocketPaths: [String],
         permissionRejections: inout [String],
-        handshake: ScreenCaptureKitHandshake? = nil
+        handshake: ScreenCaptureKitHandshake? = nil,
+        handshakeCache: RemoteHandshakeCache? = nil
     )
     async throws -> Resolution? {
         for candidate in candidates {
             try Task.checkCancellation()
             let socketPath = candidate.socketPath
-            let client = PeekabooBridgeClient(socketPath: socketPath)
             do {
-                let handshakeResponse = if let handshake {
-                    try await handshake(candidate, identity)
+                let client: PeekabooBridgeClient
+                let handshakeResponse: PeekabooBridgeHandshakeResponse
+                if let handshake {
+                    client = PeekabooBridgeClient(socketPath: socketPath)
+                    handshakeResponse = try await handshake(candidate, identity)
+                } else if let cached = handshakeCache?.entry(for: candidate, identity: identity) {
+                    client = cached.client
+                    handshakeResponse = cached.response
                 } else {
-                    try await client.handshake(client: identity, requestedHost: nil)
+                    client = PeekabooBridgeClient(socketPath: socketPath)
+                    handshakeResponse = try await client.handshake(client: identity, requestedHost: nil)
                 }
                 try Task.checkCancellation()
                 let validation = await self.validateRemoteCandidate(
@@ -744,42 +745,13 @@ enum RuntimeHostResolver {
             await DaemonControlClient(socketPath: socketPath).fetchReusableDaemonStatus()
         }
     ) async -> RemoteCandidateValidation? {
-        guard requiredProtocolVersion == nil || handshake.negotiatedVersion == requiredProtocolVersion else {
-            return nil
-        }
-        guard candidate.requiredHostKind == nil || handshake.hostKind == candidate.requiredHostKind else {
-            return nil
-        }
-        guard BridgeCapabilityPolicy.supportsRemoteRequirements(for: handshake, options: options) else {
-            return nil
-        }
-
-        let requiresReusableHost = candidate.requireReusableDaemon ||
-            options.requiresApplicationRelaunch ||
-            options.requiresSurvivingApplicationHost
-        let reusableDaemonStatus: PeekabooDaemonStatus? = if requiresReusableHost {
-            await fetchReusableDaemonStatus(candidate.socketPath)
-        } else {
-            nil
-        }
-        guard !requiresReusableHost || reusableDaemonStatus != nil else { return nil }
-
-        if candidate.requiresValidatedHistoricalDaemon {
-            guard let reusableDaemonStatus,
-                  DaemonControlResolver.isValidatedHistoricalTarget(
-                      status: reusableDaemonStatus,
-                      socketPath: candidate.socketPath
-                  ),
-                  DaemonControlPlanner.supportsCurrentDaemon(reusableDaemonStatus)
-            else {
-                return nil
-            }
-        }
-        if options.requiresApplicationRelaunch || options.requiresSurvivingApplicationHost,
-           reusableDaemonStatus?.pid == nil {
-            return nil
-        }
-        return RemoteCandidateValidation(reusableDaemonStatus: reusableDaemonStatus)
+        await self.evaluateRemoteCandidate(
+            candidate,
+            handshake: handshake,
+            options: options,
+            requiredProtocolVersion: requiredProtocolVersion,
+            fetchReusableDaemonStatus: fetchReusableDaemonStatus
+        ).validation
     }
 
     static func remoteServices(
@@ -808,6 +780,7 @@ enum RuntimeHostResolver {
             targetedTypeUnavailableReason: targetedType.unavailableReason,
             targetedTypeRequiresEventSynthesizingPermission: targetedType.missingPermissions.contains(.postEvent),
             supportsTargetedClicks: targetedClick.isEnabled,
+            supportsStatelessClickVariants: BridgeCapabilityPolicy.supportsStatelessClickVariants(for: handshake),
             targetedClickUnavailableReason: targetedClick.unavailableReason,
             targetedClickRequiresEventSynthesizingPermission: targetedClick.missingPermissions.contains(.postEvent),
             supportsExactWindowTargetedClicks: BridgeCapabilityPolicy.supportsExactWindowTargetedClicks(for: handshake),
@@ -824,6 +797,8 @@ enum RuntimeHostResolver {
             exactWindowTargetedKeyboardUnavailableReason: supportsExactKeyboard
                 ? nil
                 : "Bridge host lacks atomic exact-window keyboard delivery",
+            supportsExactWindowHeldPointerLifecycle:
+            BridgeCapabilityPolicy.supportsExactWindowHeldPointerLifecycle(for: handshake),
             supportsPostEventPermissionRequest: BridgeCapabilityPolicy.supportsPostEventPermissionRequest(
                 for: handshake
             ),
@@ -853,6 +828,8 @@ enum RuntimeHostResolver {
             BridgeCapabilityPolicy.supportsProcessGenerationPinnedApplicationQuit(for: handshake),
             supportsProcessGenerationPinnedApplicationActivation:
             BridgeCapabilityPolicy.supportsProcessGenerationPinnedApplicationActivation(for: handshake),
+            supportsProcessGenerationPinnedApplicationHide:
+            BridgeCapabilityPolicy.supportsProcessGenerationPinnedApplicationHide(for: handshake),
             allowLocalApplicationFallback: handshake.hostKind == .onDemand,
             desktopMutationWatermarkStore: DesktopMutationWatermarkStore()
         )

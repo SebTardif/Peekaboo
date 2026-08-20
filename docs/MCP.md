@@ -220,9 +220,23 @@ moved-window, owner-changed, or process-generation-changed references fail befor
 coordinates remain snapshot-free only with explicit `foreground: true` (or the deprecated `background: false` inverse
 alias); either reference opts into capture-context and live-target validation even when `coordinate_space` is omitted.
 
-Background right- and double-clicks use exact PID/window-routed native events without activating the app or moving the physical cursor. Every event revalidates the window owner, process generation, and bounds. Since macOS provides no application-level acknowledgment for routed pointer events, successful dispatch responses include `verified: false` and `effect: "unverifiable"`; an unprovable or changed route is refused rather than redirected through the desktop-global event tap.
+The `double`, `triple`, `right`, and `middle` click booleans are mutually exclusive; conflicts are rejected before snapshot lookup or dispatch. Background right-, double-, middle-, and triple-clicks use exact PID/window-routed native events without activating the app or moving the physical cursor. Middle/triple require a fresh exact-window snapshot, Event Synthesizing permission, Bridge protocol 1.30, and the `statelessClickVariants` capability; older hosts are refused before the request is encoded. Every event revalidates the normal-layer window owner, process generation, bounds, and point. Since macOS provides no application-level acknowledgment for routed pointer events, successful dispatch responses include `verified: false` and `effect: "unverifiable"`; canonical metadata retains `click_type`, exact target identity/receipt, and three dispatched units for middle or seven for triple. An unprovable or changed route is refused rather than redirected through the desktop-global event tap.
 
-Process-targeted MCP `type`, `paste`, and element `click` calls retain one application process-generation receipt instead of relying on a reusable numeric PID. Type/paste validate before each emitted unit and clicks validate around dispatch. Public raw `press` requires `foreground: true`; omitting it returns a retry-safe pre-dispatch refusal. MCP and Agent runtime selection require Bridge protocol 1.22 for process-only typed routes; older hosts are rejected before input rather than being allowed to ignore the receipt.
+Default background-only MCP/Agent `type` requires an explicit fresh exact non-dialog snapshot receipt; an optional
+element ID must come from that snapshot. Snapshot typing cannot include competing app, PID, or window selectors;
+implicit-latest, selector-only, and targetless forms are refused before dispatch. Direct CLI and explicitly
+foreground-capable runtimes retain their documented process-targeted typing routes.
+
+Background-only raw `press` likewise requires an explicit fresh exact non-dialog snapshot. App/PID-only,
+window-selector-only, targetless, and foreground forms are refused by policy before dispatch. The exact target and
+focused element are revalidated for every chord, but macOS does not acknowledge semantic effect; observe that target
+again before another mutation. Direct CLI callers may also use its documented exact-window selector form.
+
+Process-targeted MCP `paste` and element `click` calls retain one application process-generation receipt instead of
+relying on a reusable numeric PID. Paste validates before each emitted unit and clicks validate around dispatch. MCP
+and Agent foreground-capable or embedded runtimes require Bridge protocol 1.22 for process-only typed routes; default
+background MCP/Agent never selects that route. Older hosts are rejected before input rather than being allowed to
+ignore the receipt.
 
 The MCP `paste` tool also keeps window selectors exact in background mode. With `window_id`, `window_title`, or
 `window_index`, it resolves one window and carries that window's ID, owner PID, and bounds into the atomic keyboard
@@ -237,6 +251,10 @@ exact-window capability before clipboard mutation or Cmd+V dispatch, then return
 may-have-pasted result because macOS does not acknowledge receiver consumption.
 
 Pointer tools use an explicit interruption policy. `scroll` is background-safe only when `on` identifies an Accessibility-scrollable element or a pixel-backed opaque group in a fresh exact-window snapshot of a visible WebKit-linked app. The latter uses PID-routed wheel events, reports an unverifiable retry-unsafe effect, and refuses Electron/Chromium/Catalyst or stale targets instead of falling back to the shared cursor. Set `foreground: true` for targetless, smooth, or delayed scrolling. `move` and `drag` always manipulate the shared physical cursor, require `foreground: true`, and abort if a requested target cannot be focused. MCP schemas intentionally omit background/auto-focus fields for those global pointer tools.
+
+Background process mutations resolve application selectors through the complete mutation inventory before rewriting them to a generation-pinned PID. Exact case-insensitive names, exact bundle IDs, and explicit PIDs are accepted; fuzzy partial application names are refused before the tool leaf runs. Read-only application/window discovery keeps its fuzzy compatibility behavior.
+
+MCP `menu` foreground click and list plan one exact application/window authority before focus. Path and named clicks carry that PID and process generation through dispatch, while foreground listing rejects a returned menu tree whose owner generation changed. If menu access fails after focus, the response retains the focus outcome and exact window receipt. Background menu listing remains read-only and keeps fuzzy selector compatibility.
 
 ```json
 {

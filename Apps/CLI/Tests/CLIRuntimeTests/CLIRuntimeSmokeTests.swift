@@ -517,29 +517,44 @@ struct CLIRuntimeSmokeTests {
     func `peekaboo agent dry run is explicit for shorthand and run JSON`() async throws {
         guard Self.ensureLocalRuntimeAvailable() else { return }
 
+        let authorityCases: [(arguments: [String], requestedForeground: Bool, policy: String)] = [
+            (arguments: [], requestedForeground: false, policy: "background_only"),
+            (
+                arguments: ["--allow-foreground"],
+                requestedForeground: true,
+                policy: "foreground_allowed"
+            ),
+        ]
         for prefix in [["agent"], ["agent", "run"]] {
-            let arguments = prefix + ["  Inspect TextEdit  ", "--dry-run", "--json", "--no-remote"]
-            let result = try await TestChildProcess.runPeekaboo(arguments)
-            let repeated = try await TestChildProcess.runPeekaboo(arguments)
-            #expect(result.status == .exited(0))
-            #expect(result.standardError.isEmpty)
-            #expect(repeated.status == .exited(0))
-            #expect(repeated.standardError.isEmpty)
-            #expect(result.standardOutput == repeated.standardOutput)
+            for authorityCase in authorityCases {
+                let arguments = prefix + ["  Inspect TextEdit  ", "--dry-run", "--json", "--no-remote"] +
+                    authorityCase.arguments
+                let result = try await TestChildProcess.runPeekaboo(arguments)
+                let repeated = try await TestChildProcess.runPeekaboo(arguments)
+                #expect(result.status == .exited(0))
+                #expect(result.standardError.isEmpty)
+                #expect(repeated.status == .exited(0))
+                #expect(repeated.standardError.isEmpty)
+                #expect(result.standardOutput == repeated.standardOutput)
 
-            let response = try #require(
-                JSONSerialization.jsonObject(with: Data(result.standardOutput.utf8)) as? [String: Any]
-            )
-            let payload = try #require(response["result"] as? [String: Any])
-            let trace = try #require(payload["executionTrace"] as? [String: Any])
-            #expect(response["success"] as? Bool == true)
-            #expect(payload["dryRun"] as? Bool == true)
-            #expect(payload["instruction"] as? String == "Inspect TextEdit")
-            #expect(payload["modelExecution"] as? String == "skipped")
-            #expect((payload["toolCalls"] as? [Any])?.isEmpty == true)
-            #expect((trace["entries"] as? [Any])?.isEmpty == true)
-            #expect(trace["totalCallCount"] as? Int == 0)
-            #expect(payload["sessionId"] is NSNull)
+                let response = try #require(
+                    JSONSerialization.jsonObject(with: Data(result.standardOutput.utf8)) as? [String: Any]
+                )
+                let payload = try #require(response["result"] as? [String: Any])
+                let trace = try #require(payload["executionTrace"] as? [String: Any])
+                let authority = try #require(payload["uiAuthority"] as? [String: Any])
+                #expect(response["success"] as? Bool == true)
+                #expect(payload["dryRun"] as? Bool == true)
+                #expect(payload["instruction"] as? String == "Inspect TextEdit")
+                #expect(payload["modelExecution"] as? String == "skipped")
+                #expect((payload["toolCalls"] as? [Any])?.isEmpty == true)
+                #expect((trace["entries"] as? [Any])?.isEmpty == true)
+                #expect(trace["totalCallCount"] as? Int == 0)
+                #expect(payload["sessionId"] is NSNull)
+                #expect(authority["requestedForeground"] as? Bool == authorityCase.requestedForeground)
+                #expect(authority["effectivePolicy"] as? String == authorityCase.policy)
+                #expect(authority["backgroundOnly"] as? Bool == !authorityCase.requestedForeground)
+            }
         }
     }
 
@@ -547,20 +562,29 @@ struct CLIRuntimeSmokeTests {
     func `peekaboo agent dry run is explicit for shorthand and run human output`() async throws {
         guard Self.ensureLocalRuntimeAvailable() else { return }
 
+        let authorityCases: [(arguments: [String], requested: String, policy: String)] = [
+            (arguments: [], requested: "no", policy: "background_only"),
+            (arguments: ["--allow-foreground"], requested: "yes", policy: "foreground_allowed"),
+        ]
         for prefix in [["agent"], ["agent", "run"]] {
-            let result = try await TestChildProcess.runPeekaboo(
-                prefix + ["  Inspect TextEdit  ", "--dry-run", "--simple", "--no-remote"]
-            )
-            #expect(result.status == .exited(0))
-            #expect(result.standardError.isEmpty)
-            #expect(result.standardOutput == """
-            Dry run preview
-            Instruction: Inspect TextEdit
-            Model execution: skipped
-            Tool calls: 0
-            Session saved: no
+            for authorityCase in authorityCases {
+                let result = try await TestChildProcess.runPeekaboo(
+                    prefix + ["  Inspect TextEdit  ", "--dry-run", "--simple", "--no-remote"] +
+                        authorityCase.arguments
+                )
+                #expect(result.status == .exited(0))
+                #expect(result.standardError.isEmpty)
+                #expect(result.standardOutput == """
+                Dry run preview
+                Instruction: Inspect TextEdit
+                Requested foreground UI: \(authorityCase.requested)
+                Effective UI authority: \(authorityCase.policy)
+                Model execution: skipped
+                Tool calls: 0
+                Session saved: no
 
-            """)
+                """)
+            }
         }
     }
 
@@ -578,9 +602,12 @@ struct CLIRuntimeSmokeTests {
                 JSONSerialization.jsonObject(with: Data(jsonResult.standardOutput.utf8)) as? [String: Any]
             )
             let error = try #require(response["error"] as? [String: Any])
+            let debugLogs = response["debug_logs"] as? [String] ?? []
             #expect(response["success"] as? Bool == false)
             #expect(error["code"] as? String == "VALIDATION_ERROR")
             #expect((error["message"] as? String)?.contains("Task argument is required for --dry-run.") == true)
+            #expect(!debugLogs.contains { $0.contains("Runtime host:") })
+            #expect(!jsonResult.standardOutput.contains("Runtime host:"))
 
             let humanResult = try await TestChildProcess.runPeekaboo(
                 prefix + ["--dry-run", "--simple", "--no-remote"]
@@ -588,6 +615,7 @@ struct CLIRuntimeSmokeTests {
             #expect(humanResult.status == .exited(1))
             #expect(humanResult.standardOutput.isEmpty)
             #expect(humanResult.standardError.contains("Task argument is required for --dry-run."))
+            #expect(!humanResult.standardError.contains("Runtime host:"))
         }
     }
 

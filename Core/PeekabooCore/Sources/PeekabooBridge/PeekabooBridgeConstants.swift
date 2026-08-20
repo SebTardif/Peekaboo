@@ -2,6 +2,7 @@ import Foundation
 
 public enum PeekabooBridgeConstants {
     public static let socketName = "bridge.sock"
+    public static let cliBundleIdentifier = "boo.peekaboo.peekaboo"
 
     /// Release identities accepted during the OpenClaw Foundation signing migration.
     /// Keep the legacy team while standalone CLIs must interoperate with pre-3.8 GUI hosts.
@@ -27,8 +28,65 @@ public enum PeekabooBridgeConstants {
         self.applicationSupportSocketPath(appDirectoryName: "clawdbot", socketName: self.socketName)
     }
 
+    /// Default host-signing policy for sockets owned by bundled Peekaboo runtimes.
+    ///
+    /// Arbitrary socket paths deliberately return `nil`: protocol 1.29 callers must name the
+    /// teams they trust instead of treating possession of a per-user filesystem path as host
+    /// authentication.
+    public static func defaultTrustedHostTeamIDs(socketPath: String) -> Set<String>? {
+        let standardized = NSString(string: socketPath).standardizingPath
+        let exactPaths = [
+            self.peekabooSocketPath,
+            self.daemonSocketPath,
+            self.claudeSocketPath,
+            self.clawdbotSocketPath,
+        ].map { NSString(string: $0).standardizingPath }
+        if exactPaths.contains(standardized) {
+            return self.trustedReleaseTeamIDs
+        }
+
+        let url = URL(fileURLWithPath: standardized)
+        let daemonDirectory = URL(fileURLWithPath: self.daemonSocketPath)
+            .deletingLastPathComponent().standardizedFileURL.path
+        let filename = url.lastPathComponent
+        let prefix = "daemon-"
+        let suffix = ".sock"
+        guard url.deletingLastPathComponent().standardizedFileURL.path == daemonDirectory,
+              filename.hasPrefix(prefix),
+              filename.hasSuffix(suffix)
+        else { return nil }
+        let hashStart = filename.index(filename.startIndex, offsetBy: prefix.count)
+        let hashEnd = filename.index(filename.endIndex, offsetBy: -suffix.count)
+        let hash = filename[hashStart..<hashEnd]
+        guard hash.count == 16,
+              hash.allSatisfy(\.isHexDigit)
+        else { return nil }
+        return self.trustedReleaseTeamIDs
+    }
+
     /// Current protocol version supported by this build.
-    public static let protocolVersion = PeekabooBridgeProtocolVersion(major: 1, minor: 28)
+    public static let protocolVersion = PeekabooBridgeProtocolVersion(major: 1, minor: 31)
+
+    /// First protocol whose Bridge can launch the exact authenticated CLI peer as a suspended
+    /// background Agent and return one listener-signed terminal execution trace.
+    public static let agentExecutionTraceVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 31)
+
+    /// First protocol that transports mutation-planner inventories with explicit completeness evidence.
+    public static let plannerInventoryTransportVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 30)
+
+    /// First protocol with owner-scoped exact-window held-pointer lifecycles.
+    public static let exactWindowHeldPointerLifecycleVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 30)
+
+    /// First protocol whose click payload can carry stateless middle- and triple-click variants.
+    public static let statelessClickVariantVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 30)
+
+    /// First protocol with listener-bound, signed per-operation receipts.
+    public static let attestedOperationReceiptVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 29)
 
     /// First protocol with atomic host-side execution of an exact dialog input request.
     public static let exactDialogInputExecutionVersion =
@@ -79,6 +137,10 @@ public enum PeekabooBridgeConstants {
     /// First protocol that carries an application process-generation receipt with quit requests.
     public static let processGenerationPinnedApplicationQuitVersion =
         PeekabooBridgeProtocolVersion(major: 1, minor: 16)
+
+    /// First protocol that signs caller-pinned application hide requests and results.
+    public static let processGenerationPinnedApplicationHideVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 29)
 
     /// First protocol that carries a process-generation receipt with targeted hotkey requests.
     public static let processGenerationPinnedHotkeyVersion =

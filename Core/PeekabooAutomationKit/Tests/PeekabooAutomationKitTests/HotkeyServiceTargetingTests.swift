@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Darwin
+import os
 import PeekabooAutomationKitTestSupport
 import PeekabooFoundation
 import Testing
@@ -257,6 +258,195 @@ struct HotkeyServiceTargetingTests {
         #expect(postedEvents.allSatisfy { $0.pid == getpid() })
     }
 
+    @Test func `exact window held hotkey reports cleanup units`() async throws {
+        var postedEvents: [CGEventType] = []
+        let identity = ApplicationProcessIdentity(
+            processIdentifier: getpid(),
+            processStartIdentity: 700)
+        let service = HotkeyService(
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            postEventAccessEvaluator: { true },
+            eventPoster: { event, _ in postedEvents.append(event.type) },
+            processStartIdentityProvider: { _ in 700 },
+            holdSleeper: { _ in })
+        let target = try UIAutomationTarget.exactWindow(.init(
+            identity: WindowMutationIdentity(
+                windowID: 42,
+                ownerProcessIdentifier: identity.processIdentifier,
+                ownerProcessStartIdentity: identity.processStartIdentity),
+            bounds: CGRect(x: 0, y: 0, width: 100, height: 100)))
+
+        let result = try await service.hotkey(
+            keys: "cmd,l",
+            holdDuration: 50,
+            automationTarget: target)
+
+        #expect(postedEvents == [.flagsChanged, .keyDown, .keyUp, .flagsChanged])
+        #expect(result.outcome.dispatchState.unitCount?.rawValue == 4)
+        #expect(result.outcome.delivery == .init(mechanism: .windowTargetedEvents, mode: .background))
+    }
+
+    @Test func `cancelling exact window hold releases only to original generation and counts cleanup`() async throws {
+        var postedEvents: [CGEventType] = []
+        let target = try self.heldHotkeyTarget(generation: 701)
+        let service = HotkeyService(
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            postEventAccessEvaluator: { true },
+            eventPoster: { event, _ in postedEvents.append(event.type) },
+            processStartIdentityProvider: { _ in 701 },
+            holdSleeper: { _ in try await Task.sleep(for: .seconds(30)) })
+        let task = Task { @MainActor in
+            try await service.hotkey(
+                keys: "cmd,l",
+                holdDuration: 30000,
+                automationTarget: target)
+        }
+        while postedEvents.count < 2 {
+            await Task.yield()
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected held hotkey cancellation to be retry-unsafe")
+        } catch let error as InputDeliveryIndeterminateError {
+            #expect(error.emittedUnitCount == 4)
+            #expect(error.causeDescription?.contains("released to the original process generation") == true)
+        }
+        #expect(postedEvents == [.flagsChanged, .keyDown, .keyUp, .flagsChanged])
+    }
+
+    @Test func `recycled PID receives no held hotkey cleanup`() async throws {
+        var postedEvents: [CGEventType] = []
+        let generation = OSAllocatedUnfairLock<UInt64?>(initialState: 702)
+        let target = try self.heldHotkeyTarget(generation: 702)
+        let service = HotkeyService(
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            postEventAccessEvaluator: { true },
+            eventPoster: { event, _ in
+                postedEvents.append(event.type)
+                if event.type == .keyDown {
+                    generation.withLock { $0 = 703 }
+                }
+            },
+            processStartIdentityProvider: { _ in generation.withLock { $0 } },
+            holdSleeper: { _ in throw CancellationError() })
+
+        do {
+            _ = try await service.hotkey(
+                keys: "cmd,l",
+                holdDuration: 50,
+                automationTarget: target)
+            Issue.record("Expected recycled PID cleanup refusal")
+        } catch let error as InputDeliveryIndeterminateError {
+            #expect(error.emittedUnitCount == 2)
+            #expect(error.causeDescription?.contains("recycled PID") == true)
+        }
+        #expect(postedEvents == [.flagsChanged, .keyDown])
+    }
+
+    @Test func `PID recycle between held modifier downs blocks later modifier and cleanup`() async throws {
+        var delayCount = 0
+        var postedEvents: [(type: CGEventType, keyCode: Int64)] = []
+        let generation = OSAllocatedUnfairLock<UInt64?>(initialState: 706)
+        let target = try self.heldHotkeyTarget(generation: 706)
+        let service = HotkeyService(
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            postEventAccessEvaluator: { true },
+            eventPoster: { event, _ in
+                postedEvents.append((
+                    event.type,
+                    event.getIntegerValueField(.keyboardEventKeycode)))
+            },
+            processStartIdentityProvider: { _ in generation.withLock { $0 } },
+            holdSleeper: { _ in },
+            heldInterEventDelay: {
+                delayCount += 1
+                if delayCount == 1 {
+                    generation.withLock { $0 = 707 }
+                }
+            })
+
+        do {
+            _ = try await service.hotkey(
+                keys: "cmd,shift,l",
+                holdDuration: 50,
+                automationTarget: target)
+            Issue.record("Expected modifier-down generation drift")
+        } catch let error as InputDeliveryIndeterminateError {
+            #expect(error.emittedUnitCount == 1)
+            #expect(error.causeDescription?.contains("recycled PID") == true)
+        }
+
+        #expect(postedEvents.map(\.type) == [.flagsChanged])
+        #expect(postedEvents.map(\.keyCode) == [0x37])
+    }
+
+    @Test func `PID recycle during held release delay blocks modifier release`() async throws {
+        var delayCount = 0
+        var postedEvents: [(type: CGEventType, keyCode: Int64)] = []
+        let generation = OSAllocatedUnfairLock<UInt64?>(initialState: 708)
+        let target = try self.heldHotkeyTarget(generation: 708)
+        let service = HotkeyService(
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            postEventAccessEvaluator: { true },
+            eventPoster: { event, _ in
+                postedEvents.append((
+                    event.type,
+                    event.getIntegerValueField(.keyboardEventKeycode)))
+            },
+            processStartIdentityProvider: { _ in generation.withLock { $0 } },
+            holdSleeper: { _ in },
+            heldInterEventDelay: {
+                delayCount += 1
+                if delayCount == 3 {
+                    generation.withLock { $0 = 709 }
+                }
+            })
+
+        do {
+            _ = try await service.hotkey(
+                keys: "cmd,shift,l",
+                holdDuration: 50,
+                automationTarget: target)
+            Issue.record("Expected modifier-release generation drift")
+        } catch let error as InputDeliveryIndeterminateError {
+            #expect(error.emittedUnitCount == 4)
+            #expect(error.causeDescription?.contains("recycled PID") == true)
+        }
+
+        #expect(postedEvents.map(\.type) == [.flagsChanged, .flagsChanged, .keyDown, .keyUp])
+        #expect(postedEvents.map(\.keyCode) == [0x37, 0x38, 0x25, 0x25])
+    }
+
+    @Test func `generation drift during cleanup counts completed key up and stops modifier cleanup`() async throws {
+        var postedEvents: [CGEventType] = []
+        let generation = OSAllocatedUnfairLock<UInt64?>(initialState: 704)
+        let target = try self.heldHotkeyTarget(generation: 704)
+        let service = HotkeyService(
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            postEventAccessEvaluator: { true },
+            eventPoster: { event, _ in
+                postedEvents.append(event.type)
+                if event.type == .keyUp {
+                    generation.withLock { $0 = 705 }
+                }
+            },
+            processStartIdentityProvider: { _ in generation.withLock { $0 } },
+            holdSleeper: { _ in })
+
+        do {
+            _ = try await service.hotkey(
+                keys: "cmd,l",
+                holdDuration: 50,
+                automationTarget: target)
+            Issue.record("Expected cleanup generation drift")
+        } catch let error as InputDeliveryIndeterminateError {
+            #expect(error.emittedUnitCount == 3)
+        }
+        #expect(postedEvents == [.flagsChanged, .keyDown, .keyUp])
+    }
+
     @Test func `exact window validator failure before modifiers posts no events`() async throws {
         var validationCount = 0
         var postedEventCount = 0
@@ -433,6 +623,17 @@ struct HotkeyServiceTargetingTests {
         }
 
         return postedEvents
+    }
+}
+
+extension HotkeyServiceTargetingTests {
+    private func heldHotkeyTarget(generation: UInt64) throws -> UIAutomationTarget {
+        try .exactWindow(.init(
+            identity: WindowMutationIdentity(
+                windowID: 42,
+                ownerProcessIdentifier: getpid(),
+                ownerProcessStartIdentity: generation),
+            bounds: CGRect(x: 0, y: 0, width: 100, height: 100)))
     }
 }
 

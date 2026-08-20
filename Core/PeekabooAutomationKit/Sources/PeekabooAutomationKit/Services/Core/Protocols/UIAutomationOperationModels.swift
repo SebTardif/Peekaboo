@@ -263,6 +263,22 @@ public enum FocusedElementReceiptError: LocalizedError, Equatable, Sendable {
     }
 }
 
+/// Next step for every refusal that means "the exact target window does not hold this
+/// application's keyboard focus".
+///
+/// Background keystrokes are posted to the application, which routes them to whichever window holds
+/// its own keyboard focus — not to the window the caller named. Failing closed is therefore correct,
+/// but the caller still has a route that reaches an unfocused window: an accessibility value write.
+/// Keep this text attached to those refusals so background writing never ends in a dead end.
+public enum BackgroundKeyboardFocusRemediation {
+    public static let message = "Background keystrokes follow the application's own keyboard focus " +
+        "and cannot be aimed at a window that does not hold it; such a window also refuses " +
+        "accessibility focus requests, so no amount of retrying moves focus there in the " +
+        "background. To write into this window without focusing it, observe it and set its editable " +
+        "element's accessibility value (`set-value` command, `set_value` tool). Use foreground " +
+        "delivery only when the window may take focus."
+}
+
 public struct ExactWindowKeyboardTarget: Sendable, Codable, Equatable {
     public let windowIdentity: WindowMutationIdentity
     public let windowBounds: CGRect
@@ -300,14 +316,43 @@ public struct TypeResult: Sendable, Codable {
 public struct UIAutomationActionResult<Payload: Sendable>: Sendable {
     public let payload: Payload
     public let outcome: DesktopActionOutcome?
+    public let targetIdentity: DesktopTargetIdentity?
+    public let selectedLeafEvidence: [DesktopSelectedLeafEvidence]?
 
     public init(payload: Payload, outcome: DesktopActionOutcome?) {
+        self.init(payload: payload, outcome: outcome, targetIdentity: nil)
+    }
+
+    public init(
+        payload: Payload,
+        outcome: DesktopActionOutcome?,
+        targetIdentity: DesktopTargetIdentity?)
+    {
+        self.init(
+            payload: payload,
+            outcome: outcome,
+            targetIdentity: targetIdentity,
+            selectedLeafEvidence: nil)
+    }
+
+    public init(
+        payload: Payload,
+        outcome: DesktopActionOutcome?,
+        targetIdentity: DesktopTargetIdentity?,
+        selectedLeafEvidence: [DesktopSelectedLeafEvidence]?)
+    {
         self.payload = payload
         self.outcome = outcome
+        self.targetIdentity = targetIdentity
+        self.selectedLeafEvidence = selectedLeafEvidence
     }
 
     public init(_ result: DesktopActionResult<Payload>) {
-        self.init(payload: result.payload, outcome: result.outcome)
+        self.init(
+            payload: result.payload,
+            outcome: result.outcome,
+            targetIdentity: nil,
+            selectedLeafEvidence: nil)
     }
 
     public var desktopActionResult: DesktopActionResult<Payload> {
@@ -373,7 +418,7 @@ public enum UIElementValue: Sendable, Codable, Equatable {
         case let .int(value):
             try container.encode(value)
         case let .double(value):
-            try container.encode(value)
+            try container.encode(value == 0 ? 0.0 : value)
         case let .string(value):
             try container.encode(value)
         }

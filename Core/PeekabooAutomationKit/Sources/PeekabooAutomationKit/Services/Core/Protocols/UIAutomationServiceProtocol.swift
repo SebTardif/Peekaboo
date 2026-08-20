@@ -147,6 +147,135 @@ extension UIAutomationServiceProtocol {
     }
 }
 
+/// Embedding-only exact-window split pointer lifecycle.
+///
+/// Standalone CLI and MCP tools intentionally do not expose these primitives. Callers must retain
+/// the opaque owner and hold receipt, and the concrete service keeps the exact-window mutation lane
+/// until one terminal cleanup wins.
+@MainActor
+public protocol ExactWindowHeldPointerLifecycleServiceProtocol: UIAutomationServiceProtocol {
+    var supportsExactWindowHeldPointerLifecycle: Bool { get }
+
+    func createExactWindowHeldPointerOwner(
+        boundTo processIdentity: ApplicationProcessIdentity?) async throws -> ExactWindowHeldPointerOwner
+
+    func beginExactWindowPointerHold(
+        owner: ExactWindowHeldPointerOwner,
+        request: ExactWindowHeldPointerRequest) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerReceipt>
+
+    func releaseExactWindowPointerHold(
+        owner: ExactWindowHeldPointerOwner,
+        receipt: ExactWindowHeldPointerReceipt) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerTermination>
+
+    func revokeExactWindowPointerHold(
+        owner: ExactWindowHeldPointerOwner,
+        receipt: ExactWindowHeldPointerReceipt) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerTermination>
+
+    func disconnectExactWindowHeldPointerOwner(
+        _ owner: ExactWindowHeldPointerOwner) async throws
+        -> UIAutomationActionResult<ExactWindowHeldPointerTermination?>
+}
+
+/// Additive capability for observations that can conditionally focus embedded web content.
+///
+/// The original observation methods remain source compatible. Result-aware callers use this
+/// capability so a transport-backed service cannot discard a signed mutation outcome or target.
+@MainActor
+public protocol UIAutomationObservationActionResultProviding: UIAutomationServiceProtocol {
+    func detectElementsActionResult(
+        in imageData: Data,
+        snapshotId: String?,
+        windowContext: WindowContext?,
+        requestTimeoutSec: TimeInterval?) async throws -> UIAutomationActionResult<ElementDetectionResult>
+
+    func inspectAccessibilityTreeActionResult(
+        windowContext: WindowContext?) async throws -> UIAutomationActionResult<ElementDetectionResult>
+}
+
+extension UIAutomationServiceProtocol {
+    public func detectElementsResult(
+        in imageData: Data,
+        snapshotId: String?,
+        windowContext: WindowContext?,
+        requestTimeoutSec: TimeInterval? = nil) async throws -> UIAutomationActionResult<ElementDetectionResult>
+    {
+        if let results = self as? any UIAutomationObservationActionResultProviding {
+            return try await results.detectElementsActionResult(
+                in: imageData,
+                snapshotId: snapshotId,
+                windowContext: windowContext,
+                requestTimeoutSec: requestTimeoutSec)
+        }
+        let mayFocusWebContent = windowContext?.shouldFocusWebContent == true
+        do {
+            let payload: ElementDetectionResult = if let requestTimeoutSec,
+                                                     let timeoutAdjusting =
+                                                     self as? any DetectElementsRequestTimeoutAdjusting
+            {
+                try await timeoutAdjusting.detectElements(
+                    in: imageData,
+                    snapshotId: snapshotId,
+                    windowContext: windowContext,
+                    requestTimeoutSec: requestTimeoutSec)
+            } else {
+                try await self.detectElements(
+                    in: imageData,
+                    snapshotId: snapshotId,
+                    windowContext: windowContext)
+            }
+            return UIAutomationActionResult(
+                payload: payload,
+                outcome: mayFocusWebContent ? Self.webFocusObservationOutcome : nil)
+        } catch let failure as DesktopActionFailure {
+            throw failure
+        } catch {
+            guard mayFocusWebContent else { throw error }
+            throw Self.webFocusObservationFailure(error, operation: "Element detection")
+        }
+    }
+
+    public func inspectAccessibilityTreeResult(
+        windowContext: WindowContext?) async throws -> UIAutomationActionResult<ElementDetectionResult>
+    {
+        if let results = self as? any UIAutomationObservationActionResultProviding {
+            return try await results.inspectAccessibilityTreeActionResult(windowContext: windowContext)
+        }
+        let mayFocusWebContent = windowContext?.shouldFocusWebContent == true
+        do {
+            return try await UIAutomationActionResult(
+                payload: self.inspectAccessibilityTree(windowContext: windowContext),
+                outcome: mayFocusWebContent ? Self.webFocusObservationOutcome : nil)
+        } catch let failure as DesktopActionFailure {
+            throw failure
+        } catch {
+            guard mayFocusWebContent else { throw error }
+            throw Self.webFocusObservationFailure(error, operation: "Accessibility inspection")
+        }
+    }
+
+    private static var webFocusObservationOutcome: DesktopActionOutcome {
+        .dispatchedUnverified(
+            delivery: .init(mechanism: .accessibilityAction, mode: .background),
+            evidence: .deliveryAccepted,
+            unitCount: .one)
+    }
+
+    private static func webFocusObservationFailure(
+        _ error: any Error,
+        operation: String) -> DesktopActionFailure
+    {
+        .indeterminate(
+            delivery: .init(mechanism: .accessibilityAction, mode: .background),
+            evidence: .completionUnknown,
+            message: "\(operation) failed after web-content focus may have been dispatched.",
+            hint: "Observe the target before retrying with web focus enabled.",
+            causeDescription: error.localizedDescription)
+    }
+}
+
 /// Additive capability for callers that need the canonical result of a successful automation action.
 ///
 /// Existing protocol methods remain the compatibility surface. A caller can opt into this capability
@@ -250,6 +379,22 @@ public protocol UIAutomationActionOutcomeProviding: UIAutomationServiceProtocol 
         target: String,
         actionName: String,
         snapshotId: String?) async throws -> UIAutomationActionResult<ElementActionResult>
+}
+
+/// Additive result capability for shared-pointer operations.
+///
+/// Drag and cursor movement remain foreground-only global mutations. Keeping this capability
+/// separate from `UIAutomationActionOutcomeProviding` lets older providers retain their void
+/// compatibility methods without claiming a canonical result they cannot produce.
+@MainActor
+public protocol UIAutomationGlobalPointerActionResultProviding: UIAutomationServiceProtocol {
+    func dragWithOutcome(_ request: DragOperationRequest) async throws -> UIAutomationActionResult<Void>
+
+    func moveMouseWithOutcome(
+        to: CGPoint,
+        duration: Int,
+        steps: Int,
+        profile: MouseMovementProfile) async throws -> UIAutomationActionResult<Void>
 }
 
 /// Optional capability for querying the focused element of a specific background application.
@@ -451,6 +596,7 @@ extension TargetedTypeServiceProtocol {
 public protocol TargetedClickServiceProtocol: UIAutomationServiceProtocol {
     var supportsTargetedClicks: Bool { get }
     var supportsProcessGenerationPinnedClicks: Bool { get }
+    var supportsStatelessClickVariants: Bool { get }
     var targetedClickUnavailableReason: String? { get }
     var targetedClickRequiresEventSynthesizingPermission: Bool { get }
 
@@ -503,6 +649,10 @@ extension TargetedClickServiceProtocol {
     }
 
     public var supportsProcessGenerationPinnedClicks: Bool {
+        false
+    }
+
+    public var supportsStatelessClickVariants: Bool {
         false
     }
 

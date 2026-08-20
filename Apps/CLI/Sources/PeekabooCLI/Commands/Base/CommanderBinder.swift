@@ -63,6 +63,7 @@ enum CommanderCLIBinder {
             commandType == AppCommand.FocusSubcommand.self ||
             commandType == AppCommand.UnhideSubcommand.self ||
             commandType == AppCommand.SwitchSubcommand.self
+        options.requiresProcessGenerationPinnedApplicationHide = commandType == AppCommand.HideSubcommand.self
         options.requiresProcessGenerationPinnedHotkeys = commandType == PressCommand.self &&
             !commandValues.flag("foreground")
         let usesBackgroundInput = !commandValues.flag("foreground")
@@ -89,6 +90,10 @@ enum CommanderCLIBinder {
             commandType,
             parsedValues: parsedValues
         )
+        options.requiresStatelessClickVariants = commandType == ClickCommand.self &&
+            (commandValues.flag("middle") || commandValues.flag("triple"))
+        options.requiresBackgroundStatelessClickVariants =
+            options.requiresStatelessClickVariants && usesBackgroundInput
         options.requiresProcessGenerationPinnedClicks = commandType == ClickCommand.self && usesBackgroundInput &&
             !options.requiresExactWindowTargetedClicks
         let servesDynamicTools = Self.isAgentExecutionCommand(commandType) || commandType == MCPCommand.Serve.self
@@ -349,8 +354,7 @@ enum CommanderCLIBinder {
         }
         if commandType == MoveCommand.self {
             return mayRefreshObservation && (values.singleOption("to") != nil ||
-                values.singleOption("on") != nil
-            )
+                values.singleOption("on") != nil)
         }
         if commandType == SetValueCommand.self || commandType == ActionCommand.self {
             let hasElementReference = values.singleOption("on")?
@@ -447,7 +451,7 @@ enum CommanderCLIBinder {
 
     private static func menuListMayFocus(_ parsedValues: ParsedValues) -> Bool {
         let values = CommanderBindableValues(parsedValues: parsedValues)
-        return !values.flag("noAutoFocus")
+        return values.flag("foreground") && !values.flag("noAutoFocus")
     }
 
     private static func captureCommandMayFocus(
@@ -514,7 +518,12 @@ enum CommanderCLIBinder {
             return values.flag("foreground")
         }
         if commandType == ClickCommand.self {
-            return !self.usesBackgroundClickDelivery(values)
+            if !self.usesBackgroundClickDelivery(values) {
+                return true
+            }
+            let isCoordinateClick = values.singleOption("at") != nil
+            return values.flag("middle") || values.flag("triple") || values.flag("double") ||
+                (values.flag("right") && isCoordinateClick)
         }
         return false
     }

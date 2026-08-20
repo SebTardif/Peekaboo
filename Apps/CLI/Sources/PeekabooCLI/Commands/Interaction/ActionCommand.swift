@@ -2,6 +2,7 @@ import Commander
 import Foundation
 import PeekabooAutomationKit
 import PeekabooCore
+import PeekabooFoundation
 
 @available(macOS 14.0, *)
 @MainActor
@@ -32,11 +33,14 @@ struct ActionCommand: ConfirmedActionOutputFormattable, ErrorHandlingCommand, Ou
                 runtime: runtime,
                 snapshot: self.snapshot,
                 invalidationReason: "action",
+                deliveryMechanism: .accessibilityAction,
                 target: self.target,
                 focusOptions: self.focusOptions
             ),
             prepare: {
-                try (self.requireTarget(), self.requireAction())
+                let actionName = try self.requireAction()
+                try self.validateForegroundConsent(for: actionName)
+                return try (self.requireTarget(), actionName)
             },
             operation: { automation, target, actionName, snapshotId in
                 try await AutomationServiceBridge.performAction(
@@ -46,8 +50,8 @@ struct ActionCommand: ConfirmedActionOutputFormattable, ErrorHandlingCommand, Ou
                     snapshotId: snapshotId
                 )
             },
-            render: { result, outcome, outputPayload, requestedAction in
-                self.output(outputPayload, outcome: outcome) {
+            render: { result, outcome, targetIdentity, outputPayload, requestedAction in
+                self.output(outputPayload, outcome: outcome, targetIdentity: targetIdentity) {
                     if let outcome {
                         print(ActionOutcomeHumanRenderer.statusLine(for: outcome, operation: "Action"))
                         print("🎯 Target: \(result.target)")
@@ -82,6 +86,18 @@ struct ActionCommand: ConfirmedActionOutputFormattable, ErrorHandlingCommand, Ou
         }
         return trimmed
     }
+
+    private func validateForegroundConsent(for actionName: String) throws {
+        guard AccessibilityActionPolicy.requiresForegroundConsent(actionName),
+              !self.focusOptions.foreground
+        else { return }
+        throw PreDispatchActionError(
+            message: "Accessibility action \(actionName) can raise or expose foreground UI and requires --foreground.",
+            code: .VALIDATION_ERROR,
+            hint: "Re-run with --foreground only when interrupting the user's desktop is acceptable.",
+            reason: .foregroundConsentRequired
+        )
+    }
 }
 
 @MainActor
@@ -92,9 +108,11 @@ extension ActionCommand: ParsableCommand {
             abstract: "Invoke a named accessibility action on an element",
             discussion: """
                 Invokes an accessibility action without synthesizing a mouse or keyboard event.
+                Actions that can raise or expose foreground UI, including AXPress and AXShowMenu, require
+                --foreground. State-only actions such as AXIncrement remain background-capable.
 
                 EXAMPLES:
-                  peekaboo action AXPress --on "$ELEMENT_ID"
+                  peekaboo action AXPress --on "$ELEMENT_ID" --foreground
                   peekaboo action --action AXIncrement --on Stepper --app Calculator
             """,
             showHelpOnEmptyInvocation: true
@@ -109,7 +127,11 @@ extension ActionCommand: PreRuntimeValidatingCommand {
         _ = try ElementActionCommandExecutor.validateRequest(
             snapshot: self.snapshot,
             target: self.target,
-            prepare: { try (self.requireTarget(), self.requireAction()) }
+            prepare: {
+                let actionName = try self.requireAction()
+                try self.validateForegroundConsent(for: actionName)
+                return try (self.requireTarget(), actionName)
+            }
         )
     }
 }

@@ -4,6 +4,59 @@ import XCTest
 
 @MainActor
 final class ObservationExactWindowResolverTests: XCTestCase {
+    func testExactPIDSkipsRunningApplicationEnumeration() async throws {
+        let app = Self.app(pid: 123)
+        let service = ExactWindowApplicationService(app: app, windows: [])
+        let snapshotProvider = DesktopStateSnapshotProvider(applications: service)
+        let resolver = ObservationTargetResolver(
+            applications: service,
+            exactWindowMetadataProvider: TestExactWindowMetadataProvider { windowID in
+                Self.metadata(windowID: windowID, ownerPID: 123)
+            })
+
+        let target = DesktopObservationTargetRequest.pid(123, window: .id(42))
+        let snapshot = try await snapshotProvider.snapshot(for: target)
+        let resolved = try await resolver.resolve(target, snapshot: snapshot)
+
+        XCTAssertTrue(snapshot.runningApplications.isEmpty)
+        XCTAssertEqual(service.listApplicationsCalls, 0)
+        XCTAssertEqual(service.findApplicationCalls, 0)
+        XCTAssertEqual(service.listWindowsCalls, 0)
+        XCTAssertEqual(resolved.app?.processIdentifier, 123)
+        XCTAssertEqual(resolved.app?.processStartIdentity, 700)
+        XCTAssertEqual(resolved.window?.windowID, 42)
+        XCTAssertEqual(resolved.detectionContext?.windowMutationIdentity?.ownerProcessIdentifier, 123)
+        XCTAssertEqual(resolved.detectionContext?.windowMutationIdentity?.ownerProcessStartIdentity, 700)
+    }
+
+    func testExactPIDWithoutSnapshotFailsClosedForForeignOwnerOrReusedPID() async throws {
+        let app = Self.app(pid: 123)
+        let service = ExactWindowApplicationService(app: app, windows: [])
+        let foreignOwner = ObservationTargetResolver(
+            applications: service,
+            exactWindowMetadataProvider: TestExactWindowMetadataProvider { windowID in
+                Self.metadata(windowID: windowID, ownerPID: 999)
+            })
+        let reusedPID = ObservationTargetResolver(
+            applications: service,
+            exactWindowMetadataProvider: TestExactWindowMetadataProvider(liveProcessStartIdentity: 701) { windowID in
+                Self.metadata(windowID: windowID, ownerPID: 123)
+            })
+
+        for resolver in [foreignOwner, reusedPID] {
+            do {
+                _ = try await resolver.resolve(
+                    .pid(123, window: .id(42)),
+                    snapshot: DesktopStateSnapshot())
+                XCTFail("Expected an unverified exact PID/window receipt to fail")
+            } catch is DesktopObservationError {
+                // Expected.
+            }
+        }
+        XCTAssertEqual(service.listApplicationsCalls, 0)
+        XCTAssertEqual(service.listWindowsCalls, 0)
+    }
+
     func testExactIDUsesCGMetadataWithoutListingAXWindows() async throws {
         let app = Self.app(pid: 123)
         let service = ExactWindowApplicationService(app: app, windows: [Self.serviceWindow(id: 42)])
@@ -20,6 +73,29 @@ final class ObservationExactWindowResolverTests: XCTestCase {
         XCTAssertEqual(resolved.kind, .windowID(42))
         XCTAssertEqual(resolved.window?.windowID, 42)
         XCTAssertEqual(resolved.detectionContext?.applicationBundleId, "com.example.fixture")
+        XCTAssertTrue(resolved.selectorResolutionProofs?.isEmpty ?? true)
+        XCTAssertEqual(service.listWindowsCalls, 0)
+    }
+
+    func testAppExactIDPreservesApplicationProofOnExactTarget() async throws {
+        let app = Self.app(pid: 123)
+        let service = ExactWindowApplicationService(app: app, windows: [])
+        let resolver = ObservationTargetResolver(
+            applications: service,
+            exactWindowMetadataProvider: TestExactWindowMetadataProvider { windowID in
+                Self.metadata(windowID: windowID, ownerPID: 123)
+            })
+
+        let resolved = try await resolver.resolve(
+            .app(identifier: "com.example.fixture", window: .id(42)),
+            snapshot: DesktopStateSnapshot(runningApplications: [ApplicationIdentity(app)]))
+
+        let proof = try XCTUnwrap(resolved.selectorResolutionProofs?.first)
+        let exactIdentity = try XCTUnwrap(resolved.detectionContext?.windowMutationIdentity)
+        XCTAssertEqual(resolved.selectorResolutionProofs?.count, 1)
+        XCTAssertEqual(proof.scope, .application)
+        XCTAssertEqual(proof.normalizedSelector, "com.example.fixture")
+        XCTAssertTrue(proof.selectedWindowIdentity?.hasSameStableReceipt(as: exactIdentity) == true)
         XCTAssertEqual(service.listWindowsCalls, 0)
     }
 
@@ -96,6 +172,31 @@ final class ObservationExactWindowResolverTests: XCTestCase {
             snapshot: DesktopStateSnapshot(runningApplications: [ApplicationIdentity(app)]))
 
         XCTAssertEqual(resolved.window?.windowID, 42)
+        let proof = try XCTUnwrap(resolved.selectorResolutionProofs?.first)
+        let exactIdentity = try XCTUnwrap(resolved.detectionContext?.windowMutationIdentity)
+        XCTAssertEqual(resolved.selectorResolutionProofs?.count, 1)
+        XCTAssertEqual(proof.scope, .window)
+        XCTAssertEqual(proof.normalizedSelector, WindowSelectorResolutionProof.normalizedSelector(.automatic))
+        XCTAssertTrue(proof.selectedWindowIdentity?.hasSameStableReceipt(as: exactIdentity) == true)
+
+        let appResolved = try await resolver.resolve(
+            .app(identifier: "com.example.fixture", window: .automatic),
+            snapshot: DesktopStateSnapshot(runningApplications: [ApplicationIdentity(app)]))
+        let appProofs = try XCTUnwrap(appResolved.selectorResolutionProofs)
+        XCTAssertEqual(appProofs.map(\.scope), [.application, .window])
+        XCTAssertTrue(appProofs.allSatisfy {
+            $0.selectedWindowIdentity?.hasSameStableReceipt(as: exactIdentity) == true
+        })
+
+        let titleResolved = try await resolver.resolve(
+            .pid(123, window: .title("Editor")),
+            snapshot: DesktopStateSnapshot(runningApplications: [ApplicationIdentity(app)]))
+        let titleProof = try XCTUnwrap(titleResolved.selectorResolutionProofs?.last)
+        XCTAssertEqual(titleProof.scope, .window)
+        XCTAssertEqual(
+            titleProof.normalizedSelector,
+            WindowSelectorResolutionProof.normalizedSelector(.title("Editor")))
+        XCTAssertTrue(titleProof.selectedWindowIdentity?.hasSameStableReceipt(as: exactIdentity) == true)
         XCTAssertEqual(service.listWindowsCalls, 0)
     }
 
@@ -177,10 +278,11 @@ final class ObservationExactWindowResolverTests: XCTestCase {
     }
 
     private static func serviceWindow(id: Int) -> ServiceWindowInfo {
-        ServiceWindowInfo(
+        let bounds = CGRect(x: 10, y: 20, width: 800, height: 600)
+        return ServiceWindowInfo(
             windowID: id,
             title: "Editor",
-            bounds: CGRect(x: 10, y: 20, width: 800, height: 600),
+            bounds: bounds,
             isMinimized: false,
             isMainWindow: true,
             windowLevel: 0,
@@ -189,7 +291,12 @@ final class ObservationExactWindowResolverTests: XCTestCase {
             layer: 0,
             isOnScreen: true,
             sharingState: .readOnly,
-            isExcludedFromWindowsMenu: false)
+            isExcludedFromWindowsMenu: false,
+            mutationIdentity: WindowMutationIdentity(
+                windowID: id,
+                ownerProcessIdentifier: 123,
+                ownerProcessStartIdentity: 700,
+                capturedBounds: bounds))
     }
 
     private nonisolated static func metadata(
@@ -237,6 +344,8 @@ private struct TestExactWindowMetadataProvider: ExactWindowMetadataProviding {
 private final class ExactWindowApplicationService: ApplicationServiceProtocol {
     let app: ServiceApplicationInfo
     let windows: [ServiceWindowInfo]
+    var listApplicationsCalls = 0
+    var findApplicationCalls = 0
     var listWindowsCalls = 0
 
     init(app: ServiceApplicationInfo, windows: [ServiceWindowInfo]) {
@@ -245,14 +354,16 @@ private final class ExactWindowApplicationService: ApplicationServiceProtocol {
     }
 
     func listApplications() async throws -> UnifiedToolOutput<ServiceApplicationListData> {
-        UnifiedToolOutput(
+        self.listApplicationsCalls += 1
+        return UnifiedToolOutput(
             data: ServiceApplicationListData(applications: [self.app]),
             summary: .init(brief: "apps", status: .success),
             metadata: .init(duration: 0))
     }
 
     func findApplication(identifier _: String) async throws -> ServiceApplicationInfo {
-        self.app
+        self.findApplicationCalls += 1
+        return self.app
     }
 
     func listWindows(for _: String, timeout _: Float?) async throws -> UnifiedToolOutput<ServiceWindowListData> {

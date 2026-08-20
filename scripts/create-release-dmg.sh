@@ -119,6 +119,7 @@ require_command codesign
 require_command hdiutil
 require_command spctl
 require_command xcrun
+require_command xattr
 
 verify_identity() {
   local artifact="$1"
@@ -150,11 +151,24 @@ verify_nested_app_identities() {
   log "Verified Foundation authority on $count nested Mach-O payloads"
 }
 
+verify_app_xattrs() {
+  local app_path="$1"
+  local xattr_names disallowed_xattrs
+
+  xattr_names="$(xattr -r "$app_path")" || fail "Could not inspect extended attributes on $app_path"
+  disallowed_xattrs="$(printf '%s\n' "$xattr_names" | awk -F ': ' '
+    $NF == "com.apple.FinderInfo" || $NF == "com.apple.ResourceFork" { print }
+  ')"
+  [[ -z "$disallowed_xattrs" ]] || fail "Disallowed code xattrs found in $app_path:
+$disallowed_xattrs"
+}
+
 verify_app() {
   local app_path="$1"
   local short_version
 
   [[ -d "$app_path" ]] || fail "App missing from DMG: $app_path"
+  verify_app_xattrs "$app_path"
   short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
   [[ "$short_version" == "$VERSION" ]] ||
     fail "App version mismatch: expected $VERSION, got $short_version"

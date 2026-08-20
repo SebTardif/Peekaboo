@@ -74,8 +74,10 @@ extension PeekabooBridgeClient {
     }
 
     public func getFocusedElement(targetProcessIdentifier: pid_t) async throws -> UIFocusInfo? {
+        let expectedIdentity = Self.currentProcessIdentity(targetProcessIdentifier)
         let response = try await self.send(.getFocusedElement(.init(
-            targetProcessIdentifier: Int32(targetProcessIdentifier))))
+            targetProcessIdentifier: Int32(targetProcessIdentifier),
+            expectedProcessIdentity: expectedIdentity)))
         switch response {
         case let .focusedElement(info):
             return info
@@ -221,7 +223,19 @@ extension PeekabooBridgeClient {
     }
 
     public func drag(_ request: PeekabooBridgeDragRequest) async throws {
-        try await self.sendExpectOK(.drag(request))
+        _ = try await self.dragWithOutcome(request)
+    }
+
+    public func dragWithOutcome(
+        _ request: PeekabooBridgeDragRequest) async throws -> UIAutomationActionResult<Void>
+    {
+        try await self.actionResult(
+            for: .drag(request),
+            expectedResponse: "drag")
+        { response in
+            guard case .ok = response else { return nil }
+            return ()
+        }
     }
 
     public func moveMouse(
@@ -230,8 +244,27 @@ extension PeekabooBridgeClient {
         steps: Int,
         profile: MouseMovementProfile) async throws
     {
+        _ = try await self.moveMouseWithOutcome(
+            to: point,
+            duration: duration,
+            steps: steps,
+            profile: profile)
+    }
+
+    public func moveMouseWithOutcome(
+        to point: CGPoint,
+        duration: Int,
+        steps: Int,
+        profile: MouseMovementProfile) async throws -> UIAutomationActionResult<Void>
+    {
         let payload = PeekabooBridgeMoveMouseRequest(to: point, duration: duration, steps: steps, profile: profile)
-        try await self.sendExpectOK(.moveMouse(payload))
+        return try await self.actionResult(
+            for: .moveMouse(payload),
+            expectedResponse: "cursor move")
+        { response in
+            guard case .ok = response else { return nil }
+            return ()
+        }
     }
 
     public func waitForElement(target: ClickTarget, timeout: TimeInterval, snapshotId: String?) async throws

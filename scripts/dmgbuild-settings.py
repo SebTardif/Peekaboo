@@ -1,8 +1,9 @@
 """Finder layout for the signed Peekaboo release disk image.
 
 The release driver supplies absolute artifact paths through dmgbuild's ``-D``
-arguments. dmgbuild writes Finder metadata directly, so creating a release image
-does not need a GUI session or an automation permission prompt.
+arguments. dmgbuild writes the volume and .DS_Store metadata directly, so
+creating a release image does not need a GUI session or an automation permission
+prompt. Finder metadata must not be attached to the signed app bundle.
 """
 
 app_name = defines["app_name"]
@@ -33,7 +34,5 @@ icon_locations = {
     f"{app_name}.app": (180, 230),
     "Applications": (540, 230),
 }
-hide_extensions = [f"{app_name}.app"]
-
 format = "UDZO"
 filesystem = "HFS+"

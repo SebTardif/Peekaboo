@@ -29,7 +29,7 @@ struct ActionOutcomeCommandTests {
     }
 
     @Test
-    func `service bridges preserve every canonical fixture without inference`() async throws {
+    func `service bridges preserve canonical fixtures across their validation boundaries`() async throws {
         let automation = OutcomeStubAutomationService()
         let application = AutomationTestFixtures.application(
             processIdentifier: 42,
@@ -61,20 +61,31 @@ struct ActionOutcomeCommandTests {
                 keys: "cmd+a",
                 holdDuration: 50
             )
-            let applicationResult = try await ApplicationServiceBridge.launchApplication(
-                applications: applications,
-                request: ApplicationLaunchRequest(applicationIdentifier: "Fixture")
-            )
-            let windowResult = try await WindowServiceBridge.setWindowBounds(
-                windows: windows,
-                target: .windowId(101),
-                expectedIdentity: windowIdentity,
-                bounds: CGRect(x: 30, y: 40, width: 640, height: 480)
-            )
-
             #expect(automationResult.outcome == expected)
-            #expect(applicationResult.outcome == expected)
-            #expect(windowResult.outcome == expected)
+            do {
+                let result = try await ApplicationServiceBridge.launchApplication(
+                    applications: applications,
+                    request: ApplicationLaunchRequest(applicationIdentifier: "Fixture")
+                )
+                #expect(expected.isAccepted(by: .confirmedOrDispatched))
+                #expect(result.outcome == expected)
+            } catch let failure as DesktopActionFailure {
+                #expect(!expected.isAccepted(by: .confirmedOrDispatched))
+                #expect(failure.outcome == expected)
+            }
+            do {
+                let result = try await WindowServiceBridge.setWindowBounds(
+                    windows: windows,
+                    target: .windowId(101),
+                    expectedIdentity: windowIdentity,
+                    bounds: CGRect(x: 30, y: 40, width: 640, height: 480)
+                )
+                #expect(expected.isAccepted(by: .confirmedOrDispatched))
+                #expect(result.outcome == expected)
+            } catch let failure as DesktopActionFailure {
+                #expect(!expected.isAccepted(by: .confirmedOrDispatched))
+                #expect(failure.outcome == expected)
+            }
         }
     }
 
@@ -87,7 +98,7 @@ struct ActionOutcomeCommandTests {
             (["scroll", "--direction", "down", "--amount", "1", "--foreground"], foregroundEvents),
             (["press", "cmd+a", "--foreground"], foregroundEvents),
             (
-                ["action", "AXPress", "--on", "B1"],
+                ["action", "AXIncrement", "--on", "B1"],
                 .init(mechanism: .accessibilityAction, mode: .background)
             ),
             (
@@ -629,7 +640,7 @@ struct ActionOutcomeCommandTests {
     }
 
     @Test
-    func `quit batch preserves completed results when a later legacy attempt cancels`() async throws {
+    func `quit batch fails closed when a receiptless prefix precedes cancellation`() async throws {
         let applications = [
             AutomationTestFixtures.application(
                 processIdentifier: 42,
@@ -667,12 +678,12 @@ struct ActionOutcomeCommandTests {
         #expect(result.exitStatus == 1)
         #expect(service.quitCallCount == 2)
         #expect(results.count == 1)
-        #expect(results.first?["success"] as? Bool == true)
+        #expect(results.first?["success"] as? Bool == false)
         #expect(object["effect"] as? String == "unverifiable")
         let outcome = try #require(object["outcome"] as? [String: Any])
         #expect(outcome["state"] as? String == "indeterminate")
         #expect(outcome["dispatch_state"] as? String == "may_have_dispatched")
-        #expect(outcome["dispatched_unit_count"] as? Int == 2)
+        #expect(outcome["dispatched_unit_count"] == nil)
         #expect(outcome["retry_safe"] as? Bool == false)
         #expect(outcome["requires_fresh_observation"] as? Bool == true)
         #expect(error["retry_safe"] as? Bool == false)
@@ -1096,7 +1107,7 @@ struct ActionOutcomeCommandTests {
             services: context.services
         )
 
-        #expect(result.exitStatus == 1)
+        #expect(result.exitStatus == 0)
         #expect(context.snapshots.invalidationCutoffs.count == 1)
         #expect(await context.snapshots.getMostRecentSnapshot() == nil)
     }
@@ -1234,7 +1245,7 @@ struct ActionOutcomeCommandTests {
         return snapshotID
     }
 
-    private static func storeExactWindowElementSnapshot(in snapshots: StubSnapshotManager) async throws -> String {
+    static func storeExactWindowElementSnapshot(in snapshots: StubSnapshotManager) async throws -> String {
         let snapshotID = try await snapshots.createSnapshot()
         let bounds = CGRect(x: 100, y: 100, width: 500, height: 400)
         let processIdentity = AutomationTestFixtures.processIdentity(

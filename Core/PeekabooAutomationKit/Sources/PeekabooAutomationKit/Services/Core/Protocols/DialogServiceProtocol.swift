@@ -14,6 +14,12 @@ public protocol DialogServiceProtocol: Sendable {
     /// Canonical route for conservative outcomes synthesized from legacy foreground responses.
     var foregroundOutcomeRoute: DesktopActionOutcome.Route { get }
 
+    /// Whether exact dialog input is guaranteed to use background AXValue delivery.
+    ///
+    /// Protocol 1.29 relies on this host-side capability before waiving the legacy PostEvent
+    /// requirement. Older providers default to false and retain protocol 1.28 foreground behavior.
+    var supportsBackgroundExactDialogInput: Bool { get }
+
     /// Find and return information about the active dialog
     /// - Parameter windowTitle: Optional specific window title to target
     /// - Returns: Information about the active dialog
@@ -58,6 +64,10 @@ public protocol DialogServiceProtocol: Sendable {
 
     /// Resolve and execute text entry against one exact dialog target on this runtime host.
     func enterText(_ request: DialogInputExecutionRequest) async throws -> DialogActionResult
+
+    /// Preserve the protocol 1.28 exact foreground-keyboard contract.
+    /// Current receipt-carrying requests use background `enterText(_:)` instead.
+    func enterTextForegroundCompatible(_ request: DialogInputExecutionRequest) async throws -> DialogActionResult
 
     /// Resolve, focus, verify, and force-dismiss one retained dialog on this runtime host.
     func forceDismissDialog(_ request: DialogForcedDismissExecutionRequest) async throws -> DialogActionResult
@@ -111,6 +121,10 @@ extension DialogServiceProtocol {
 
     public var foregroundOutcomeRoute: DesktopActionOutcome.Route {
         .local
+    }
+
+    public var supportsBackgroundExactDialogInput: Bool {
+        false
     }
 
     public func clickButton(
@@ -168,6 +182,15 @@ extension DialogServiceProtocol {
             reason: .runtimeIncompatible,
             message: "This dialog service does not support exact host-executed dialog input.",
             hint: "Update the selected runtime host before retrying.")
+    }
+
+    public func enterTextForegroundCompatible(
+        _ request: DialogInputExecutionRequest) async throws -> DialogActionResult
+    {
+        throw DesktopActionFailure.preDispatchRefusal(
+            reason: .runtimeIncompatible,
+            message: "This dialog service does not support foreground-compatible exact dialog input.",
+            hint: "Use background exact input or select a provider that explicitly supports foreground input.")
     }
 
     public func forceDismissDialog(_ request: DialogForcedDismissExecutionRequest) async throws -> DialogActionResult {
@@ -272,6 +295,12 @@ public struct DialogActionResult: Sendable, Codable {
     /// Exact generation-bound window receipt resolved by the execution host, when available.
     public let targetReceipt: DesktopActionTargetReceipt?
 
+    /// Full stable target retained by exact execution paths for operation-level attestation.
+    public let targetWindowIdentity: WindowMutationIdentity?
+    public let targetWindowBounds: CGRect?
+    public let focusedElement: FocusedElementIdentity?
+    public let resolvedTarget: ResolvedDialogTargetEvidence?
+
     public init(
         success: Bool,
         action: DialogActionType,
@@ -279,11 +308,38 @@ public struct DialogActionResult: Sendable, Codable {
         outcome: DesktopActionOutcome? = nil,
         targetReceipt: DesktopActionTargetReceipt? = nil)
     {
+        self.init(
+            success: success,
+            action: action,
+            details: details,
+            outcome: outcome,
+            targetReceipt: targetReceipt,
+            targetWindowIdentity: nil,
+            targetWindowBounds: nil,
+            focusedElement: nil,
+            resolvedTarget: nil)
+    }
+
+    public init(
+        success: Bool,
+        action: DialogActionType,
+        details: [String: String],
+        outcome: DesktopActionOutcome?,
+        targetReceipt: DesktopActionTargetReceipt?,
+        targetWindowIdentity: WindowMutationIdentity?,
+        targetWindowBounds: CGRect?,
+        focusedElement: FocusedElementIdentity?,
+        resolvedTarget: ResolvedDialogTargetEvidence? = nil)
+    {
         self.success = success
         self.action = action
         self.details = details
         self.outcome = outcome
         self.targetReceipt = targetReceipt
+        self.targetWindowIdentity = targetWindowIdentity
+        self.targetWindowBounds = targetWindowBounds
+        self.focusedElement = focusedElement
+        self.resolvedTarget = resolvedTarget
     }
 }
 
@@ -348,18 +404,23 @@ public struct DialogElements: Sendable, Codable {
     /// Other UI elements
     public let otherElements: [DialogElement]
 
+    /// Exact target and selector-resolution evidence for a targeted dialog list.
+    public let resolvedTarget: ResolvedDialogTargetEvidence?
+
     public init(
         dialogInfo: DialogInfo,
         buttons: [DialogButton] = [],
         textFields: [DialogTextField] = [],
         staticTexts: [String] = [],
-        otherElements: [DialogElement] = [])
+        otherElements: [DialogElement] = [],
+        resolvedTarget: ResolvedDialogTargetEvidence? = nil)
     {
         self.dialogInfo = dialogInfo
         self.buttons = buttons
         self.textFields = textFields
         self.staticTexts = staticTexts
         self.otherElements = otherElements
+        self.resolvedTarget = resolvedTarget
     }
 }
 

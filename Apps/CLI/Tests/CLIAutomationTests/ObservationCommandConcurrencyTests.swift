@@ -13,6 +13,7 @@ struct ObservationCommandConcurrencyTests {
         let probe = ObservationCommandConcurrencyProbe()
         let app = ServiceApplicationInfo(
             processIdentifier: 4242,
+            processStartIdentity: 42,
             bundleIdentifier: "com.example.concurrent",
             name: "ConcurrentApp",
             isActive: true,
@@ -22,7 +23,13 @@ struct ObservationCommandConcurrencyTests {
             windowID: 101,
             title: "Concurrent Window",
             bounds: CGRect(x: 20, y: 30, width: 800, height: 600),
-            isMainWindow: true
+            isMainWindow: true,
+            mutationIdentity: WindowMutationIdentity(
+                windowID: 101,
+                ownerProcessIdentifier: 4242,
+                ownerProcessStartIdentity: 42,
+                capturedBounds: CGRect(x: 20, y: 30, width: 800, height: 600)
+            )
         )
         let windowCapture = CaptureResult(
             imageData: Data(repeating: 0xAB, count: 32),
@@ -53,25 +60,32 @@ struct ObservationCommandConcurrencyTests {
         }
 
         let automation = StubAutomationService()
+        let element = DetectedElement(
+            id: "B1",
+            type: .button,
+            label: "Fixture",
+            value: nil,
+            bounds: CGRect(x: 30, y: 40, width: 100, height: 40),
+            isEnabled: true,
+            isSelected: nil,
+            attributes: [:]
+        )
         automation.detectElementsHandler = { _, snapshotID, _ in
             await probe.suspendSeeDetection()
-            return ElementDetectionResult(
-                snapshotId: snapshotID ?? "see-snapshot",
-                screenshotPath: "/tmp/ignored.png",
-                elements: DetectedElements(),
-                metadata: DetectionMetadata(
-                    detectionTime: 0,
-                    elementCount: 0,
-                    method: "stub",
-                    windowContext: WindowContext(
-                        applicationName: app.name,
-                        applicationBundleId: app.bundleIdentifier,
-                        applicationProcessId: app.processIdentifier,
-                        windowTitle: window.title,
-                        windowID: window.windowID,
-                        windowBounds: window.bounds
-                    )
-                )
+            return Self.detectionResult(
+                snapshotID: snapshotID ?? "see-snapshot",
+                app: app,
+                window: window,
+                element: element
+            )
+        }
+        automation.inspectAccessibilityTreeHandler = { _ in
+            await probe.suspendSeeDetection()
+            return Self.detectionResult(
+                snapshotID: "see-snapshot",
+                app: app,
+                window: window,
+                element: element
             )
         }
 
@@ -133,6 +147,33 @@ struct ObservationCommandConcurrencyTests {
         try await imageTask.value
         #expect(FileManager.default.fileExists(atPath: seePath.path))
         #expect(FileManager.default.fileExists(atPath: imagePath.path))
+    }
+
+    private static func detectionResult(
+        snapshotID: String,
+        app: ServiceApplicationInfo,
+        window: ServiceWindowInfo,
+        element: DetectedElement
+    ) -> ElementDetectionResult {
+        ElementDetectionResult(
+            snapshotId: snapshotID,
+            screenshotPath: "/tmp/ignored.png",
+            elements: DetectedElements(buttons: [element]),
+            metadata: DetectionMetadata(
+                detectionTime: 0,
+                elementCount: 1,
+                method: "stub",
+                windowContext: WindowContext(
+                    applicationName: app.name,
+                    applicationBundleId: app.bundleIdentifier,
+                    applicationProcessId: app.processIdentifier,
+                    windowTitle: window.title,
+                    windowID: window.windowID,
+                    windowBounds: window.bounds,
+                    windowMutationIdentity: window.mutationIdentity
+                )
+            )
+        )
     }
 }
 

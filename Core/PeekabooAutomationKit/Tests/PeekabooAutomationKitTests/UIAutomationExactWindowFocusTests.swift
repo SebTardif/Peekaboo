@@ -108,6 +108,42 @@ final class UIAutomationExactWindowFocusTests: XCTestCase {
         XCTAssertEqual(postedEventCount, 0)
     }
 
+    func testFocusTargetIdentityRejectsReusedIDAndChangedBounds() {
+        let bounds = CGRect(x: 10, y: 20, width: 800, height: 600)
+        let expected = WindowMutationIdentity(
+            windowID: 42,
+            ownerProcessIdentifier: 930_006,
+            ownerProcessStartIdentity: 111,
+            capturedBounds: bounds)
+        let matching = FocusTargetIdentityObservation(
+            processStartIdentity: 111,
+            windowOwnerProcessIdentifier: 930_006,
+            windowBounds: bounds,
+            axProcessIdentifier: 930_006,
+            axWindowID: 42,
+            axBounds: bounds)
+
+        XCTAssertTrue(focusTargetIdentityMatches(expected: expected, observation: matching))
+        XCTAssertFalse(focusTargetIdentityMatches(
+            expected: expected,
+            observation: FocusTargetIdentityObservation(
+                processStartIdentity: 222,
+                windowOwnerProcessIdentifier: 930_006,
+                windowBounds: bounds,
+                axProcessIdentifier: 930_006,
+                axWindowID: 42,
+                axBounds: bounds)))
+        XCTAssertFalse(focusTargetIdentityMatches(
+            expected: expected,
+            observation: FocusTargetIdentityObservation(
+                processStartIdentity: 111,
+                windowOwnerProcessIdentifier: 930_006,
+                windowBounds: bounds.offsetBy(dx: 20, dy: 0),
+                axProcessIdentifier: 930_006,
+                axWindowID: 42,
+                axBounds: bounds.offsetBy(dx: 20, dy: 0))))
+    }
+
     func testSameWindowSiblingFocusDoesNotMatchClickedDestination() async throws {
         let windowIdentity = WindowMutationIdentity(
             windowID: 42,
@@ -213,6 +249,39 @@ final class UIAutomationExactWindowFocusTests: XCTestCase {
             XCTFail("Expected mismatched exact focus receipt to refuse")
         } catch let PeekabooError.invalidInput(message) {
             XCTAssertTrue(message.contains("identifier changed"))
+        }
+    }
+
+    /// A window that does not hold its application's keyboard focus can never receive background
+    /// keystrokes, and it also refuses accessibility focus requests, so "retry" and "focus it first"
+    /// are both dead ends. The refusal must hand back the route that does reach such a window.
+    func testUnfocusedExactWindowRefusalNamesTheAccessibilityWriteRoute() async throws {
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let identity = WindowMutationIdentity(
+            windowID: 42,
+            ownerProcessIdentifier: 930_006,
+            ownerProcessStartIdentity: 91,
+            capturedBounds: bounds)
+        let service = UIAutomationService(
+            actionInputDriver: ActionInputDriver(),
+            automationElementResolver: AutomationElementResolver(),
+            exactWindowFocusReader: { processIdentifier in
+                ExactWindowFocusSnapshot(
+                    processIdentifier: processIdentifier,
+                    windowID: identity.windowID + 1,
+                    frame: CGRect(x: 50, y: 100, width: 200, height: 30))
+            },
+            exactWindowIdentityValidator: { _, _ in true })
+
+        do {
+            try await service.requireExactWindowKeyboardFocus(
+                expectedWindowIdentity: identity,
+                expectedWindowBounds: bounds)
+            XCTFail("Expected an unfocused exact window to refuse background keystrokes")
+        } catch let PeekabooError.invalidInput(message) {
+            XCTAssertTrue(message.contains("set-value"), message)
+            XCTAssertTrue(message.contains("set_value"), message)
+            XCTAssertTrue(message.contains("accessibility value"), message)
         }
     }
 

@@ -70,6 +70,21 @@ public enum AutomationTestFixtures {
             activationPolicy: activationPolicy)
     }
 
+    public static func duplicateApplications() -> [ServiceApplicationInfo] {
+        [
+            self.application(
+                processIdentifier: 101,
+                processStartIdentity: 1001,
+                bundleIdentifier: "com.example.Shared",
+                name: "Shared App"),
+            self.application(
+                processIdentifier: 202,
+                processStartIdentity: 2002,
+                bundleIdentifier: "com.example.Shared",
+                name: "Shared App"),
+        ]
+    }
+
     public static func window(
         windowID: Int = 201,
         title: String = "Test Window",
@@ -98,6 +113,27 @@ public enum AutomationTestFixtures {
                     bounds: bounds,
                     isMinimized: isMinimized)
                 : nil)
+    }
+
+    public static func duplicateTitleWindows(
+        processIdentity: ApplicationProcessIdentity = Self.processIdentity()) -> [ServiceWindowInfo]
+    {
+        [
+            self.window(
+                windowID: 201,
+                title: "Shared Document",
+                processIdentity: processIdentity,
+                index: 0),
+            self.window(
+                windowID: 202,
+                title: "Shared Document Copy",
+                processIdentity: processIdentity,
+                index: 1),
+        ]
+    }
+
+    public static func wrongGenerationApplication() -> ServiceApplicationInfo {
+        self.application(processStartIdentity: 9999)
     }
 
     public static func focusedElement(
@@ -188,6 +224,7 @@ public enum AutomationTestFixtures {
     public static func windowContext(
         application: ServiceApplicationInfo = Self.application(),
         window: ServiceWindowInfo = Self.window(),
+        focusedElement: FocusedElementIdentity? = nil,
         requiresFreshAccessibilityTree: Bool = true) -> WindowContext
     {
         if let receipt = window.mutationIdentity {
@@ -204,6 +241,7 @@ public enum AutomationTestFixtures {
             windowID: window.windowID,
             windowBounds: window.bounds,
             windowMutationIdentity: window.mutationIdentity,
+            focusedElement: focusedElement,
             requiresFreshAccessibilityTree: requiresFreshAccessibilityTree)
     }
 
@@ -249,5 +287,25 @@ public enum AutomationTestFixtures {
             windowBounds: window.bounds,
             windowMutationIdentity: window.mutationIdentity,
             windowID: CGWindowID(window.windowID))
+    }
+}
+
+/// Small lock-backed cell for deterministic `@Sendable` test providers.
+public final class AutomationTestLockedValue<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Value
+
+    public init(_ value: Value) {
+        self.storedValue = value
+    }
+
+    public var value: Value {
+        get { self.lock.withLock { self.storedValue } }
+        set { self.lock.withLock { self.storedValue = newValue } }
+    }
+
+    @discardableResult
+    public func withValue<Result>(_ body: (inout Value) throws -> Result) rethrows -> Result {
+        try self.lock.withLock { try body(&self.storedValue) }
     }
 }

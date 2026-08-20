@@ -27,7 +27,7 @@ Process and window selectors are fail-closed. Choose either `--app` or `--pid`, 
 
 Peekaboo has two input delivery modes:
 
-- **Background** (default when a target process is known) uses exact semantic or typed delivery without activating the app. `type` and `paste` require `--app`, `--pid`, or supported snapshot process metadata. Public raw `press` refuses in background because a process receipt cannot certify chord intent or effect. Background click can retain its exact window/element target.
+- **Background** (default when a target process is known) uses exact semantic or typed delivery without activating the app. `type` and `paste` require `--app`, `--pid`, or supported snapshot process metadata. Raw `press` requires a fresh exact-window/snapshot receipt; app/PID-only and targetless forms refuse. Background click can retain its exact window/element target.
 - **Foreground** focuses the target first, then sends normal/global input to the active key window or mouse focus. Add `--foreground` when an app ignores background input, when a text field only accepts key-window input, or when you want focus/Space switching to be part of the action.
 
 Focus flags tune foreground focus behavior but do not silently change delivery mode. Add `--foreground` explicitly. `--no-auto-focus` also does not discard a background keyboard PID. Background element/query/coordinate clicks complete through Accessibility alone. Keyboard input and foreground synthetic pointer input require Event Synthesizing for the sender shown by `peekaboo permissions status`; request it with `peekaboo permissions request event-synthesizing`.
@@ -35,6 +35,8 @@ Focus flags tune foreground focus behavior but do not silently change delivery m
 All CLI timing flags use the same grammar: bare numbers are milliseconds, and `ms`/`s` suffixes are accepted (`500`, `500ms`, `2s`, `1.5s`).
 
 Pointer delivery is deliberately stricter. A targeted `scroll --on <id>` stays in the background and prefers the element's Accessibility scroll action. Opaque groups in a visible WebKit-linked app may use exact PID/window-routed wheel events from a fresh pixel snapshot; that route is retry-unsafe because macOS does not acknowledge the receiver's effect. It never falls back to the shared cursor. Targetless, smooth, or delayed wheel input requires `--foreground`. `move`, `drag`, and `click --long-press` manipulate shared physical pointer state, so they also require explicit `--foreground` consent. Their Space/focus modifiers are only valid with that foreground mode; there is no misleading `--no-auto-focus` escape hatch.
+
+Multi-unit background input is prefix-aware. Once any scroll unit or semantic click has been accepted—or may have been accepted—Peekaboo stops instead of replaying the request through a fallback route. Canonical partial and indeterminate outcomes retain the accepted/possible unit count, stay retry-unsafe, and provide recovery or observation escalation. This also covers SwiftUI tab buttons whose `AXPress` returns before selection can be confirmed: Peekaboo reports the accepted press as indeterminate rather than issuing a second synthetic click.
 
 Application menu list/click, dialog list, dialog button click, normal dialog dismissal, window close, and exact minimized-window restore also default to background Accessibility actions. Restore changes only the retained window's `AXMinimized` state. Dialog list never focuses. Dialog keyboard/file flows, forced Escape dismissal, coordinate fallback, and window-close Cmd-W fallback require an explicit `--foreground` (or `foreground: true` in MCP) so these global actions cannot interrupt an unrelated foreground app by accident.
 
@@ -47,7 +49,8 @@ Examples:
 peekaboo click "Address and search bar" --app Safari
 peekaboo type "github.com/openclaw/Peekaboo" --app Safari
 
-# Foreground: raw chords require explicit consent
+# Exact-window raw chords can stay background; app-only chords require foreground consent
+peekaboo press cmd+l --window-id 12345
 peekaboo press cmd+l --app Safari --foreground --space-switch
 peekaboo type "github.com/openclaw/Peekaboo" --app Safari --foreground && peekaboo press Return --app Safari --foreground
 ```
@@ -58,7 +61,7 @@ peekaboo type "github.com/openclaw/Peekaboo" --app Safari --foreground && peekab
 | --- | --- |
 | [click](commands/click.md) | mouse clicks, double/triple, right/middle, hold |
 | [type](commands/type.md) | typing strings into targeted fields |
-| [press](commands/press.md) | explicit-foreground individual keys and xdotool-style raw chords |
+| [press](commands/press.md) | exact-window background or explicit-foreground raw keys/chords |
 | [scroll](commands/scroll.md) | background AX/exact-window scrolling on a target, or explicit foreground wheel input |
 | [drag](commands/drag.md) | press, move, release — files, sliders, selections |
 | [move](commands/move.md) | warp the mouse without clicking |

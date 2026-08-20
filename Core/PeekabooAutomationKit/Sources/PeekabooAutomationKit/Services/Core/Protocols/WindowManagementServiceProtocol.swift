@@ -88,6 +88,32 @@ public protocol WindowManagementServiceProtocol: Sendable {
 }
 
 extension WindowManagementServiceProtocol {
+    /// Returns window rows together with explicit completeness evidence.
+    ///
+    /// Legacy conformers expose rows only, so broad selectors cannot infer uniqueness from them. An
+    /// exact window-ID lookup may still use those rows as direct identity proof.
+    public func mutationInventory(
+        target: WindowTarget) async throws -> DesktopTargetPlanning.Inventory<ServiceWindowInfo>
+    {
+        if let provider = self as? any WindowMutationInventoryProviding {
+            return try await provider.windowMutationInventory(target: target)
+        }
+        return try await .partial(
+            self.listWindows(target: target),
+            warnings: ["Window mutation inventory completeness was not reported by this service."])
+    }
+
+    public func requireWindowMutationResultProvider(operation: String) throws {
+        guard self is any WindowManagementActionResultProviding ||
+            self is any WindowManagementActionOutcomeProviding
+        else {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .runtimeIncompatible,
+                message: "\(operation) requires a canonical exact-window result provider.",
+                hint: "Update the runtime host or use the legacy non-result API explicitly.")
+        }
+    }
+
     public func closeWindow(target: WindowTarget, allowForegroundFallback: Bool) async throws {
         guard allowForegroundFallback else {
             throw PeekabooError.operationError(
@@ -148,6 +174,12 @@ extension WindowManagementServiceProtocol {
         PeekabooError.serviceUnavailable(
             "This window service does not support process-generation-pinned mutations; update the runtime host")
     }
+}
+
+/// Additive inventory capability for mutation planners that must prove catalog completeness.
+public protocol WindowMutationInventoryProviding: WindowManagementServiceProtocol {
+    func windowMutationInventory(
+        target: WindowTarget) async throws -> DesktopTargetPlanning.Inventory<ServiceWindowInfo>
 }
 
 /// Additive capability for exact-window mutations that can report their canonical execution outcome.
@@ -227,7 +259,130 @@ public protocol WindowManagementActionResultProviding: WindowManagementServicePr
         bounds: CGRect) async throws -> DesktopActionResult<Void>
 }
 
+/// Additive capability for window focus that retains its canonical outcome and exact target.
+///
+/// Focus predates the shared result carrier and is intentionally separate from
+/// ``WindowManagementActionResultProviding`` so existing conformers remain source compatible.
+public protocol WindowManagementFocusActionResultProviding: WindowManagementServiceProtocol {
+    func focusWindowActionResult(target: WindowTarget) async throws -> UIAutomationActionResult<Void>
+}
+
+/// Additive capability for focus that dispatches only while the original exact-window receipt matches.
+public protocol WindowManagementPinnedFocusActionResultProviding: WindowManagementFocusActionResultProviding {
+    func focusWindowActionResult(
+        target: WindowTarget,
+        expectedIdentity: WindowMutationIdentity) async throws -> UIAutomationActionResult<Void>
+}
+
 extension WindowManagementServiceProtocol {
+    /// Validates a result-aware exact-window mutation and retains its caller-held target receipt.
+    ///
+    /// The legacy pinned void APIs remain available explicitly. This adapter is only for callers
+    /// that require a canonical result and exact target after dispatch.
+    public func validatedWindowMutationResult(
+        _ result: DesktopActionResult<Void>,
+        expectedIdentity: WindowMutationIdentity,
+        operation: String) throws -> UIAutomationActionResult<Void>
+    {
+        try self.validatedWindowMutationResult(
+            UIAutomationActionResult(result),
+            expectedIdentity: expectedIdentity,
+            operation: operation)
+    }
+
+    public func validatedWindowMutationResult(
+        _ result: UIAutomationActionResult<Void>,
+        expectedIdentity: WindowMutationIdentity,
+        operation: String) throws -> UIAutomationActionResult<Void>
+    {
+        let receipt = DesktopActionTargetReceipt(
+            processIdentifier: expectedIdentity.ownerProcessIdentifier,
+            processStartIdentity: expectedIdentity.ownerProcessStartIdentity,
+            windowID: expectedIdentity.windowID)
+        guard let outcome = result.outcome else {
+            throw DesktopActionFailure.indeterminate(
+                evidence: .completionUnknown,
+                message: "\(operation) returned without a canonical outcome.",
+                hint: "Observe the exact window before retrying and update the runtime host.")
+                .attributed(to: receipt)
+        }
+        if !outcome.isAccepted(by: .confirmedOrDispatched) {
+            guard let failure = DesktopActionFailure(
+                outcome: outcome,
+                message: "\(operation) did not return a successful outcome.",
+                hint: "Follow the canonical escalation metadata before deciding whether to retry.")
+            else { preconditionFailure("Non-success window state must construct a failure") }
+            throw failure.attributed(to: receipt)
+        }
+
+        let expectedTarget: DesktopTargetIdentity
+        do {
+            guard let bounds = expectedIdentity.capturedBounds else {
+                throw DesktopTargetIdentityError.incompleteExactWindow
+            }
+            expectedTarget = try DesktopTargetIdentity(exactWindow: UIAutomationTarget.ExactWindow(
+                identity: expectedIdentity,
+                bounds: bounds))
+        } catch {
+            throw DesktopActionFailure.indeterminate(
+                route: outcome.route,
+                delivery: outcome.delivery,
+                evidence: .completionUnknown,
+                unitCount: outcome.dispatchState.unitCount,
+                message: "\(operation) caller held an incomplete exact-window target.",
+                hint: "Observe the selected window before retrying.",
+                causeDescription: error.localizedDescription)
+                .attributed(to: receipt)
+        }
+
+        if let returnedTarget = result.targetIdentity {
+            guard let exactWindow = returnedTarget.exactWindow,
+                  exactWindow.identity.hasSameStableReceipt(as: expectedIdentity),
+                  exactWindow.bounds == expectedIdentity.capturedBounds
+            else {
+                throw DesktopActionFailure.indeterminate(
+                    route: outcome.route,
+                    delivery: outcome.delivery,
+                    evidence: .completionUnknown,
+                    unitCount: outcome.dispatchState.unitCount,
+                    message: "\(operation) returned a mismatched exact-window target.",
+                    hint: "Observe the selected window before retrying and update the runtime host.")
+                    .attributed(to: receipt)
+            }
+            return UIAutomationActionResult(payload: (), outcome: outcome, targetIdentity: returnedTarget)
+        }
+
+        try self.requireWindowMutationResultProvider(operation: operation)
+        return UIAutomationActionResult(payload: (), outcome: outcome, targetIdentity: expectedTarget)
+    }
+}
+
+extension WindowManagementServiceProtocol {
+    public func focusWindowResult(target: WindowTarget) async throws -> UIAutomationActionResult<Void> {
+        if let results = self as? any WindowManagementFocusActionResultProviding {
+            return try await results.focusWindowActionResult(target: target)
+        }
+        throw DesktopActionFailure.preDispatchRefusal(
+            reason: .runtimeIncompatible,
+            message: "This window service cannot return a canonical focus outcome and exact target.",
+            hint: "Update the runtime host or use the legacy void focus API explicitly.")
+    }
+
+    public func focusWindowResult(
+        target: WindowTarget,
+        expectedIdentity: WindowMutationIdentity) async throws -> UIAutomationActionResult<Void>
+    {
+        guard let results = self as? any WindowManagementPinnedFocusActionResultProviding else {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .runtimeIncompatible,
+                message: "This window service cannot bind focus to an exact process-generation receipt.",
+                hint: "Update the runtime host before retrying exact focus.")
+        }
+        return try await results.focusWindowActionResult(
+            target: target,
+            expectedIdentity: expectedIdentity)
+    }
+
     public func closeWindowResult(
         target: WindowTarget,
         expectedIdentity: WindowMutationIdentity,
@@ -379,7 +534,7 @@ extension WindowManagementServiceProtocol {
 }
 
 /// Options for targeting a window
-public enum WindowTarget: Sendable, CustomStringConvertible, Codable {
+public enum WindowTarget: Sendable, CustomStringConvertible, Codable, Equatable, Hashable {
     /// Target by application name or bundle ID
     case application(String)
 

@@ -41,6 +41,7 @@ struct DaemonControlClient {
     func fetchStatus() async -> PeekabooDaemonStatus? {
         let client = PeekabooBridgeClient(socketPath: socketPath, requestTimeoutSec: self.requestTimeoutSec)
         do {
+            try await self.handshake(client: client)
             return try await client.daemonStatus()
         } catch let envelope as PeekabooBridgeErrorEnvelope {
             if envelope.code == .operationNotSupported {
@@ -54,10 +55,20 @@ struct DaemonControlClient {
 
     func stopDaemon(expectedPID: pid_t? = nil) async throws -> Bool {
         let client = PeekabooBridgeClient(socketPath: socketPath, requestTimeoutSec: self.requestTimeoutSec)
+        try await self.handshake(client: client)
         if let expectedPID {
             return try await client.daemonStop(expectedPID: expectedPID)
         }
         return try await client.daemonStop()
+    }
+
+    private func handshake(client: PeekabooBridgeClient) async throws {
+        _ = try await client.handshake(client: PeekabooBridgeClientIdentity(
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            teamIdentifier: nil,
+            processIdentifier: getpid(),
+            hostname: Host.current().name
+        ))
     }
 
     func fetchControllableDaemonStatus() async -> PeekabooDaemonStatus? {

@@ -1,10 +1,62 @@
+import Foundation
 import PeekabooAutomationKit
 import PeekabooBridge
 import PeekabooFoundation
 
 /// Canonical builders for Bridge protocol and transport tests.
 public enum BridgeTestFixtures {
-    /// Builds one internally coherent handshake while keeping protocol versions explicit at every call site.
+    public static let authenticatedHostTeamIdentifier = "PEEKABOO-TEST-HOST"
+
+    #if DEBUG
+    /// Creates a client that authenticates a real test listener by its audit-token-bound live CDHash.
+    ///
+    /// Production clients additionally require an Apple-anchored signing Team ID. SwiftPM test
+    /// executables are ad-hoc signed, so this factory replaces only that certificate claim while
+    /// retaining the live socket peer, process generation, and executable hash checks.
+    public static func authenticatedClient(
+        socketPath: String,
+        maxResponseBytes: Int = 64 * 1024 * 1024,
+        requestTimeoutSec: TimeInterval = 10,
+        operationReceiptExportDirectory: URL? = nil,
+        operationClientInstanceID: UUID = UUID(),
+        trustedHostTeamIDs: Set<String> = [BridgeTestFixtures.authenticatedHostTeamIdentifier],
+        signingTeamIdentifier: String = BridgeTestFixtures.authenticatedHostTeamIdentifier)
+        -> PeekabooBridgeClient
+    {
+        PeekabooBridgeClient.authenticatedTestClient(
+            socketPath: socketPath,
+            maxResponseBytes: maxResponseBytes,
+            requestTimeoutSec: requestTimeoutSec,
+            operationReceiptExportDirectory: operationReceiptExportDirectory,
+            operationClientInstanceID: operationClientInstanceID,
+            trustedHostTeamIDs: trustedHostTeamIDs,
+            signingTeamIdentifier: signingTeamIdentifier)
+    }
+    #endif
+
+    /// Mirrors the canonical type-action accounting used by the real automation service and Bridge receipts.
+    public static func typeResult(for actions: [TypeAction]) -> TypeResult {
+        var totalCharacters = 0
+        var keyPresses = 0
+        for action in actions {
+            switch action {
+            case let .text(text):
+                totalCharacters += text.count
+                keyPresses += text.count
+            case .key:
+                keyPresses += 1
+            case .clear:
+                keyPresses += 2
+            }
+        }
+        return TypeResult(totalCharacters: totalCharacters, keyPresses: keyPresses)
+    }
+
+    /// Builds one wire-coherent handshake while keeping protocol versions explicit at every call site.
+    ///
+    /// Protocol 1.29 fixtures that model a receipt-capable handshake must pass both the stable listener
+    /// attestation and its peer-bound logical operation session. Older and deliberately incomplete fixtures
+    /// leave both fields `nil`.
     public static func handshake(
         negotiatedVersion: PeekabooBridgeProtocolVersion,
         hostKind: PeekabooBridgeHostKind = .onDemand,
@@ -14,13 +66,19 @@ public enum BridgeTestFixtures {
         enabledOperations: [PeekabooBridgeOperation]? = nil,
         permissionTags: [String: [PeekabooBridgePermissionKind]] = [:],
         hostIdentity: PeekabooBridgeHostIdentity? = nil,
-        hostCapabilities: [String]? = nil) -> PeekabooBridgeHandshakeResponse
+        hostCapabilities: [String]? = nil,
+        operationAttestation: PeekabooBridgeListenerAttestation? = nil,
+        operationSessionAttestation: PeekabooBridgeOperationSessionAttestation? = nil)
+        -> PeekabooBridgeHandshakeResponse
     {
         if let enabledOperations {
             precondition(
                 Set(enabledOperations).isSubset(of: Set(supportedOperations)),
                 "Enabled Bridge operations must be a subset of supported operations")
         }
+        precondition(
+            (operationAttestation == nil) == (operationSessionAttestation == nil),
+            "Bridge operation listener and session attestations must be supplied together")
         return PeekabooBridgeHandshakeResponse(
             negotiatedVersion: negotiatedVersion,
             hostKind: hostKind,
@@ -30,7 +88,9 @@ public enum BridgeTestFixtures {
             enabledOperations: enabledOperations,
             permissionTags: permissionTags,
             hostIdentity: hostIdentity,
-            hostCapabilities: hostCapabilities)
+            hostCapabilities: hostCapabilities,
+            operationAttestation: operationAttestation,
+            operationSessionAttestation: operationSessionAttestation)
     }
 
     /// Builds the pre-canonical Bridge error shape for compatibility tests.

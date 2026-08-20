@@ -107,6 +107,29 @@ extension DesktopObservationServiceTests {
 
 @MainActor
 extension DesktopObservationServiceTests {
+    func testBackgroundCaptureSuppressesVisibleVisualizerMode() async throws {
+        let app = Self.app()
+        let window = Self.window(
+            id: 42,
+            title: "Fixture",
+            bounds: CGRect(x: 10, y: 20, width: 300, height: 200))
+        let capture = RecordingScreenCaptureService(result: Self.captureResult(app: app, window: window))
+        let service = DesktopObservationService(
+            screenCapture: capture,
+            automation: RecordingUIAutomationService(),
+            applications: RecordingApplicationService(applications: [app], windows: [window]))
+        let target = ResolvedObservationTarget(kind: .screen(index: 0))
+
+        _ = try await service.captureResolvedTarget(
+            target,
+            options: .init(focus: .background, visualizerMode: .screenshotFlash))
+        _ = try await service.captureResolvedTarget(
+            target,
+            options: .init(focus: .foreground, visualizerMode: .screenshotFlash))
+
+        XCTAssertEqual(capture.visualizerModes, [.none, .screenshotFlash])
+    }
+
     func testObservationWithoutDetectionCapturesResolvedWindowID() async throws {
         let imageData = Data([1, 2, 3])
         let app = Self.app()
@@ -138,7 +161,7 @@ extension DesktopObservationServiceTests {
         XCTAssertEqual(automation.detectCalls, 0)
     }
 
-    func testReusedPIDAndWindowIDFailBeforeCapture() async throws {
+    func testReusedPIDAndWindowIDFailWhenCaptureReceiptDisagrees() async throws {
         let oldApplication = ServiceApplicationInfo(
             processIdentifier: 123,
             processStartIdentity: 100,
@@ -162,12 +185,51 @@ extension DesktopObservationServiceTests {
             _ = try await service.observe(DesktopObservationRequest(
                 target: .pid(123, window: .id(42)),
                 detection: DesktopDetectionOptions(mode: .none)))
-            XCTFail("Expected reused PID/window ID to fail before capture")
+            XCTFail("Expected reused PID/window ID to fail closed")
         } catch is DesktopObservationError {
             // Expected.
         }
 
-        XCTAssertTrue(capture.operations.isEmpty)
+        XCTAssertEqual(capture.operations, [
+            .windowID(42, .logical1x, .auto),
+            .windowID(42, .logical1x, .auto),
+        ])
+    }
+
+    func testExactPIDObservationBindsCaptureAppMetadataWithoutInventory() async throws {
+        let application = ServiceApplicationInfo(
+            processIdentifier: 123,
+            processStartIdentity: 700,
+            bundleIdentifier: "com.example.fixture",
+            name: "Fixture",
+            windowCount: 1)
+        let window = Self.window(
+            id: 42,
+            title: "Captured",
+            bounds: CGRect(x: 100, y: 100, width: 400, height: 300),
+            mutationIdentity: WindowMutationIdentity(
+                windowID: 42,
+                ownerProcessIdentifier: application.processIdentifier,
+                ownerProcessStartIdentity: 700,
+                capturedBounds: CGRect(x: 100, y: 100, width: 400, height: 300)))
+        let applications = RecordingApplicationService(applications: [application], windows: [window])
+        let service = DesktopObservationService(
+            screenCapture: RecordingScreenCaptureService(
+                result: Self.captureResult(app: application, window: window)),
+            automation: RecordingUIAutomationService(),
+            applications: applications,
+            exactWindowMetadataProvider: StableExactWindowMetadataProvider())
+
+        let result = try await service.observe(DesktopObservationRequest(
+            target: .pid(application.processIdentifier, window: .id(42)),
+            capture: DesktopCaptureOptions(engine: .legacy),
+            detection: DesktopDetectionOptions(mode: .none)))
+
+        XCTAssertEqual(applications.listApplicationsCalls, 0)
+        XCTAssertEqual(result.diagnostics.stateSnapshot?.runningApplicationCount, 0)
+        XCTAssertEqual(result.target.app?.bundleIdentifier, application.bundleIdentifier)
+        XCTAssertEqual(result.target.detectionContext?.applicationBundleId, application.bundleIdentifier)
+        XCTAssertEqual(result.target.app?.processStartIdentity, application.processStartIdentity)
     }
 
     func testGenerationlessRemoteExactObservationStaysReadOnly() async throws {
@@ -247,25 +309,58 @@ extension DesktopObservationServiceTests {
     }
 
     func testObservationNormalizesCapturedWindowMetadataToResolvedTarget() async throws {
-        let app = Self.app()
+        let processIdentity = ApplicationProcessIdentity(
+            processIdentifier: 123,
+            processStartIdentity: 700)
+        let baseApp = ServiceApplicationInfo(
+            processIdentifier: processIdentity.processIdentifier,
+            processStartIdentity: processIdentity.processStartIdentity,
+            bundleIdentifier: "com.example.fixture",
+            name: "Fixture",
+            windowCount: 1)
+        let appResolution = try XCTUnwrap(ApplicationIdentifierMatcher.resolution(
+            for: "Fixture",
+            in: [ApplicationIdentifierMatcher.Candidate(baseApp)]))
+        let app = baseApp.withSelectorResolutionProofs([
+            appResolution.proof(selectedProcessIdentity: processIdentity),
+        ])
+        let bounds = CGRect(x: 100, y: 100, width: 400, height: 300)
+        let windowIdentity = WindowMutationIdentity(
+            windowID: 42,
+            ownerProcessIdentifier: processIdentity.processIdentifier,
+            ownerProcessStartIdentity: processIdentity.processStartIdentity,
+            capturedBounds: bounds,
+            isMinimized: false)
         let resolvedWindow = Self.window(
             id: 42,
             title: "Document",
-            bounds: CGRect(x: 100, y: 100, width: 400, height: 300),
-            index: 0)
+            bounds: bounds,
+            index: 0,
+            mutationIdentity: windowIdentity)
         let capturedWindow = Self.window(
             id: 42,
             title: "Document",
-            bounds: CGRect(x: 100, y: 100, width: 400, height: 300),
+            bounds: bounds,
             index: 5,
-            mutationIdentity: WindowMutationIdentity(
-                windowID: 42,
-                ownerProcessIdentifier: app.processIdentifier,
-                ownerProcessStartIdentity: 700,
-                isMinimized: false))
+            mutationIdentity: windowIdentity)
+        let windowProof = try WindowSelectorResolutionProof.make(
+            selection: .automatic,
+            candidates: [resolvedWindow],
+            selected: resolvedWindow,
+            processIdentity: processIdentity)
+        let selectorResolutionProofs = (app.selectorResolutionProofs ?? []).map {
+            $0.selecting(windowIdentity: windowIdentity)
+        } + [windowProof]
+        let captureResult = CaptureResult(
+            imageData: Data([9]),
+            metadata: CaptureMetadata(
+                size: capturedWindow.bounds.size,
+                mode: .window,
+                applicationInfo: app,
+                windowInfo: capturedWindow,
+                selectorResolutionProofs: selectorResolutionProofs))
         let applications = RecordingApplicationService(applications: [app], windows: [resolvedWindow])
-        let capture = RecordingScreenCaptureService(
-            result: Self.captureResult(app: app, window: capturedWindow))
+        let capture = RecordingScreenCaptureService(result: captureResult)
         let service = DesktopObservationService(
             screenCapture: capture,
             automation: RecordingUIAutomationService(),
@@ -280,6 +375,8 @@ extension DesktopObservationServiceTests {
         XCTAssertEqual(result.capture.metadata.windowInfo?.title, "Document")
         XCTAssertEqual(result.capture.metadata.windowInfo?.mutationIdentity, capturedWindow.mutationIdentity)
         XCTAssertEqual(result.target.detectionContext?.windowMutationIdentity, capturedWindow.mutationIdentity)
+        XCTAssertEqual(result.capture.metadata.selectorResolutionProofs, selectorResolutionProofs)
+        XCTAssertEqual(result.target.selectorResolutionProofs, selectorResolutionProofs)
     }
 
     func testObservationWithDetectionPassesWindowContextAndWebFocusPolicy() async throws {
@@ -769,6 +866,7 @@ extension DesktopObservationServiceTests {
 
         XCTAssertEqual(result.files.rawScreenshotPath, outputURL.path)
         let snapshotID = try XCTUnwrap(result.elements?.snapshotId)
+        XCTAssertEqual(result.files.publishedSnapshotID, snapshotID)
         let storedDetection = try await snapshotManager.getDetectionResult(snapshotId: snapshotID)
         XCTAssertEqual(storedDetection?.screenshotPath, outputURL.path)
         XCTAssertEqual(storedDetection?.elements.all.first?.id, "B1")
@@ -1414,6 +1512,7 @@ EngineAwareScreenCaptureServiceProtocol {
     private let onCapture: @MainActor () -> Void
     private var engine: CaptureEnginePreference = .auto
     var operations: [Operation] = []
+    var visualizerModes: [CaptureVisualizerMode] = []
 
     init(
         result: CaptureResult,
@@ -1437,9 +1536,10 @@ EngineAwareScreenCaptureServiceProtocol {
 
     func captureScreen(
         displayIndex: Int?,
-        visualizerMode _: CaptureVisualizerMode,
+        visualizerMode: CaptureVisualizerMode,
         scale: CaptureScalePreference) async throws -> CaptureResult
     {
+        self.visualizerModes.append(visualizerMode)
         self.operations.append(.screen(displayIndex, scale, self.engine))
         self.onCapture()
         return self.result
@@ -1448,9 +1548,10 @@ EngineAwareScreenCaptureServiceProtocol {
     func captureWindow(
         appIdentifier: String,
         windowIndex: Int?,
-        visualizerMode _: CaptureVisualizerMode,
+        visualizerMode: CaptureVisualizerMode,
         scale: CaptureScalePreference) async throws -> CaptureResult
     {
+        self.visualizerModes.append(visualizerMode)
         self.operations.append(.window(appIdentifier, windowIndex, scale, self.engine))
         self.onCapture()
         return self.result
@@ -1458,18 +1559,20 @@ EngineAwareScreenCaptureServiceProtocol {
 
     func captureWindow(
         windowID: CGWindowID,
-        visualizerMode _: CaptureVisualizerMode,
+        visualizerMode: CaptureVisualizerMode,
         scale: CaptureScalePreference) async throws -> CaptureResult
     {
+        self.visualizerModes.append(visualizerMode)
         self.operations.append(.windowID(Int(windowID), scale, self.engine))
         self.onCapture()
         return self.result
     }
 
     func captureFrontmost(
-        visualizerMode _: CaptureVisualizerMode,
+        visualizerMode: CaptureVisualizerMode,
         scale: CaptureScalePreference) async throws -> CaptureResult
     {
+        self.visualizerModes.append(visualizerMode)
         self.operations.append(.frontmost(scale, self.engine))
         self.onCapture()
         return self.result
@@ -1477,9 +1580,10 @@ EngineAwareScreenCaptureServiceProtocol {
 
     func captureArea(
         _ rect: CGRect,
-        visualizerMode _: CaptureVisualizerMode,
+        visualizerMode: CaptureVisualizerMode,
         scale: CaptureScalePreference) async throws -> CaptureResult
     {
+        self.visualizerModes.append(visualizerMode)
         self.operations.append(.area(rect, scale, self.engine))
         self.onCapture()
         return self.result

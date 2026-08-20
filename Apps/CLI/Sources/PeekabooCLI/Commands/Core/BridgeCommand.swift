@@ -1,10 +1,10 @@
 import Commander
 
-/// Diagnose Peekaboo Bridge host connectivity and resolution.
+/// Diagnose Peekaboo Bridge host connectivity and verify signed receipt bundles.
 struct BridgeCommand: ParsableCommand {
     static let commandDescription = CommandDescription(
         commandName: "bridge",
-        abstract: "Inspect Peekaboo Bridge host connectivity",
+        abstract: "Inspect Bridge hosts and verify signed receipts",
         discussion: """
         Peekaboo Bridge lets the CLI run permission-bound operations (Screen Recording, Accessibility,
         and Event Synthesizing) via a host app that already has the needed TCC grants.
@@ -20,9 +20,13 @@ struct BridgeCommand: ParsableCommand {
           peekaboo bridge status --verbose
           peekaboo bridge status --bridge-socket ~/Library/Application\\ Support/clawdbot/bridge.sock
           peekaboo bridge status --no-remote
+          peekaboo bridge receipt validate --bundle /private/path/receipt.json \\
+            --bridge-socket /private/path/bridge.sock --json
         """,
         subcommands: [
             StatusSubcommand.self,
+            ReceiptSubcommand.self,
+            AgentExecutionTraceSubcommand.self,
         ],
         defaultSubcommand: StatusSubcommand.self,
         showHelpOnEmptyInvocation: true
@@ -30,6 +34,15 @@ struct BridgeCommand: ParsableCommand {
 }
 
 extension BridgeCommand {
+    struct ReceiptSubcommand: ParsableCommand {
+        static let commandDescription = CommandDescription(
+            commandName: "receipt",
+            abstract: "Verify exported protocol 1.29 receipt bundles",
+            subcommands: [ValidateSubcommand.self],
+            showHelpOnEmptyInvocation: true
+        )
+    }
+
     @MainActor
     struct StatusSubcommand: OutputFormattable, RuntimeBackedCommand {
         nonisolated(unsafe) static var commandDescription: CommandDescription {
@@ -85,6 +98,14 @@ extension BridgeCommand {
             if report.remoteSkipped {
                 print("Remote: skipped (\(report.remoteSkipReason ?? "disabled"))")
                 return
+            }
+
+            let fallbackWarningLines = report.localFallbackWarningLines
+            if !fallbackWarningLines.isEmpty {
+                print("")
+                for line in fallbackWarningLines {
+                    print(line)
+                }
             }
 
             guard self.verbose else {

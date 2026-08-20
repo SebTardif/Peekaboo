@@ -35,13 +35,8 @@ struct ScrollCommandTests {
     }
 
     @Test
-    func `Scroll forwards parameters to automation service`() async throws {
-        let snapshotId = "snapshot-42"
+    func `Scroll forwards foreground parameters to automation service`() async throws {
         let context = await self.makeContext()
-        try await context.snapshots.storeDetectionResult(
-            snapshotId: snapshotId,
-            result: Self.detectionResult(snapshotId: snapshotId, element: Self.buttonElement(id: "B1"))
-        )
 
         let result = try await self.runScroll(
             arguments: [
@@ -49,8 +44,6 @@ struct ScrollCommandTests {
                 "--amount", "5",
                 "--delay", "10",
                 "--smooth",
-                "--snapshot", snapshotId,
-                "--on", "B1",
                 "--foreground",
                 "--json",
             ],
@@ -65,8 +58,8 @@ struct ScrollCommandTests {
         #expect(call.request.amount == 5)
         #expect(call.request.delay == 10)
         #expect(call.request.smooth == true)
-        #expect(call.request.target == "B1")
-        #expect(call.request.snapshotId == "snapshot-42")
+        #expect(call.request.target == nil)
+        #expect(call.request.snapshotId == nil)
         #expect(call.request.foreground)
 
         let payloadData = try #require(self.output(from: result).data(using: .utf8))
@@ -132,6 +125,9 @@ struct ScrollCommandTests {
         #expect(storedResult.elements.findById("B1") != nil)
         #expect(call.request.delay == 0)
         #expect(!call.request.foreground)
+        let payload = try JSONDecoder().decode(JSONResponse.self, from: Data(self.output(from: result).utf8))
+        #expect(payload.effect == .unverifiable)
+        #expect(payload.outcome == nil)
     }
 
     @Test
@@ -149,6 +145,53 @@ struct ScrollCommandTests {
         #expect(call.request.snapshotId == nil)
         #expect(call.request.amount == 2)
         #expect(call.request.foreground)
+    }
+
+    @Test
+    @MainActor
+    func `Targeted foreground scroll refuses unconfirmed focus before global events`() async throws {
+        let windows = InputFocusWindowService(
+            focusOutcome: .suspectedNoop(
+                route: .bridge,
+                delivery: .init(mechanism: .accessibilityAction, mode: .foreground),
+                unitCount: .one
+            )
+        )
+        let automation = OutcomeStubAutomationService()
+        automation.actionOutcome = InputFocusFixtures.typeOutcome
+        let services = InputExecutionHostServices(
+            host: .remote,
+            base: TestServicesFactory.makePeekabooServices(windows: windows, automation: automation)
+        )
+
+        let result = try await InProcessCommandRunner.run(
+            [
+                "scroll", "--direction", "down",
+                "--window-id", String(InputFocusFixtures.windowID),
+                "--foreground",
+                "--json",
+            ],
+            services: services
+        )
+        let payload = try JSONDecoder().decode(JSONResponse.self, from: Data(result.stdout.utf8))
+
+        #expect(result.exitStatus == 1)
+        #expect(windows.pinnedFocusCalls.count == 1)
+        #expect(automation.scrollCalls.isEmpty)
+        #expect(payload.outcome?.state == .suspectedNoop)
+        #expect(payload.target_receipt?.windowID == InputFocusFixtures.windowID)
+    }
+
+    @Test
+    func `Targetless foreground scroll remains allowed with automatic focus disabled`() async throws {
+        let context = await self.makeContext()
+        let result = try await self.runScroll(
+            arguments: ["--direction", "down", "--foreground", "--no-auto-focus"],
+            context: context
+        )
+
+        #expect(result.exitStatus == 0)
+        #expect(await self.automationState(context) { $0.scrollCalls }.count == 1)
     }
 
     @Test
@@ -213,6 +256,48 @@ struct ScrollCommandTests {
         #expect(result.exitStatus != 0)
         #expect(self.output(from: result).contains("require --foreground"))
         #expect(await self.automationState(context) { $0.scrollCalls }.isEmpty)
+    }
+
+    @Test
+    func `partial scroll failure preserves exact accepted units in JSON`() async throws {
+        let snapshotID = "partial-scroll-snapshot"
+        let automation = await MainActor.run { OutcomeStubAutomationService() }
+        await MainActor.run {
+            automation.uiAutomationOutcomeScript.appendFailure(
+                DesktopActionFailure.partial(
+                    delivery: .init(mechanism: .accessibilityAction, mode: .background),
+                    unitCount: .one,
+                    message: "One of three page units was accepted"
+                ),
+                for: .scroll
+            )
+        }
+        let snapshots = StubSnapshotManager()
+        try await snapshots.storeDetectionResult(
+            snapshotId: snapshotID,
+            result: Self.detectionResult(snapshotId: snapshotID, element: Self.buttonElement(id: "B1"))
+        )
+        let context = await MainActor.run {
+            TestServicesFactory.makeAutomationTestContext(automation: automation, snapshots: snapshots)
+        }
+
+        let result = try await self.runScroll(
+            arguments: [
+                "--direction", "down",
+                "--amount", "3",
+                "--on", "B1",
+                "--snapshot", snapshotID,
+                "--json",
+            ],
+            context: context
+        )
+
+        #expect(result.exitStatus != 0)
+        let payload = try JSONDecoder().decode(JSONResponse.self, from: Data(self.output(from: result).utf8))
+        #expect(payload.outcome?.state == .partial)
+        #expect(payload.outcome?.dispatchState.unitCount == .one)
+        #expect(payload.outcome?.retrySafety == .unsafe)
+        #expect(payload.outcome?.escalation == .recoverSideEffect)
     }
 
     @Test

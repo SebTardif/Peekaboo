@@ -60,9 +60,14 @@ public struct PeekabooBridgeInspectAccessibilityTreeRequest: Codable, Sendable {
 
 public struct PeekabooBridgeFocusedElementRequest: Codable, Sendable {
     public let targetProcessIdentifier: Int32
+    public let expectedProcessIdentity: ApplicationProcessIdentity?
 
-    public init(targetProcessIdentifier: Int32) {
+    public init(
+        targetProcessIdentifier: Int32,
+        expectedProcessIdentity: ApplicationProcessIdentity? = nil)
+    {
         self.targetProcessIdentifier = targetProcessIdentifier
+        self.expectedProcessIdentity = expectedProcessIdentity
     }
 }
 
@@ -181,6 +186,34 @@ public struct PeekabooBridgeHotkeyRequest: Codable, Sendable {
     }
 }
 
+public struct PeekabooBridgeBeginHeldPointerRequest: Codable, Equatable, Sendable {
+    public let owner: ExactWindowHeldPointerOwner
+    public let request: ExactWindowHeldPointerRequest
+
+    public init(owner: ExactWindowHeldPointerOwner, request: ExactWindowHeldPointerRequest) {
+        self.owner = owner
+        self.request = request
+    }
+}
+
+public struct PeekabooBridgeFinishHeldPointerRequest: Codable, Equatable, Sendable {
+    public let owner: ExactWindowHeldPointerOwner
+    public let receipt: ExactWindowHeldPointerReceipt
+
+    public init(owner: ExactWindowHeldPointerOwner, receipt: ExactWindowHeldPointerReceipt) {
+        self.owner = owner
+        self.receipt = receipt
+    }
+}
+
+public struct PeekabooBridgeHeldPointerOwnerRequest: Codable, Equatable, Sendable {
+    public let owner: ExactWindowHeldPointerOwner
+
+    public init(owner: ExactWindowHeldPointerOwner) {
+        self.owner = owner
+    }
+}
+
 public struct PeekabooBridgeTargetedHotkeyRequest: Codable, Sendable {
     public let keys: String
     public let holdDuration: Int
@@ -252,17 +285,16 @@ public struct PeekabooBridgeTargetedClickRequest: Codable, Sendable {
         self.expectedWindowBounds = expectedWindowBounds
     }
 
-    /// Whether a legacy (protocol <= 1.8) host would deliver this request via the synthetic
-    /// pid-routed event path. Current hosts deliver every targeted click through accessibility;
-    /// this remains only so clients can refuse these variants against old hosts, whose synthetic
-    /// path mis-delivers positioned clicks at the window corner.
+    /// Whether this request's concrete click route needs native event synthesis.
+    /// Single clicks and semantic right-clicks can stay in Accessibility; multi-clicks,
+    /// middle-clicks, and coordinate right-clicks use exact-window routed events.
     public var requiresPostEventPermission: Bool {
         Self.requiresPostEventPermission(target: self.target, clickType: self.clickType)
     }
 
     public static func requiresPostEventPermission(target: ClickTarget, clickType: ClickType) -> Bool {
         switch (target, clickType) {
-        case (.coordinates, _), (_, .double), (_, .longPress):
+        case (_, .double), (_, .middle), (_, .triple), (_, .longPress), (.coordinates, .right):
             true
         case (_, .single), (_, .right):
             false
@@ -391,6 +423,12 @@ public struct PeekabooBridgeAppIdentifierRequest: Codable, Sendable {
         self.identifier = identifier
         self.expectedIdentity = expectedIdentity
     }
+
+    public init(_ request: ApplicationHideRequest) {
+        self.init(
+            identifier: request.identifier,
+            expectedIdentity: request.expectedIdentity)
+    }
 }
 
 public struct PeekabooBridgeQuitAppRequest: Codable, Sendable {
@@ -427,19 +465,101 @@ public struct PeekabooBridgeMenuListRequest: Codable, Sendable {
 public struct PeekabooBridgeMenuClickRequest: Codable, Sendable {
     public let appIdentifier: String
     public let itemPath: String
+    public let expectedIdentity: ApplicationProcessIdentity?
+    public let deliveryMode: DesktopActionOutcome.Delivery.Mode?
+
+    public init(
+        appIdentifier: String,
+        itemPath: String,
+        expectedIdentity: ApplicationProcessIdentity? = nil,
+        deliveryMode: DesktopActionOutcome.Delivery.Mode = .background)
+    {
+        self.appIdentifier = appIdentifier
+        self.itemPath = itemPath
+        self.expectedIdentity = expectedIdentity
+        self.deliveryMode = deliveryMode
+    }
+
+    public init(_ request: MenuItemActionRequest) {
+        self.init(
+            appIdentifier: request.appIdentifier,
+            itemPath: request.itemPath,
+            expectedIdentity: request.expectedIdentity,
+            deliveryMode: request.deliveryMode)
+    }
+
+    static func legacyReceiptless(appIdentifier: String, itemPath: String) -> Self {
+        Self(
+            legacyAppIdentifier: appIdentifier,
+            itemPath: itemPath)
+    }
+
+    private init(legacyAppIdentifier: String, itemPath: String) {
+        self.appIdentifier = legacyAppIdentifier
+        self.itemPath = itemPath
+        self.expectedIdentity = nil
+        self.deliveryMode = nil
+    }
 }
 
 public struct PeekabooBridgeMenuClickByNameRequest: Codable, Sendable {
     public let appIdentifier: String
     public let itemName: String
+    public let expectedIdentity: ApplicationProcessIdentity?
+    public let deliveryMode: DesktopActionOutcome.Delivery.Mode?
+
+    public init(
+        appIdentifier: String,
+        itemName: String,
+        expectedIdentity: ApplicationProcessIdentity? = nil,
+        deliveryMode: DesktopActionOutcome.Delivery.Mode = .background)
+    {
+        self.appIdentifier = appIdentifier
+        self.itemName = itemName
+        self.expectedIdentity = expectedIdentity
+        self.deliveryMode = deliveryMode
+    }
+
+    public init(_ request: MenuItemByNameActionRequest) {
+        self.init(
+            appIdentifier: request.appIdentifier,
+            itemName: request.itemName,
+            expectedIdentity: request.expectedIdentity,
+            deliveryMode: request.deliveryMode)
+    }
+
+    static func legacyReceiptless(appIdentifier: String, itemName: String) -> Self {
+        Self(
+            legacyAppIdentifier: appIdentifier,
+            itemName: itemName)
+    }
+
+    private init(legacyAppIdentifier: String, itemName: String) {
+        self.appIdentifier = legacyAppIdentifier
+        self.itemName = itemName
+        self.expectedIdentity = nil
+        self.deliveryMode = nil
+    }
 }
 
 public struct PeekabooBridgeMenuBarClickByNameRequest: Codable, Sendable {
     public let name: String
+    public let expectedLeafEvidence: DesktopSelectedLeafEvidence?
+
+    public init(name: String, expectedLeafEvidence: DesktopSelectedLeafEvidence? = nil) {
+        self.name = name
+        self.expectedLeafEvidence = expectedLeafEvidence
+    }
 }
 
 public struct PeekabooBridgeMenuBarClickByIndexRequest: Codable, Sendable {
     public let index: Int
+    public let expectedLeafEvidence: DesktopSelectedLeafEvidence?
+
+    public init(index: Int, expectedLeafEvidence: DesktopSelectedLeafEvidence? = nil) {
+        self.index = index
+        self.expectedLeafEvidence = expectedLeafEvidence
+    }
 }
 
 public struct PeekabooBridgeMenuExtraOpenRequest: Codable, Sendable {

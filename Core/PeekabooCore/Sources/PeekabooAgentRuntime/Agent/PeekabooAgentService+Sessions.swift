@@ -47,11 +47,23 @@ extension PeekabooAgentService {
         let startTime = Date()
         let sessionId = UUID().uuidString
         let messages = [
-            ModelMessage.system(AgentSystemPrompt.generate(for: model)),
+            ModelMessage.system(AgentSystemPrompt.generate(
+                for: model,
+                executionPolicy: toolExecutionPolicy)),
             ModelMessage.user(task),
         ]
         let configuration = TachikomaConfiguration.resolve(.current)
+        #if DEBUG
+        let provider: any ModelProvider = if ProcessInfo.processInfo.environment[
+            "PEEKABOO_AGENT_EXECUTION_TEST_PROVIDER",
+        ] == "permissions-v1" {
+            AgentProcessLimitProbeProvider()
+        } else {
+            try configuration.makeProvider(for: model)
+        }
+        #else
         let provider = try configuration.makeProvider(for: model)
+        #endif
         let modelIdentity = self.persistedModelIdentity(for: model, provider: provider)
 
         let session = AgentSession(
@@ -206,6 +218,21 @@ extension PeekabooAgentService {
         toolExecutionPolicy: MCPToolExecutionPolicy = .backgroundOnly) -> SessionContext
     {
         var updatedMessages = session.messages
+        let authorityPrompt = AgentSystemPrompt.generate(
+            for: model,
+            executionPolicy: toolExecutionPolicy)
+        if let systemIndex = updatedMessages.firstIndex(where: { $0.role == .system }) {
+            let existing = updatedMessages[systemIndex]
+            updatedMessages[systemIndex] = ModelMessage(
+                id: existing.id,
+                role: .system,
+                content: [.text(authorityPrompt)],
+                timestamp: existing.timestamp,
+                channel: existing.channel,
+                metadata: existing.metadata)
+        } else {
+            updatedMessages.insert(.system(authorityPrompt), at: 0)
+        }
         if let userMessage {
             updatedMessages.append(.user(userMessage))
         }
