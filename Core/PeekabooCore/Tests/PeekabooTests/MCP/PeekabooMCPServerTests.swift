@@ -47,6 +47,42 @@ struct PeekabooMCPServerTests {
     }
 
     @Test
+    @MainActor
+    func `see wire fails closed when its observation has no detection result`() async throws {
+        let observation = MissingDetectionObservationService()
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
+        let session = try await MCPWireSession.connect(context: context)
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-mcp-see-missing-detection-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        do {
+            let request: RequestContext<CallTool.Result> = try await session.client.callTool(
+                name: "see",
+                arguments: ["path": .string(outputURL.path)])
+            let result = try await request.value
+
+            #expect(result.isError == true)
+            #expect(result.content.contains { content in
+                guard case let .text(text, _, _) = content else { return false }
+                return text.contains("without element detection")
+            })
+            #expect(!result.content.contains { content in
+                if case .image = content {
+                    return true
+                }
+                return false
+            })
+            #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+        } catch {
+            await session.stop()
+            throw error
+        }
+
+        await session.stop()
+    }
+
+    @Test
     func `server preserves tool response metadata on the MCP wire result`() throws {
         let response = ToolResponse.text(
             "Captured image",

@@ -321,7 +321,8 @@ public struct SeeTool: MCPTool {
         snapshot: UISnapshot) async throws -> ([UIElement], [AutomationDetectedElement])
     {
         guard let detectionResult = observation.elements else {
-            return ([], [])
+            throw OperationError.captureFailed(
+                reason: "Observation completed without element detection")
         }
 
         let detectedElements = await MainActor.run { detectionResult.elements.all }

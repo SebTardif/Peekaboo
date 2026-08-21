@@ -1,3 +1,4 @@
+import Foundation
 import PeekabooAutomationKit
 import PeekabooFoundation
 import TachikomaMCP
@@ -16,6 +17,7 @@ enum MCPToolTestHelpers {
         screens: (any ScreenServiceProtocol)? = nil,
         clipboard: (any ClipboardServiceProtocol)? = nil,
         snapshots: (any SnapshotManagerProtocol)? = nil,
+        desktopObservation: (any DesktopObservationServiceProtocol)? = nil,
         permissionsStatusProvider: (any PermissionsStatusProviding)? = nil,
         snapshotMutationCoordinator: (any MCPToolSnapshotMutationCoordinating)? = nil,
         snapshotExecutionGate: MCPToolSnapshotExecutionGate = MCPToolSnapshotExecutionGate(),
@@ -43,7 +45,7 @@ enum MCPToolTestHelpers {
                 dialogs: dialogs ?? services.dialogs,
                 dock: services.dock,
                 screenCapture: screenCapture ?? services.screenCapture,
-                desktopObservation: DesktopObservationService(
+                desktopObservation: desktopObservation ?? DesktopObservationService(
                     screenCapture: screenCapture ?? services.screenCapture,
                     automation: automation ?? services.automation,
                     applications: applications ?? services.applications,
@@ -142,5 +144,25 @@ enum MCPToolTestHelpers {
         return try await MCPToolContext.withContext(context) {
             try await operation()
         }
+    }
+}
+
+@MainActor
+final class MissingDetectionObservationService: DesktopObservationServiceProtocol {
+    func observe(_ request: DesktopObservationRequest) async throws -> DesktopObservationResult {
+        let path = try #require(request.output.path)
+        let imageData = Data("see-missing-detection".utf8)
+        try imageData.write(to: URL(fileURLWithPath: path), options: .atomic)
+        return DesktopObservationResult(
+            target: ResolvedObservationTarget(kind: .screen(index: 0)),
+            capture: CaptureResult(
+                imageData: imageData,
+                savedPath: path,
+                metadata: CaptureMetadata(
+                    size: CGSize(width: 1, height: 1),
+                    mode: .screen,
+                    timestamp: Date())),
+            elements: nil,
+            files: DesktopObservationFiles(rawScreenshotPath: path))
     }
 }

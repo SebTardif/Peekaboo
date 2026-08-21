@@ -14,7 +14,7 @@ struct SeeToolImageOwnershipTests {
         let observation = await MainActor.run {
             CoordinatedFileOnlyObservationService(imageData: [firstPixels, secondPixels])
         }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
         let tool = SeeTool(context: context)
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("peekaboo-see-shared-\(UUID().uuidString).png")
@@ -59,7 +59,7 @@ struct SeeToolImageOwnershipTests {
         let observation = await MainActor.run {
             AnnotatedFileOnlyObservationService(rawData: rawPixels, annotatedData: annotatedPixels)
         }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
         let tool = SeeTool(context: context)
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("peekaboo-see-annotated-\(UUID().uuidString).png")
@@ -91,7 +91,7 @@ struct SeeToolImageOwnershipTests {
         let observation = await MainActor.run {
             AnnotatedFileOnlyObservationService(rawData: rawPixels, annotatedData: Data("unused".utf8))
         }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
         let tool = SeeTool(context: context)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("peekaboo-see-symlink-\(UUID().uuidString)", isDirectory: true)
@@ -119,7 +119,7 @@ struct SeeToolImageOwnershipTests {
                 annotatedData: Data("unused".utf8),
                 captureData: untrustedPixels)
         }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("peekaboo-see-owned-raster-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: outputURL) }
@@ -135,9 +135,38 @@ struct SeeToolImageOwnershipTests {
     }
 
     @Test
+    func `See fails closed when observation omits element detection`() async throws {
+        let observation = await MainActor.run { MissingDetectionObservationService() }
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-see-missing-detection-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let response = try await SeeTool(context: context).execute(arguments: ToolArguments(raw: [
+            "path": outputURL.path,
+        ]))
+
+        #expect(response.isError)
+        let text = response.content.compactMap { content -> String? in
+            if case let .text(value, annotations: _, _meta: _) = content {
+                return value
+            }
+            return nil
+        }.joined()
+        #expect(text.contains("without element detection"))
+        #expect(!response.content.contains { content in
+            if case .image = content {
+                return true
+            }
+            return false
+        })
+        #expect(!FileManager.default.fileExists(atPath: outputURL.path))
+    }
+
+    @Test
     func `post-processing failure preserves dispatched web focus outcome and process target`() async throws {
         let observation = await MainActor.run { OutcomeMissingArtifactObservationService() }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
 
         let response = try await SeeTool(context: context).execute(arguments: ToolArguments(raw: [
             "web_focus": true,
@@ -172,7 +201,7 @@ struct SeeToolImageOwnershipTests {
                     unitCount: .one),
                 targetIdentity: target)
         }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
 
         let response = try await SeeTool(context: context).execute(arguments: ToolArguments(raw: [
             "web_focus": true,
@@ -192,7 +221,7 @@ struct SeeToolImageOwnershipTests {
     @Test
     func `ROI response exposes local elements and snapshot bound coordinate metadata`() async throws {
         let observation = await MainActor.run { ROIFileObservationService() }
-        let context = await self.makeContext(desktopObservation: observation)
+        let context = await MCPToolTestHelpers.makeContext(desktopObservation: observation)
         let response = try await SeeTool(context: context).execute(arguments: ToolArguments(raw: [
             "window_id": 42,
             "roi": "10,20,30,20",
@@ -218,31 +247,6 @@ struct SeeToolImageOwnershipTests {
         #expect(logicalX == 210)
         #expect(logicalWidth == 30)
         #expect(!snapshotID.isEmpty)
-    }
-
-    private func makeContext(
-        desktopObservation: any DesktopObservationServiceProtocol) async -> MCPToolContext
-    {
-        let base = await MCPToolTestHelpers.makeContext()
-        return await MainActor.run {
-            MCPToolContext(
-                automation: base.automation,
-                menu: base.menu,
-                windows: base.windows,
-                applications: base.applications,
-                dialogs: base.dialogs,
-                dock: base.dock,
-                screenCapture: base.screenCapture,
-                desktopObservation: desktopObservation,
-                snapshots: base.snapshots,
-                screens: base.screens,
-                agent: base.agent,
-                permissions: base.permissions,
-                clipboard: base.clipboard,
-                browser: base.browser,
-                snapshotMutationCoordinator: base.snapshotMutationCoordinator,
-                snapshotExecutionGate: base.snapshotExecutionGate)
-        }
     }
 
     private static func imageData(_ response: ToolResponse) throws -> Data {
@@ -312,7 +316,11 @@ private final class CoordinatedFileOnlyObservationService: DesktopObservationSer
                     size: CGSize(width: 1, height: 1),
                     mode: .screen,
                     timestamp: Date())),
-            elements: nil,
+            elements: ElementDetectionResult(
+                snapshotId: "snapshot",
+                screenshotPath: path,
+                elements: DetectedElements(),
+                metadata: DetectionMetadata(detectionTime: 0, elementCount: 0, method: "mock")),
             files: DesktopObservationFiles(
                 rawScreenshotPath: path,
                 annotatedScreenshotPath: annotatedPath))
