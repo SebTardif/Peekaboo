@@ -162,7 +162,7 @@ extension ConfigurationManager {
             return (false, "Invalid response")
         }
 
-        guard httpResponse.statusCode == 200 else {
+        guard Self.isSuccessfulCustomProviderProbe(statusCode: httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             return (false, errorMessage)
         }
@@ -196,12 +196,16 @@ extension ConfigurationManager {
             return (false, "Invalid response")
         }
 
-        if httpResponse.statusCode < 500 {
-            return (true, nil)
+        guard Self.isSuccessfulCustomProviderProbe(statusCode: httpResponse.statusCode) else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+            return (false, errorMessage)
         }
 
-        let errorMessage = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
-        return (false, errorMessage)
+        return (true, nil)
+    }
+
+    static func isSuccessfulCustomProviderProbe(statusCode: Int) -> Bool {
+        statusCode == 200
     }
 
     static func anthropicProbeModel(for provider: Configuration.CustomProvider) -> String {
