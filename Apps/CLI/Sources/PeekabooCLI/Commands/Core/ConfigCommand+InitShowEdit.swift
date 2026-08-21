@@ -265,6 +265,10 @@ extension ConfigCommand {
         var printPath: Bool = false
         @RuntimeStorage var runtime: CommandRuntime?
 
+        static func editorProcessArguments(editor: String, configPath: String) -> [String] {
+            ["--", editor, configPath]
+        }
+
         mutating func run(using runtime: CommandRuntime) async throws {
             self.prepare(using: runtime)
 
@@ -293,7 +297,7 @@ extension ConfigCommand {
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [editorCommand, self.configPath]
+            process.arguments = Self.editorProcessArguments(editor: editorCommand, configPath: self.configPath)
 
             do {
                 try process.run()
