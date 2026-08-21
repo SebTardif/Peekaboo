@@ -1101,11 +1101,9 @@ public struct PasteTool: MCPTool {
 
         if let filePath = arguments.getString("filePath") ?? arguments.getString("imagePath") {
             let url = ClipboardPathResolver.fileURL(from: filePath)
-            let data = try Data(contentsOf: url)
-            let inferred = UTType(filenameExtension: url.pathExtension) ?? .data
-            let forced = arguments.getString("uti").flatMap(UTType.init(_:)) ?? inferred
-            let request = ClipboardPayloadBuilder.dataRequest(
-                data: data,
+            let forced = arguments.getString("uti").flatMap(UTType.init(_:))
+            let request = try ClipboardPayloadBuilder.dataRequest(
+                fileURL: url,
                 uti: forced,
                 alsoText: arguments.getString("alsoText"),
                 allowLarge: arguments.getBool("allowLarge") ?? false)

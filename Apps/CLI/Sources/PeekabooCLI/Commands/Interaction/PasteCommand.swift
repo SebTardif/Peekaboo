@@ -426,11 +426,9 @@ struct PasteCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormat
 
         if let path = self.filePath {
             let url = ClipboardPathResolver.fileURL(from: path)
-            let data = try Data(contentsOf: url)
-            let inferred = UTType(filenameExtension: url.pathExtension) ?? .data
-            let forced = self.uti.flatMap(UTType.init(_:)) ?? inferred
-            return ClipboardPayloadBuilder.dataRequest(
-                data: data,
+            let forced = self.uti.flatMap(UTType.init(_:))
+            return try ClipboardPayloadBuilder.dataRequest(
+                fileURL: url,
                 uti: forced,
                 alsoText: self.alsoText,
                 allowLarge: self.allowLarge

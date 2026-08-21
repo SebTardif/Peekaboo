@@ -243,7 +243,7 @@ public final class ClipboardService: ClipboardServiceActionResultProviding {
     private let sizeLimit: Int
     private var slots: [String: [ClipboardRepresentation]] = [:]
 
-    public init(pasteboard: NSPasteboard = .general, sizeLimit: Int = 10 * 1024 * 1024) {
+    public init(pasteboard: NSPasteboard = .general, sizeLimit: Int = ClipboardPayloadBuilder.defaultSizeLimit) {
         self.pasteboard = pasteboard
         self.sizeLimit = sizeLimit
     }

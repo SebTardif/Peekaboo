@@ -362,10 +362,8 @@ private func makeClipboardWriteRequest(from command: ClipboardCommand.SetSubcomm
 
     if let filePath = command.filePath {
         let url = ClipboardPathResolver.fileURL(from: filePath)
-        let data = try Data(contentsOf: url)
-        return ClipboardPayloadBuilder.dataRequest(
-            data: data,
-            uti: UTType(filenameExtension: url.pathExtension) ?? .data,
+        return try ClipboardPayloadBuilder.dataRequest(
+            fileURL: url,
             alsoText: command.alsoText,
             allowLarge: command.allowLarge
         )

@@ -28,6 +28,112 @@ final class ClipboardWriteRequestTests: XCTestCase {
         XCTAssertEqual(result.textPreview, "hello")
     }
 
+    func testFileRequestRejectsOversizedFileBeforeLoadingBytes() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-clipboard-size-\(UUID().uuidString).bin")
+        let payload = Data(repeating: 0x61, count: 16)
+        try payload.write(to: fileURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        XCTAssertThrowsError(
+            try ClipboardPayloadBuilder.dataRequest(fileURL: fileURL, sizeLimit: 4))
+        { error in
+            guard case let ClipboardServiceError.sizeExceeded(current, limit) = error else {
+                return XCTFail("Expected sizeExceeded, got \(error)")
+            }
+            XCTAssertEqual(current, payload.count)
+            XCTAssertEqual(limit, 4)
+        }
+    }
+
+    func testFileRequestCountsAlsoTextAgainstSizeLimit() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-clipboard-companion-\(UUID().uuidString).bin")
+        try Data(repeating: 0x62, count: 3).write(to: fileURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        XCTAssertThrowsError(
+            try ClipboardPayloadBuilder.dataRequest(
+                fileURL: fileURL,
+                alsoText: "two",
+                sizeLimit: 5))
+        { error in
+            guard case let ClipboardServiceError.sizeExceeded(current, limit) = error else {
+                return XCTFail("Expected sizeExceeded, got \(error)")
+            }
+            XCTAssertEqual(current, 6)
+            XCTAssertEqual(limit, 5)
+        }
+    }
+
+    func testFileRequestAllowsOversizedFileWhenAllowLarge() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-clipboard-allow-\(UUID().uuidString).bin")
+        let payload = Data(repeating: 0x63, count: 16)
+        try payload.write(to: fileURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let request = try ClipboardPayloadBuilder.dataRequest(
+            fileURL: fileURL,
+            allowLarge: true,
+            sizeLimit: 4)
+        XCTAssertEqual(request.representations.first?.data, payload)
+        XCTAssertTrue(request.allowLarge)
+    }
+
+    func testFileRequestCannotBypassSizeGuardByReplacingSymlinkAfterOpen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-clipboard-symlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let original = directory.appendingPathComponent("original.bin")
+        let replacement = directory.appendingPathComponent("replacement.bin")
+        let link = directory.appendingPathComponent("payload.bin")
+        let originalData = Data("original".utf8)
+        try originalData.write(to: original)
+        try Data(repeating: 0x66, count: 64).write(to: replacement)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original)
+
+        let request = try ClipboardPayloadBuilder.dataRequest(
+            fileURL: link,
+            sizeLimit: originalData.count,
+            hooks: ClipboardFileReadHooks(
+                afterOpen: {
+                    try FileManager.default.removeItem(at: link)
+                    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: replacement)
+                },
+                afterStat: {}))
+
+        XCTAssertEqual(request.representations.first?.data, originalData)
+    }
+
+    func testFileRequestBoundsGrowthAfterDescriptorInspection() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-clipboard-growth-\(UUID().uuidString).bin")
+        try Data(repeating: 0x64, count: 4).write(to: fileURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        XCTAssertThrowsError(
+            try ClipboardPayloadBuilder.dataRequest(
+                fileURL: fileURL,
+                sizeLimit: 4,
+                hooks: ClipboardFileReadHooks(
+                    afterOpen: {},
+                    afterStat: {
+                        let handle = try FileHandle(forWritingTo: fileURL)
+                        defer { try? handle.close() }
+                        try handle.seekToEnd()
+                        try handle.write(contentsOf: Data(repeating: 0x65, count: 16))
+                    }))) { error in
+            guard case let ClipboardServiceError.sizeExceeded(current, limit) = error else {
+                return XCTFail("Expected sizeExceeded, got \(error)")
+            }
+            XCTAssertEqual(current, 20)
+            XCTAssertEqual(limit, 4)
+        }
+    }
+
     func testSetCountsAlsoTextAgainstLargePayloadLimit() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         let clipboard = ClipboardService(pasteboard: pasteboard, sizeLimit: 4)

@@ -204,11 +204,8 @@ public struct ClipboardTool: MCPTool {
 
         if let filePath = arguments.getString("file_path") {
             let url = ClipboardPathResolver.fileURL(from: filePath)
-            let data = try Data(contentsOf: url)
-            let uti = UTType(filenameExtension: url.pathExtension) ?? .data
-            return ClipboardPayloadBuilder.dataRequest(
-                data: data,
-                uti: uti,
+            return try ClipboardPayloadBuilder.dataRequest(
+                fileURL: url,
                 alsoText: arguments.getString("alsoText"),
                 allowLarge: arguments.getBool("allowLarge") ?? false)
         }
