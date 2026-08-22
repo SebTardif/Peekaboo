@@ -62,7 +62,8 @@ enum ScreenCaptureKitCaptureGate {
 
     @MainActor
     static func withExclusiveCaptureOperation<T: Sendable>(
-        operationName _: String,
+        operationName: String,
+        exclusiveWaitNanoseconds: UInt64 = 15_000_000_000,
         _ operation: @escaping @MainActor @Sendable () async throws -> T) async throws -> T
     {
         guard !self.isInsideCaptureOperation else {
@@ -79,12 +80,18 @@ enum ScreenCaptureKitCaptureGate {
         }
         defer { close(fd) }
 
+        let deadline = DispatchTime.now().uptimeNanoseconds + exclusiveWaitNanoseconds
         while flock(fd, LOCK_EX | LOCK_NB) != 0 {
             guard errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR else {
                 return try await operation()
             }
 
             try Task.checkCancellation()
+            if DispatchTime.now().uptimeNanoseconds >= deadline {
+                throw OperationError.captureFailed(
+                    reason: "Timed out waiting for the exclusive ScreenCaptureKit " +
+                        "operation lock before \(operationName).")
+            }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         defer { flock(fd, LOCK_UN) }
