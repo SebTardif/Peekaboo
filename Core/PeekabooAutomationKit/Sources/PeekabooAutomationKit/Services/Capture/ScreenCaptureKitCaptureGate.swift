@@ -5,6 +5,8 @@ import PeekabooFoundation
 @preconcurrency import ScreenCaptureKit
 
 enum ScreenCaptureKitCaptureGate {
+    static let defaultExclusiveWaitNanoseconds: UInt64 = 8_000_000_000
+
     @TaskLocal private static var isInsideCaptureOperation = false
     @TaskLocal static var processOwnerClaimOverride:
         (@MainActor @Sendable () throws -> ScreenCaptureKitOwnerLease.OwnerReceipt)?
@@ -63,7 +65,7 @@ enum ScreenCaptureKitCaptureGate {
     @MainActor
     static func withExclusiveCaptureOperation<T: Sendable>(
         operationName: String,
-        exclusiveWaitNanoseconds: UInt64 = 15_000_000_000,
+        exclusiveWaitNanoseconds: UInt64 = Self.defaultExclusiveWaitNanoseconds,
         _ operation: @escaping @MainActor @Sendable () async throws -> T) async throws -> T
     {
         guard !self.isInsideCaptureOperation else {

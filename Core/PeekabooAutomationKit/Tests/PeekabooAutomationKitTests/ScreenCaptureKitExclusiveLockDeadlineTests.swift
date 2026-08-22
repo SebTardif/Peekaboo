@@ -7,6 +7,12 @@ import Testing
 @MainActor
 struct ScreenCaptureKitExclusiveLockDeadlineTests {
     @Test
+    func `default exclusive wait fits inside the standard Bridge request envelope`() {
+        #expect(ScreenCaptureKitCaptureGate.defaultExclusiveWaitNanoseconds == 8_000_000_000)
+        #expect(ScreenCaptureKitCaptureGate.defaultExclusiveWaitNanoseconds < 10_000_000_000)
+    }
+
+    @Test
     func `exclusive capture wait fails when another holder never unlocks`() async {
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("boo.peekaboo.sckit-operation.lock")
