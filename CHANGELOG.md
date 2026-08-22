@@ -20,6 +20,7 @@
 - Skip provider discovery and Agent construction for caller-local commands that cannot invoke the Agent.
 
 ### Fixed
+- Bound exclusive ScreenCaptureKit transaction-lock waits inside the Bridge request envelope so a wedged peer fails clearly instead of hanging capture indefinitely. Thanks @SebTardif for #599.
 - Send Gemini API keys in request headers, require HTTPS OAuth endpoints, and redact OAuth state. Thanks Vincent Koc for #575 and Tachikoma #73.
 - Enforce a 10 MiB clipboard and paste file payload limit on the opened descriptor to prevent file-replacement races. Thanks @SebTardif for #561.
 - Prevent configured editors from injecting command-line options. Thanks @SebTardif for #562.

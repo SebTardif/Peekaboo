@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Skip provider discovery and Agent construction for caller-local commands that cannot invoke the Agent.
 
 ### Fixed
+- Bound modern capture transaction-lock waits inside the Bridge request envelope so a wedged peer fails clearly instead of hanging indefinitely. Thanks @SebTardif for #599.
 - Send Gemini API keys in request headers, require HTTPS OAuth endpoints, and redact OAuth state. Thanks Vincent Koc for #575 and Tachikoma #73.
 - Enforce a race-safe 10 MiB limit for clipboard and paste file payloads. Thanks @SebTardif for #561.
 - Prevent configured editors from injecting command-line options. Thanks @SebTardif for #562.
