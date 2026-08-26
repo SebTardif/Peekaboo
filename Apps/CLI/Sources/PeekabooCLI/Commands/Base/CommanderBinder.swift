@@ -81,6 +81,20 @@ enum CommanderCLIBinder {
             commandType,
             parsedValues: parsedValues
         )
+        let resolvedSnapshotOption = commandValues.singleOption("snapshot").flatMap { value in
+            value.isEmpty ? nil : value
+        } ?? parsedValues.options["snapshot"]?.last
+        if options.requiresImplicitSnapshotInvalidation,
+           let snapshotID = resolvedSnapshotOption,
+           !InteractionSnapshotReference.isLatestAlias(snapshotID) {
+            guard SnapshotReference(rawValue: snapshotID) != nil else {
+                throw ValidationError(
+                    "Invalid snapshot reference '\(snapshotID)'; expected ps1_ followed by 32 lowercase " +
+                        "hexadecimal digits"
+                )
+            }
+            options.explicitSnapshotID = snapshotID
+        }
         let clipboardMayMutate = Self.clipboardMayMutate(commandType)
         options.requiresCallerDesktopMutationBarrier = commandType == SwitchSubcommand.self ||
             commandType == MoveWindowSubcommand.self ||
@@ -100,6 +114,8 @@ enum CommanderCLIBinder {
             commandValues.singleOption("at") != nil
         options.requiresProcessGenerationPinnedClicks = commandType == ClickCommand.self && usesBackgroundInput &&
             !options.requiresExactWindowTargetedClicks
+        options.requiresTargetedClickAccessibilityValueDelivery = commandType == ClickCommand.self &&
+            usesBackgroundInput
         let servesDynamicTools = Self.isAgentExecutionCommand(commandType) || commandType == MCPCommand.Serve.self
         options.requiresAgentService = servesDynamicTools
         if servesDynamicTools {
@@ -108,6 +124,7 @@ enum CommanderCLIBinder {
             options.requiresProcessGenerationPinnedHotkeys = true
             options.requiresProcessGenerationPinnedTypeActions = true
             options.requiresProcessGenerationPinnedClicks = true
+            options.requiresTargetedClickAccessibilityValueDelivery = true
         }
         options.requiresTargetedScroll = commandType == ScrollCommand.self &&
             !commandValues.flag("foreground")
@@ -137,6 +154,9 @@ enum CommanderCLIBinder {
         options.usesPerToolSnapshotInvalidation = Self.isAgentExecutionCommand(commandType) ||
             commandType == MCPCommand.Serve.self ||
             commandType == VerifyCommand.self
+        options.requiresProducerBoundSnapshotReferences = commandType == SeeCommand.self ||
+            options.requiresSilentCapture ||
+            options.usesPerToolSnapshotInvalidation
         options.verbose = parsedValues.flags.contains("verbose")
         options.jsonOutput = parsedValues.flags.contains("jsonOutput")
         let values = CommanderBindableValues(parsedValues: parsedValues)
