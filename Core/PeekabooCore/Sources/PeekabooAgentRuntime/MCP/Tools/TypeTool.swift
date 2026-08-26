@@ -18,7 +18,9 @@ public struct TypeTool: MCPTool {
             """
             Default background-only MCP/Agent delivery requires an explicit fresh exact non-dialog snapshot receipt.
             An optional element ID must come from that snapshot. App/PID/window-only, implicit-latest, competing
-            selector, targetless, and foreground forms are refused before dispatch.
+            selector, targetless, and foreground forms are refused before dispatch. Use clear=true with literal text
+            when replacement is intended and a confirmed typing result is required; other event injection remains
+            honestly unverifiable and requires fresh observation.
             """
         } else {
             """
@@ -66,7 +68,8 @@ public struct TypeTool: MCPTool {
             "wpm": SchemaBuilder.integer(
                 description: "Optional. Human typing speed (80-220 WPM). Overrides delay when set."),
             "clear": SchemaBuilder.boolean(
-                description: "Optional. Clear the field before typing (Cmd+A, Delete).",
+                description: "Optional. Clear before typing. Clear plus literal text can be confirmed by private " +
+                    "non-secure AX value readback; clear=false typing remains unverifiable.",
                 default: false),
         ]
         if !backgroundOnly {
@@ -121,7 +124,7 @@ public struct TypeTool: MCPTool {
                 additionalFields: mutationTracker.compatibilityFields)
         } catch let error as InputDeliveryIndeterminateError {
             var additionalFields = mutationTracker.targetFields
-            additionalFields["characters_typed"] = mutationTracker.charactersTyped.map(Value.int) ?? .null
+            additionalFields["characters_typed"] = .null
             return try await MCPDesktopActionFailureHandler.response(
                 for: error.desktopActionFailure(delivery: mutationTracker.delivery),
                 uiSnapshots: self.context.uiSnapshots,
@@ -227,7 +230,9 @@ public struct TypeTool: MCPTool {
         else { return nil }
         return normalized
     }
+}
 
+extension TypeTool {
     private func parseProfile(_ raw: String?, wordsPerMinute: Int?) throws -> TypingProfile {
         guard let raw else { return wordsPerMinute == nil ? .linear : .human }
         guard let profile = TypingProfile(rawValue: raw.lowercased()) else {
@@ -276,6 +281,7 @@ public struct TypeTool: MCPTool {
         try self.preflightBackgroundType(
             target: plannedTarget,
             requiresElementFocus: targetContext != nil,
+            requiresCompositeTypeDelivery: Self.requiresCompositeTypeDelivery(actions),
             automation: automation)
 
         let focusResult: TypeFocusResult
@@ -348,7 +354,6 @@ public struct TypeTool: MCPTool {
                 message: "Typing failed after its element focus action completed.",
                 hint: "Observe the target before deciding whether to retry typing."))
         } catch let error as InputDeliveryIndeterminateError {
-            mutationTracker.charactersTyped = error.emittedUnitCount
             if sequence.mutationDisposition.mutationDispatched {
                 mutationTracker.delivery = nil
             }
@@ -371,16 +376,11 @@ public struct TypeTool: MCPTool {
                 causeDescription: error.localizedDescription))
         }
 
-        do {
-            try DesktopActionFailure.requireConfirmedIfReported(
-                typeActionResult.outcome,
-                operation: "Typing")
-        } catch let failure as DesktopActionFailure {
-            throw focusResult.attributing(sequence.failure(
-                combining: failure,
-                message: "Typing failed after its element focus action completed.",
-                hint: "Observe the target before deciding whether to retry typing."))
-        }
+        try TypeActionResultSemantics.requireConfirmed(
+            typeActionResult,
+            target: plannedTarget,
+            focusResult: focusResult,
+            sequence: sequence)
 
         if let outcome = typeActionResult.outcome {
             sequence.record(.reportedOutcome(
@@ -507,6 +507,17 @@ public struct TypeTool: MCPTool {
                 "This automation host does not support atomic exact-window pixel-focus typing.",
                 refusalReason: .runtimeIncompatible)
         }
+        if Self.requiresCompositeTypeDelivery(actions) {
+            do {
+                try ExactWindowKeyboardRuntime.requireCompositeTypeDelivery(
+                    automation: self.context.automation,
+                    operation: "Pixel-focus background typing")
+            } catch {
+                throw TypeToolValidationError(
+                    error.localizedDescription,
+                    refusalReason: .runtimeIncompatible)
+            }
+        }
         let actionResult = try await service.typeActionsByFocusingPixelWithOutcome(
             ExactWindowPixelFocusTypeRequest(
                 point: target.point,
@@ -516,9 +527,9 @@ public struct TypeTool: MCPTool {
                 windowIdentity: target.exactWindow.identity,
                 windowBounds: target.exactWindow.bounds))
         let expectedIdentity = DesktopTargetIdentity(exactWindow: target.exactWindow)
-        _ = try UIAutomationActionResultSemantics.requireAcceptedOutcome(
+        _ = try UIAutomationActionResultSemantics.requireConfirmedChange(
             actionResult,
-            policy: .confirmedOrDispatched(requiring: .background),
+            deliveryMode: .background,
             targetRequirement: .exact(expectedIdentity),
             operation: "Pixel-focus typing")
         var sequence = DesktopActionSequenceAccumulator()
@@ -611,8 +622,20 @@ public struct TypeTool: MCPTool {
     private func preflightBackgroundType(
         target: UIAutomationTarget?,
         requiresElementFocus: Bool,
+        requiresCompositeTypeDelivery: Bool,
         automation: any UIAutomationServiceProtocol) throws
     {
+        if target != nil, requiresCompositeTypeDelivery {
+            do {
+                try ExactWindowKeyboardRuntime.requireCompositeTypeDelivery(
+                    automation: automation,
+                    operation: "Background typing")
+            } catch {
+                throw TypeToolValidationError(
+                    error.localizedDescription,
+                    refusalReason: .runtimeIncompatible)
+            }
+        }
         guard target?.exactWindow != nil else { return }
         do {
             _ = try ExactWindowKeyboardRuntime.requireOutcomeProvider(
@@ -623,8 +646,7 @@ public struct TypeTool: MCPTool {
                 error.localizedDescription,
                 refusalReason: .runtimeIncompatible)
         }
-        let hasReceipt = target?.exactWindow?.focusedElement != nil
-        guard hasReceipt || (automation is any TargetedFocusedElementServiceProtocol) else {
+        guard automation is any TargetedFocusedElementServiceProtocol else {
             throw TypeToolValidationError(
                 "This automation host does not support focused exact-window background typing.",
                 refusalReason: .runtimeIncompatible)
@@ -859,11 +881,18 @@ public struct TypeTool: MCPTool {
         mutationTracker: TypeMutationTracker) async throws -> UIAutomationActionResult<TypeResult>
     {
         if let exactWindow = request.target.exactWindow {
+            let requiresCompositeTypeDelivery = Self.requiresCompositeTypeDelivery(request.actions)
             let outcomeAutomation: any UIAutomationActionOutcomeProviding
             do {
-                outcomeAutomation = try ExactWindowKeyboardRuntime.requireOutcomeProvider(
-                    automation: automation,
-                    operation: "Background typing")
+                outcomeAutomation = if requiresCompositeTypeDelivery {
+                    try ExactWindowKeyboardRuntime.requireTypeOutcomeProvider(
+                        automation: automation,
+                        operation: "Background typing")
+                } else {
+                    try ExactWindowKeyboardRuntime.requireOutcomeProvider(
+                        automation: automation,
+                        operation: "Background typing")
+                }
             } catch {
                 throw TypeToolValidationError(
                     error.localizedDescription,
@@ -884,7 +913,8 @@ public struct TypeTool: MCPTool {
                         windowIdentity: exactWindow.identity,
                         windowBounds: exactWindow.bounds,
                         focusedElement: focusedElement)),
-                operation: "Background typing")
+                operation: "Background typing",
+                allowsCompositeTypeDelivery: requiresCompositeTypeDelivery)
         }
         guard let automation = automation as? any TargetedTypeServiceProtocol,
               automation.supportsTargetedTypeActions,
@@ -910,6 +940,10 @@ public struct TypeTool: MCPTool {
                 snapshotId: request.snapshotId,
                 expectedProcessIdentity: processIdentity),
             outcome: nil)
+    }
+
+    private static func requiresCompositeTypeDelivery(_ actions: [TypeAction]) -> Bool {
+        actions.contains(where: \.mayUseAccessibilityValueDelivery)
     }
 
     private func snapshotExactWindow(_ snapshot: UISnapshot?) throws -> UIAutomationTarget.ExactWindow? {
@@ -984,6 +1018,27 @@ public struct TypeTool: MCPTool {
     }
 }
 
+private enum TypeActionResultSemantics {
+    static func requireConfirmed(
+        _ result: UIAutomationActionResult<TypeResult>,
+        target: UIAutomationTarget?,
+        focusResult: TypeFocusResult,
+        sequence: DesktopActionSequenceAccumulator) throws
+    {
+        do {
+            _ = try UIAutomationActionResultSemantics.requireConfirmedChange(
+                result,
+                deliveryMode: target == nil ? .foreground : .background,
+                operation: "Typing")
+        } catch let failure as DesktopActionFailure {
+            throw focusResult.attributing(sequence.failure(
+                combining: failure,
+                message: "Typing failed after its element focus action completed.",
+                hint: "Observe the target before deciding whether to retry typing."))
+        }
+    }
+}
+
 extension TypeTool {
     fileprivate static let singleDispatchUnit: DesktopActionOutcome.DispatchUnitCount = .one
 }
@@ -992,7 +1047,6 @@ extension TypeTool {
 private final class TypeMutationTracker {
     var snapshotId: String?
     var delivery: DesktopActionOutcome.Delivery?
-    var charactersTyped: Int?
     var reportsCharactersTyped = false
     var targetWindowId: Int?
 
@@ -1003,7 +1057,7 @@ private final class TypeMutationTracker {
     var compatibilityFields: [String: Value] {
         var fields = self.targetFields
         if self.reportsCharactersTyped {
-            fields["characters_typed"] = self.charactersTyped.map(Value.int) ?? .null
+            fields["characters_typed"] = .null
         }
         return fields
     }

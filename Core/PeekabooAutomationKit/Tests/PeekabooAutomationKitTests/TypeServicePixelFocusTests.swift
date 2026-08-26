@@ -5,6 +5,8 @@ import PeekabooFoundation
 import Testing
 @testable import PeekabooAutomationKit
 
+// Keep the exact-lane lifecycle, focus, dispatch, and readback matrix beside its shared fixtures.
+// swiftlint:disable type_body_length
 @MainActor
 struct TypeServicePixelFocusTests {
     @Test
@@ -38,7 +40,10 @@ struct TypeServicePixelFocusTests {
             syntheticInputDriver: synthetic,
             randomSource: SystemTypingCadenceRandomSource(),
             focusedElementSecurityProbe: { _ in false },
-            targetedCharacterTyper: { character, _ in typed.append(character) },
+            targetedCharacterTyper: { character, _, delivery in
+                typed.append(character)
+                return .dispatched(delivery: delivery, keyPressCount: 1)
+            },
             desktopOperationExecutor: executor,
             operationFinalizer: { finalizerCount += 1 })
         let exactWindow = try #require(fixture.targetIdentity.exactWindow)
@@ -70,6 +75,157 @@ struct TypeServicePixelFocusTests {
     }
 
     @Test
+    func `confirmed pixel focus cannot confirm unverified text typing`() async throws {
+        let fixture = AutomationTestFixtures.linkedSnapshotTarget(
+            processIdentity: .init(processIdentifier: getpid(), processStartIdentity: 42))
+        let manager = try await InMemorySnapshotManager.containing(fixture.detectionResult)
+        let executor = DesktopOperationExecutor(laneCoordinator: DesktopOperationLaneCoordinator(
+            coordinationRootURL: self.temporaryRoot()))
+        let click = ClickService(
+            snapshotManager: manager,
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            exactWindowIdentityValidator: { _, _ in true },
+            processStartIdentityProvider: { _ in 42 },
+            desktopOperationExecutor: executor,
+            exactWindowPixelFocusExecutor: { _, window in Self.confirmedFocusAction(for: window) })
+        let service = TypeService(
+            snapshotManager: manager,
+            clickService: click,
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            randomSource: SystemTypingCadenceRandomSource(),
+            focusedElementSecurityProbe: { _ in false },
+            targetedCharacterTyper: { _, _, delivery in
+                .dispatched(delivery: delivery, keyPressCount: 1)
+            },
+            desktopOperationExecutor: executor)
+        let exactWindow = try #require(fixture.targetIdentity.exactWindow)
+
+        let result = try await service.typeActionsByFocusingPixel(
+            .init(
+                point: CGPoint(x: 40, y: 50),
+                actions: [.text("x")],
+                cadence: .fixed(milliseconds: 0),
+                snapshotID: fixture.snapshotID,
+                windowIdentity: exactWindow.identity,
+                windowBounds: exactWindow.bounds),
+            deliveryValidator: { _ in })
+
+        #expect(result.outcome?.state == .dispatchedUnverified)
+        #expect(result.outcome?.delivery == .init(mechanism: .composite, mode: .background))
+        #expect(result.outcome?.dispatchState.unitCount == DesktopActionOutcome.DispatchUnitCount(2))
+    }
+
+    @Test
+    func `pixel clear literal readback confirms the typing leaf`() async throws {
+        let fixture = AutomationTestFixtures.linkedSnapshotTarget(
+            processIdentity: .init(processIdentifier: getpid(), processStartIdentity: 42))
+        let manager = try await InMemorySnapshotManager.containing(fixture.detectionResult)
+        let executor = DesktopOperationExecutor(laneCoordinator: DesktopOperationLaneCoordinator(
+            coordinationRootURL: self.temporaryRoot()))
+        let value = PixelFocusLockedValue("before")
+        let clock = PixelFocusPollClock { value.set("ok") }
+        let click = ClickService(
+            snapshotManager: manager,
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            exactWindowIdentityValidator: { _, _ in true },
+            processStartIdentityProvider: { _ in 42 },
+            desktopOperationExecutor: executor,
+            exactWindowPixelFocusExecutor: { _, window in Self.confirmedFocusAction(for: window) })
+        let service = TypeService(
+            snapshotManager: manager,
+            clickService: click,
+            inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+            randomSource: SystemTypingCadenceRandomSource(),
+            focusedElementSecurityProbe: { _ in false },
+            targetedCharacterTyper: { _, _, delivery in
+                .dispatched(delivery: delivery, keyPressCount: 1)
+            },
+            targetedTextReplacer: { text, _ in
+                value.set(text)
+                return true
+            },
+            exactFocusedElementValueReader: { focusedElement in
+                .success(Self.focusSnapshot(focusedElement, value: value.get()))
+            },
+            processStartIdentityProvider: { _ in 42 },
+            desktopOperationExecutor: executor,
+            effectConfirmationTiming: clock.timing())
+        let exactWindow = try #require(fixture.targetIdentity.exactWindow)
+
+        let result = try await service.typeActionsByFocusingPixel(
+            .init(
+                point: CGPoint(x: 40, y: 50),
+                actions: [.clear, .text("ok")],
+                cadence: .fixed(milliseconds: 0),
+                snapshotID: fixture.snapshotID,
+                windowIdentity: exactWindow.identity,
+                windowBounds: exactWindow.bounds),
+            deliveryValidator: { _ in })
+
+        #expect(value.get() == "ok")
+        #expect(result.outcome?.state == .confirmedChange)
+        #expect(result.outcome?.delivery == .init(mechanism: .composite, mode: .background))
+        #expect(result.outcome?.dispatchState.unitCount == DesktopActionOutcome.DispatchUnitCount(4))
+        #expect(clock.sleepCount == 1)
+    }
+
+    @Test
+    func `missing or mismatched pixel readback leaves typing unverified`() async throws {
+        for readbackAvailable in [false, true] {
+            let fixture = AutomationTestFixtures.linkedSnapshotTarget(
+                processIdentity: .init(processIdentifier: getpid(), processStartIdentity: 42))
+            let manager = try await InMemorySnapshotManager.containing(fixture.detectionResult)
+            let executor = DesktopOperationExecutor(laneCoordinator: DesktopOperationLaneCoordinator(
+                coordinationRootURL: self.temporaryRoot()))
+            let value = PixelFocusLockedValue("before")
+            let click = ClickService(
+                snapshotManager: manager,
+                inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+                exactWindowIdentityValidator: { _, _ in true },
+                processStartIdentityProvider: { _ in 42 },
+                desktopOperationExecutor: executor,
+                exactWindowPixelFocusExecutor: { _, window in Self.confirmedFocusAction(for: window) })
+            let service = TypeService(
+                snapshotManager: manager,
+                clickService: click,
+                inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
+                randomSource: SystemTypingCadenceRandomSource(),
+                focusedElementSecurityProbe: { _ in false },
+                targetedCharacterTyper: { _, _, _ in
+                    value.set("mismatch")
+                    return .dispatched(
+                        delivery: .init(mechanism: .accessibilityValue, mode: .background),
+                        keyPressCount: 0)
+                },
+                targetedTextReplacer: { text, _ in
+                    value.set(text)
+                    return true
+                },
+                exactFocusedElementValueReader: { focusedElement in
+                    readbackAvailable
+                        ? .success(Self.focusSnapshot(focusedElement, value: value.get()))
+                        : .failure(.focusedAttributeUnreadable)
+                },
+                processStartIdentityProvider: { _ in 42 },
+                desktopOperationExecutor: executor)
+            let exactWindow = try #require(fixture.targetIdentity.exactWindow)
+
+            let result = try await service.typeActionsByFocusingPixel(
+                .init(
+                    point: CGPoint(x: 40, y: 50),
+                    actions: [.clear, .text("ok")],
+                    cadence: .fixed(milliseconds: 0),
+                    snapshotID: fixture.snapshotID,
+                    windowIdentity: exactWindow.identity,
+                    windowBounds: exactWindow.bounds),
+                deliveryValidator: { _ in })
+
+            #expect(result.outcome?.state == .dispatchedUnverified)
+            #expect(result.outcome?.dispatchState.unitCount == DesktopActionOutcome.DispatchUnitCount(4))
+        }
+    }
+
+    @Test
     func `snapshot lease blocks concurrent pixel focus replay`() async throws {
         let fixture = AutomationTestFixtures.linkedSnapshotTarget(
             processIdentity: ApplicationProcessIdentity(
@@ -97,7 +253,10 @@ struct TypeServicePixelFocusTests {
             inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
             randomSource: SystemTypingCadenceRandomSource(),
             focusedElementSecurityProbe: { _ in false },
-            targetedCharacterTyper: { character, _ in typed.append(character) },
+            targetedCharacterTyper: { character, _, delivery in
+                typed.append(character)
+                return .dispatched(delivery: delivery, keyPressCount: 1)
+            },
             desktopOperationExecutor: executor)
         let exactWindow = try #require(fixture.targetIdentity.exactWindow)
         let request = ExactWindowPixelFocusTypeRequest(
@@ -153,11 +312,12 @@ struct TypeServicePixelFocusTests {
             syntheticInputDriver: synthetic,
             randomSource: SystemTypingCadenceRandomSource(),
             focusedElementSecurityProbe: { _ in false },
-            targetedCharacterTyper: { _, _ in
+            targetedCharacterTyper: { _, _, delivery in
                 typedCount += 1
                 if typedCount == 2 {
                     throw PixelFocusFixtureError.deliveryFailed
                 }
+                return .dispatched(delivery: delivery, keyPressCount: 1)
             },
             desktopOperationExecutor: executor)
         let exactWindow = try #require(fixture.targetIdentity.exactWindow)
@@ -530,7 +690,10 @@ struct TypeServicePixelFocusTests {
             inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
             randomSource: SystemTypingCadenceRandomSource(),
             focusedElementSecurityProbe: { _ in false },
-            targetedCharacterTyper: { character, _ in typed.append(character) },
+            targetedCharacterTyper: { character, _, delivery in
+                typed.append(character)
+                return .dispatched(delivery: delivery, keyPressCount: 1)
+            },
             desktopOperationExecutor: executor,
             operationFinalizer: {
                 manager.mutationLeases[fixture.snapshotID] = .requiresFreshObservation(
@@ -675,7 +838,10 @@ struct TypeServicePixelFocusTests {
             inputPolicy: UIInputPolicy(defaultStrategy: .synthOnly),
             randomSource: SystemTypingCadenceRandomSource(),
             focusedElementSecurityProbe: { _ in false },
-            targetedCharacterTyper: { character, _ in typed.append(character) },
+            targetedCharacterTyper: { character, _, delivery in
+                typed.append(character)
+                return .dispatched(delivery: delivery, keyPressCount: 1)
+            },
             desktopOperationExecutor: executor)
 
         do {
@@ -712,6 +878,29 @@ struct TypeServicePixelFocusTests {
             focusedElement: self.focusedElement(for: exactWindow))
     }
 
+    private static func confirmedFocusAction(
+        for exactWindow: UIAutomationTarget.ExactWindow) -> UIInputExecutionResult.Action
+    {
+        UIInputExecutionResult.Action(
+            outcome: .confirmedChange(
+                delivery: .init(mechanism: .accessibilityValue, mode: .background),
+                unitCount: .one),
+            focusedElement: self.focusedElement(for: exactWindow))
+    }
+
+    private nonisolated static func focusSnapshot(
+        _ focusedElement: FocusedElementIdentity,
+        value: String) -> ExactWindowFocusSnapshot
+    {
+        ExactWindowFocusSnapshot(
+            processIdentifier: focusedElement.processIdentifier,
+            windowID: focusedElement.windowID,
+            frame: focusedElement.frame,
+            role: focusedElement.role,
+            identifier: focusedElement.identifier,
+            value: value)
+    }
+
     private static func focusedElement(
         for exactWindow: UIAutomationTarget.ExactWindow) -> FocusedElementIdentity
     {
@@ -731,8 +920,51 @@ struct TypeServicePixelFocusTests {
     }
 }
 
+// swiftlint:enable type_body_length
+
 private enum PixelFocusFixtureError: Error {
     case deliveryFailed
+}
+
+private final class PixelFocusLockedValue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
+
+    func get() -> String {
+        self.lock.withLock { self.value }
+    }
+
+    func set(_ value: String) {
+        self.lock.withLock { self.value = value }
+    }
+}
+
+@MainActor
+private final class PixelFocusPollClock {
+    private var instant = ContinuousClock.now
+    private let onSleep: @MainActor () -> Void
+    private(set) var sleepCount = 0
+
+    init(onSleep: @escaping @MainActor () -> Void) {
+        self.onSleep = onSleep
+    }
+
+    func timing() -> ExactLiteralTypingEffectConfirmationTiming {
+        .init(
+            timeout: .milliseconds(60),
+            interval: .milliseconds(20),
+            maximumSampleCount: 8,
+            now: { self.instant },
+            sleep: { duration in
+                self.sleepCount += 1
+                self.instant = self.instant.advanced(by: duration)
+                self.onSleep()
+            })
+    }
 }
 
 private actor PixelFocusDeliverySuspension {

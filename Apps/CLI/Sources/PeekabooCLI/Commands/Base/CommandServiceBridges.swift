@@ -169,6 +169,12 @@ enum AutomationServiceBridge {
             else {
                 throw self.targetedTypeUnavailableError(service: targetedTypeService)
             }
+            if request.actions.contains(where: \.mayUseAccessibilityValueDelivery) {
+                try ExactWindowKeyboardRuntime.requireCompositeTypeDelivery(
+                    automation: automation,
+                    operation: "Background typing"
+                )
+            }
 
             if let automation = automation as? any UIAutomationActionOutcomeProviding {
                 return try await automation.typeActionsWithOutcome(
@@ -209,10 +215,20 @@ enum AutomationServiceBridge {
                 expectedProcessIdentity: identity
             )
         case let .exactWindow(exactWindow):
-            let outcomeService = try ExactWindowKeyboardRuntime.requireOutcomeProvider(
-                automation: automation,
-                operation: "Background typing"
+            let requiresCompositeTypeDelivery = request.actions.contains(
+                where: \.mayUseAccessibilityValueDelivery
             )
+            let outcomeService = if requiresCompositeTypeDelivery {
+                try ExactWindowKeyboardRuntime.requireTypeOutcomeProvider(
+                    automation: automation,
+                    operation: "Background typing"
+                )
+            } else {
+                try ExactWindowKeyboardRuntime.requireOutcomeProvider(
+                    automation: automation,
+                    operation: "Background typing"
+                )
+            }
             guard let focusedElement = exactWindow.focusedElement else {
                 throw PeekabooError.invalidInput(
                     field: "target",
@@ -230,7 +246,8 @@ enum AutomationServiceBridge {
                         focusedElement: focusedElement
                     )
                 ),
-                operation: "Background typing"
+                operation: "Background typing",
+                allowsCompositeTypeDelivery: requiresCompositeTypeDelivery
             )
         }
     }

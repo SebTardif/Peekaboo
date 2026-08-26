@@ -134,6 +134,11 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
                     snapshotId: observation.snapshotId,
                     target: deliveryTarget
                 )
+                _ = try UIAutomationActionResultSemantics.requireConfirmedChange(
+                    actionResult,
+                    deliveryMode: Self.delivery(for: deliveryTarget).mode,
+                    operation: "Typing"
+                )
                 let receiptlessStep = DesktopActionSequenceAccumulator.Step.dispatched(
                     route: actionRoute,
                     delivery: Self.delivery(for: deliveryTarget),
@@ -186,9 +191,12 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
             )
             let compositeResult = actionSequence.result(payload: actionResult.payload)
             self.renderResult(
-                compositeResult.payload,
-                outcome: compositeResult.outcome,
-                targetIdentity: compositeResult.targetIdentity,
+                TypeCommandRenderInput(
+                    typeResult: compositeResult.payload,
+                    outcome: compositeResult.outcome,
+                    typingOutcome: actionResult.outcome,
+                    targetIdentity: compositeResult.targetIdentity
+                ),
                 actions: actions,
                 startTime: startTime,
                 target: deliveryTarget
@@ -306,6 +314,12 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
                 "This automation host cannot run atomic exact-window pixel-focus typing"
             )
         }
+        if actions.contains(where: \.mayUseAccessibilityValueDelivery) {
+            try ExactWindowKeyboardRuntime.requireCompositeTypeDelivery(
+                automation: self.services.automation,
+                operation: "Pixel-focus background typing"
+            )
+        }
         let receipt = try await Self.planPixelFocusReceipt(
             snapshotID: snapshotID,
             snapshots: self.services.snapshots
@@ -344,9 +358,9 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
                     windowBounds: authority.target.bounds
                 )
             )
-            _ = try UIAutomationActionResultSemantics.requireAcceptedOutcome(
+            _ = try UIAutomationActionResultSemantics.requireConfirmedChange(
                 result,
-                policy: .confirmedOrDispatched(requiring: .background),
+                deliveryMode: .background,
                 targetRequirement: .exact(expectedTarget),
                 operation: "Pixel-focus typing"
             )
@@ -365,9 +379,12 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
             reason: "pixel-focus type"
         )
         self.renderResult(
-            result.payload,
-            outcome: result.outcome,
-            targetIdentity: result.targetIdentity,
+            TypeCommandRenderInput(
+                typeResult: result.payload,
+                outcome: result.outcome,
+                typingOutcome: result.outcome,
+                targetIdentity: result.targetIdentity
+            ),
             actions: actions,
             startTime: startTime,
             target: .exactWindow(authority.target)
@@ -445,22 +462,29 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
     }
 
     private func renderResult(
-        _ typeResult: TypeResult,
-        outcome: DesktopActionOutcome?,
-        targetIdentity: DesktopTargetIdentity?,
+        _ input: TypeCommandRenderInput,
         actions: [TypeAction],
         startTime: Date,
         target: UIAutomationTarget
     ) {
+        let typeResult = input.typeResult
         let targetProcessIdentifier = target.processIdentifier
         let targetWindowID = target.exactWindow?.identity.windowID
-        let specialKeys = max(typeResult.keyPresses - typeResult.totalCharacters, 0)
+        let effectConfirmed = input.typingOutcome?.state == .confirmedChange
+        let confirmedCharacters = effectConfirmed ? typeResult.totalCharacters : 0
+        let confirmedKeyPresses = effectConfirmed ? typeResult.keyPresses : 0
+        let specialKeys = effectConfirmed
+            ? typeResult.specialKeyPresses ?? max(confirmedKeyPresses - confirmedCharacters, 0)
+            : 0
+        let confirmedTypedText = effectConfirmed
+            ? Self.literalTypedText(from: actions, requestedText: self.resolvedText)
+            : nil
         let result = TypeCommandResult(
             requestedText: self.resolvedText,
-            typedText: self.resolvedText,
-            keyPresses: typeResult.keyPresses,
-            totalCharacters: typeResult.totalCharacters,
-            literalCharactersTyped: typeResult.totalCharacters,
+            typedText: confirmedTypedText,
+            keyPresses: confirmedKeyPresses,
+            totalCharacters: confirmedCharacters,
+            literalCharactersTyped: confirmedCharacters,
             specialKeyPresses: specialKeys,
             actions: actions.map(Self.actionSummary),
             executionTime: Date().timeIntervalSince(startTime),
@@ -472,13 +496,13 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
             targetWindowID: targetWindowID
         )
 
-        output(result, outcome: outcome, targetIdentity: targetIdentity) {
-            if let outcome {
+        output(result, outcome: input.outcome, targetIdentity: input.targetIdentity) {
+            if let outcome = input.outcome {
                 print(ActionOutcomeHumanRenderer.statusLine(for: outcome, operation: "Typing"))
             } else {
                 print("✅ Typing completed")
             }
-            if let typed = self.resolvedText {
+            if let typed = confirmedTypedText {
                 print("⌨️  Typed: \"\(typed)\"")
             }
             if specialKeys > 0 {
@@ -490,7 +514,7 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
             if let targetWindowID {
                 print("🪟 Window: \(targetWindowID)")
             }
-            print("📊 Total characters: \(typeResult.totalCharacters)")
+            print("📊 Total characters: \(confirmedCharacters)")
             switch self.resolvedProfile {
             case .human:
                 print("🏃‍♀️ Human cadence: \(self.resolvedWordsPerMinute) WPM")
@@ -512,6 +536,22 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
         }
     }
 
+    private static func literalTypedText(from actions: [TypeAction], requestedText: String?) -> String? {
+        guard requestedText != nil else { return nil }
+        var literal = ""
+        for action in actions {
+            switch action {
+            case let .text(text):
+                literal.append(text)
+            case .clear:
+                continue
+            case .key:
+                return nil
+            }
+        }
+        return literal
+    }
+
     private static func delivery(for target: UIAutomationTarget) -> DesktopActionOutcome.Delivery {
         if target.exactWindow != nil {
             return .init(mechanism: .windowTargetedEvents, mode: .background)
@@ -529,6 +569,13 @@ struct TypeCommand: ActionOutputFormattable, ErrorHandlingCommand, OutputFormatt
             reason: "type failure"
         )
     }
+}
+
+private struct TypeCommandRenderInput {
+    let typeResult: TypeResult
+    let outcome: DesktopActionOutcome?
+    let typingOutcome: DesktopActionOutcome?
+    let targetIdentity: DesktopTargetIdentity?
 }
 
 @MainActor
@@ -584,22 +631,23 @@ extension TypeCommand: ParsableCommand {
                 discussion: """
                     The 'type' command sends keyboard input to a targeted app or snapshot
                     process. Background delivery is the default and requires a process target.
-                    Use --foreground for intentional global input.
+                    Use --foreground for intentional global input. Success requires a confirmed
+                    receiver change; event dispatch alone remains a retry-unsafe non-success.
 
                     EXAMPLES:
-                      peekaboo type "Hello World" --app TextEdit # Background-target TextEdit
+                      peekaboo type "Hello World" --snapshot "$SNAPSHOT_ID" --clear
+                      peekaboo type "text" --snapshot "$SNAPSHOT_ID" --clear
+
+                    DISPATCH-ONLY EXAMPLES (NON-SUCCESS UNTIL FRESH OBSERVATION):
                       peekaboo type "user@example.com" --foreground
-                      peekaboo type "text" --app TextEdit --delay 0ms
                       peekaboo type "text" --app TextEdit --delay 50ms
                       peekaboo type "text" --app TextEdit --wpm 150
-                      peekaboo type "text" --app TextEdit --clear
                       peekaboo type "Line 1\nLine 2" --app TextEdit
-                      peekaboo type "Name:\tJohn" --app TextEdit
-                      peekaboo type "Path: C:\\data" --app TextEdit
 
                     KEY PRESSES:
                       Chain `type` with `press` for Return, Tab, Escape, Delete, or chords.
-                      Use --clear to clear the current field before typing.
+                      An exact-window snapshot plus --clear and literal text can confirm through
+                      private non-secure AX value readback. Other shapes require fresh observation.
 
                     ESCAPE SEQUENCES:
                       Supported escape sequences in text:

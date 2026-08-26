@@ -126,6 +126,26 @@ public enum SpecialKey: String, Sendable, Codable {
     case capsLock = "caps_lock"
     case clear
     case help
+
+    /// Keys that background typing can fulfill by editing the focused text value or selection.
+    public var mayUseAccessibilityValueDelivery: Bool {
+        switch self {
+        case .delete, .forwardDelete, .space, .leftArrow, .rightArrow, .home, .end:
+            true
+        default:
+            false
+        }
+    }
+
+    /// Deletion at an empty boundary can be handled without issuing either an AX write or key event.
+    public var mayCompleteWithoutDispatch: Bool {
+        switch self {
+        case .delete, .forwardDelete:
+            true
+        default:
+            false
+        }
+    }
 }
 
 // MARK: - Type Actions
@@ -135,6 +155,26 @@ public enum TypeAction: Sendable, Codable {
     case text(String)
     case key(SpecialKey)
     case clear
+
+    public var isClear: Bool {
+        if case .clear = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether targeted execution may choose Accessibility value/selection mutation instead of key events.
+    public var mayUseAccessibilityValueDelivery: Bool {
+        switch self {
+        case let .text(text):
+            !text.isEmpty
+        case let .key(key):
+            key.mayUseAccessibilityValueDelivery
+        case .clear:
+            true
+        }
+    }
 
     private enum CodingKeys: String, CodingKey { case kind, text, key }
 

@@ -169,7 +169,7 @@ struct ComposedInputParityValidationTests {
 
     @Test
     @MainActor
-    func `pixel focus dispatched result invalidates explicit snapshot`() async throws {
+    func `pixel focus dispatched-unverified result is non-success and invalidates explicit snapshot`() async throws {
         let fixture = try await Self.makePixelFocusFixture(
             behavior: .result(.dispatchedUnverified(
                 delivery: Self.backgroundPixelFocusDelivery,
@@ -179,7 +179,13 @@ struct ComposedInputParityValidationTests {
         )
 
         let result = try await Self.runPixelFocusType(fixture)
-        #expect(result.exitStatus == 0)
+        #expect(result.exitStatus == 1)
+        let object = try Self.jsonObject(result.stdout)
+        let outcome = try #require(object["outcome"] as? [String: Any])
+        #expect(outcome["state"] as? String == "dispatched_unverified")
+        #expect(object["data"] is NSNull)
+        #expect(!result.combinedOutput.contains("typedText"))
+        #expect(!result.combinedOutput.contains("totalCharacters"))
         #expect(await fixture.snapshots.getMostRecentSnapshot() == nil)
         #expect(fixture.snapshots.invalidationCutoffs.count == 1)
     }
@@ -449,10 +455,12 @@ ForegroundModifierClickServiceProtocol {
 
 @MainActor
 private final class PixelFocusStubAutomationService: StubAutomationService,
-ExactWindowPixelFocusTypingServiceProtocol {
+ExactWindowPixelFocusTypingServiceProtocol, CompositeTypeDeliveryServiceProtocol {
     let behavior: ComposedInputStubBehavior
     let supportsExactWindowPixelFocusTyping = true
     let exactWindowPixelFocusTypingUnavailableReason: String? = nil
+    let supportsExactWindowCompositeTypeDelivery = true
+    let exactWindowCompositeTypeDeliveryUnavailableReason: String? = nil
 
     init(behavior: ComposedInputStubBehavior) {
         self.behavior = behavior

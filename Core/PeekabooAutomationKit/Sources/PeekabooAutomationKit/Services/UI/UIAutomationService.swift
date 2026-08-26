@@ -63,12 +63,14 @@ public final class UIAutomationService: TargetedHotkeyServiceProtocol, TargetedT
     public let supportsStatelessClickVariants = true
     public let supportsTargetedClickAccessibilityValueDelivery = true
     public let supportsExactWindowTargetedKeyboard = true
+    public let supportsExactWindowCompositeTypeDelivery = true
     public let supportsExactWindowFocusedElementFocus = true
     public let supportsExactWindowPixelFocusTyping = true
     public let supportsForegroundModifierClick = true
     public let supportsForegroundModifierClickSnapshotLease = true
     public let supportsRequestPinnedExactWindowScrollReceipt = true
     public let exactWindowTargetedKeyboardUnavailableReason: String? = nil
+    public let exactWindowCompositeTypeDeliveryUnavailableReason: String? = nil
     public let exactWindowPixelFocusTypingUnavailableReason: String? = nil
     public let foregroundModifierClickUnavailableReason: String? = nil
     let logger = Logger(subsystem: "boo.peekaboo.core", category: "UIAutomationService")
@@ -92,6 +94,9 @@ public final class UIAutomationService: TargetedHotkeyServiceProtocol, TargetedT
     let exactWindowFocusReader: @Sendable (pid_t) -> ExactWindowFocusSnapshot?
     let exactFocusedElementReader: @Sendable (FocusedElementIdentity)
         -> Result<ExactWindowFocusSnapshot, FocusedElementReceiptError>
+    let exactFocusedElementValueReader: @Sendable (FocusedElementIdentity)
+        -> Result<ExactWindowFocusSnapshot, FocusedElementReceiptError>
+    let exactKeyWindowReader: @Sendable (pid_t) -> ExactKeyWindowSnapshot?
     let exactWindowIdentityValidator: @Sendable (WindowMutationIdentity, CGRect) -> Bool
     let processStartIdentityProvider: @Sendable (pid_t) -> UInt64?
     let operationLaneCoordinator: DesktopOperationLaneCoordinator
@@ -176,6 +181,11 @@ public final class UIAutomationService: TargetedHotkeyServiceProtocol, TargetedT
         exactFocusedElementReader: @escaping @Sendable (FocusedElementIdentity)
             -> Result<ExactWindowFocusSnapshot, FocusedElementReceiptError> =
             DetachedExactWindowFocusReader.read,
+        exactFocusedElementValueReader: @escaping @Sendable (FocusedElementIdentity)
+            -> Result<ExactWindowFocusSnapshot, FocusedElementReceiptError> =
+            DetachedExactWindowFocusReader.readValue,
+        exactKeyWindowReader: @escaping @Sendable (pid_t) -> ExactKeyWindowSnapshot? =
+            DetachedExactWindowFocusReader.readKeyWindow,
         exactWindowIdentityValidator: @escaping @Sendable (WindowMutationIdentity, CGRect) -> Bool =
             SystemIdentityResolver.validateWindowMutationIdentity,
         processStartIdentityProvider: @escaping @Sendable (pid_t) -> UInt64? =
@@ -201,6 +211,8 @@ public final class UIAutomationService: TargetedHotkeyServiceProtocol, TargetedT
         self.feedbackClient = feedbackClient
         self.exactWindowFocusReader = exactWindowFocusReader
         self.exactFocusedElementReader = exactFocusedElementReader
+        self.exactFocusedElementValueReader = exactFocusedElementValueReader
+        self.exactKeyWindowReader = exactKeyWindowReader
         self.exactWindowIdentityValidator = exactWindowIdentityValidator
         self.processStartIdentityProvider = processStartIdentityProvider
         self.operationLaneCoordinator = operationLaneCoordinator
@@ -233,6 +245,8 @@ public final class UIAutomationService: TargetedHotkeyServiceProtocol, TargetedT
             actionInputDriver: actionInputDriver,
             syntheticInputDriver: syntheticInputDriver,
             automationElementResolver: automationElementResolver,
+            exactFocusedElementValueReader: exactFocusedElementValueReader,
+            processStartIdentityProvider: processStartIdentityProvider,
             desktopOperationExecutor: executor,
             operationFinalizer: operationFinalizer)
         self.scrollService = ScrollService(

@@ -8,6 +8,7 @@ import Testing
 // invariants together so new enum cases cannot be added without updating the same test surface.
 // swiftlint:disable file_length
 @Suite(.serialized)
+// swiftlint:disable:next type_body_length
 struct PeekabooBridgeOperationSemanticPlanTests {
     @Test
     func `Every operation has an explicit success response family`() {
@@ -166,6 +167,39 @@ struct PeekabooBridgeOperationSemanticPlanTests {
     }
 
     @Test
+    func `Pixel focus AX delivery treats empty text as a zero emission action`() {
+        let bounds = CGRect(x: 10, y: 20, width: 300, height: 200)
+        let identity = WindowMutationIdentity(
+            windowID: 71,
+            ownerProcessIdentifier: 42,
+            ownerProcessStartIdentity: 1001,
+            capturedBounds: bounds)
+        func request(_ actions: [TypeAction]) -> PeekabooBridgeRequest {
+            .exactWindowPixelFocusType(.init(request: .init(
+                point: CGPoint(x: 40, y: 50),
+                actions: actions,
+                cadence: .fixed(milliseconds: 0),
+                snapshotID: "snapshot",
+                windowIdentity: identity,
+                windowBounds: bounds)))
+        }
+
+        let axOnlyOutcome = DesktopActionOutcome.confirmedChange(
+            route: .bridge,
+            delivery: .init(mechanism: .accessibilityValue, mode: .background),
+            unitCount: .init(2))
+        #expect(PeekabooBridgeOperationResultSemantics.successfulOutcomeMatchesContract(
+            axOnlyOutcome,
+            request: request([.clear, .text("")])))
+        #expect(!PeekabooBridgeOperationResultSemantics.successfulOutcomeMatchesContract(
+            axOnlyOutcome,
+            request: request([.clear, .text(""), .key(.return)])))
+        #expect(!PeekabooBridgeOperationResultSemantics.successfulOutcomeMatchesContract(
+            axOnlyOutcome,
+            request: request([.text("")])))
+    }
+
+    @Test
     // swiftlint:disable:next function_body_length
     func `composed input parity binds response family delivery units and exact target`() async throws {
         let bounds = CGRect(x: 10, y: 20, width: 300, height: 200)
@@ -206,6 +240,53 @@ struct PeekabooBridgeOperationSemanticPlanTests {
             target: target,
             outcome: pixelOutcome.projection)
         try validPixel.bundle.validateIntegrity()
+
+        let forgedFocusConfirmed = DesktopActionOutcome.confirmedChange(
+            route: .bridge,
+            delivery: .init(mechanism: .composite, mode: .background),
+            unitCount: .init(4))
+        #expect(!PeekabooBridgeOperationResultSemantics.successfulOutcomeMatchesContract(
+            forgedFocusConfirmed,
+            request: pixelRequest))
+        let signedForgedFocusConfirmed = try await Self.makeBundle(
+            request: projectedPixelRequest,
+            response: .projectedAction(.init(
+                response: .typeResult(pixelResult),
+                outcome: forgedFocusConfirmed.projection)),
+            target: target,
+            outcome: forgedFocusConfirmed.projection)
+        #expect(throws: PeekabooBridgeOperationReceiptError.self) {
+            try signedForgedFocusConfirmed.bundle.validateIntegrity()
+        }
+
+        let confirmedLiteralRequest = PeekabooBridgeRequest.exactWindowPixelFocusType(.init(request: .init(
+            point: CGPoint(x: 40, y: 50),
+            actions: [.clear, .text("ok")],
+            cadence: .fixed(milliseconds: 0),
+            snapshotID: "snapshot",
+            windowIdentity: identity,
+            windowBounds: bounds)))
+        let projectedConfirmedLiteralRequest = PeekabooBridgeRequest.projectedAction(.init(
+            request: confirmedLiteralRequest))
+        let confirmedLiteralResult = TypeResult(
+            totalCharacters: 2,
+            keyPresses: 0,
+            specialKeyPresses: 0)
+        let confirmedLiteralOutcome = DesktopActionOutcome.confirmedChange(
+            route: .bridge,
+            delivery: .init(mechanism: .accessibilityValue, mode: .background),
+            unitCount: .init(4))
+        #expect(PeekabooBridgeOperationResultSemantics.successfulOutcomeMatchesContract(
+            confirmedLiteralOutcome,
+            request: confirmedLiteralRequest))
+        let signedConfirmedLiteral = try await Self.makeBundle(
+            request: projectedConfirmedLiteralRequest,
+            response: .projectedAction(.init(
+                response: .typeResult(confirmedLiteralResult),
+                outcome: confirmedLiteralOutcome.projection)),
+            target: target,
+            outcome: confirmedLiteralOutcome.projection)
+        try signedConfirmedLiteral.bundle.validateIntegrity()
 
         let pixelFocusFailure = DesktopActionFailure.indeterminate(
             route: .bridge,
@@ -816,7 +897,7 @@ struct PeekabooBridgeOperationSemanticPlanTests {
             claim: accepted.claim,
             request: request,
             response: response)
-        let forgedPayload = try PeekabooBridgeOperationReceiptPayload(
+        let forgedPayload = PeekabooBridgeOperationReceiptPayload(
             requestID: original.requestID,
             sessionID: original.sessionID,
             sessionSequence: original.sessionSequence,

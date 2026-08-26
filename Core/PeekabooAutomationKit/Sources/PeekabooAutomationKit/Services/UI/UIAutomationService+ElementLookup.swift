@@ -80,6 +80,7 @@ extension UIAutomationService {
         let identityValidator = self.exactWindowIdentityValidator
         let targetProcessIdentifier = expectedWindowIdentity.ownerProcessIdentifier
         let focused: ExactWindowFocusSnapshot?
+        let keyWindow: ExactKeyWindowSnapshot?
         do {
             if let expectedFocusedElement {
                 let reader = self.exactFocusedElementReader
@@ -106,6 +107,14 @@ extension UIAutomationService {
                     reader(targetProcessIdentifier)
                 }
             }
+            let keyWindowReader = self.exactKeyWindowReader
+            keyWindow = try await ElementDetectionTimeoutRunner.runDetached(
+                targetProcessIdentifier: targetProcessIdentifier,
+                targetProcessStartIdentity: expectedWindowIdentity.ownerProcessStartIdentity,
+                seconds: 0.2)
+            {
+                keyWindowReader(targetProcessIdentifier)
+            }
         } catch let error as FocusedElementReceiptError {
             throw PeekabooError.invalidInput(
                 field: "target",
@@ -116,10 +125,23 @@ extension UIAutomationService {
         guard let focused,
               focused.processIdentifier == targetProcessIdentifier,
               focused.windowID == expectedWindowIdentity.windowID,
-              !focused.frame.isEmpty,
-              expectedWindowBounds.contains(CGPoint(x: focused.frame.midX, y: focused.frame.midY)),
-              Self.focusedElementMatches(focused, expected: expectedFocusedElement),
-              identityValidator(expectedWindowIdentity, expectedWindowBounds)
+              let keyWindow,
+              keyWindow.processIdentifier == targetProcessIdentifier,
+              keyWindow.windowID == expectedWindowIdentity.windowID
+        else {
+            throw self.exactWindowKeyboardFocusChangedError()
+        }
+        guard !keyWindow.hasAttachedSheet else {
+            throw PeekabooError.invalidInput(
+                field: "target",
+                reason: "The exact parent window has an attached sheet at dispatch. " +
+                    "Use the sheet-aware dialog commands or dismiss the sheet before typing.")
+        }
+        guard
+            !focused.frame.isEmpty,
+            expectedWindowBounds.contains(CGPoint(x: focused.frame.midX, y: focused.frame.midY)),
+            Self.focusedElementMatches(focused, expected: expectedFocusedElement),
+            identityValidator(expectedWindowIdentity, expectedWindowBounds)
         else {
             throw self.exactWindowKeyboardFocusChangedError()
         }

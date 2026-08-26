@@ -1003,7 +1003,9 @@ actor EmptyRecordingWindowService: WindowManagementServiceProtocol, WindowMutati
 
 @MainActor
 class MockAutomationService: ExactWindowTargetedClickServiceProtocol, TargetedHotkeyServiceProtocol,
-TargetedTypeServiceProtocol, ExactWindowPixelFocusTypingServiceProtocol, ForegroundModifierClickServiceProtocol {
+    TargetedTypeServiceProtocol, ExactWindowPixelFocusTypingServiceProtocol, ForegroundModifierClickServiceProtocol,
+    CompositeTypeDeliveryServiceProtocol
+{
     struct ClickCall {
         let target: ClickTarget
         let clickType: ClickType
@@ -1033,6 +1035,9 @@ TargetedTypeServiceProtocol, ExactWindowPixelFocusTypingServiceProtocol, Foregro
         let targetProcessIdentifier: pid_t
         let expectedProcessIdentity: ApplicationProcessIdentity?
     }
+
+    var supportsExactWindowCompositeTypeDelivery = true
+    let exactWindowCompositeTypeDeliveryUnavailableReason: String? = nil
 
     private let accessibilityGranted: Bool
     private let detectionResult: ElementDetectionResult?
@@ -1276,6 +1281,7 @@ TargetedTypeServiceProtocol, ExactWindowPixelFocusTypingServiceProtocol, Foregro
     private static func typeResult(for actions: [TypeAction]) -> TypeResult {
         var characters = 0
         var keyPresses = 0
+        var specialKeyPresses = 0
         for action in actions {
             switch action {
             case let .text(text):
@@ -1283,11 +1289,16 @@ TargetedTypeServiceProtocol, ExactWindowPixelFocusTypingServiceProtocol, Foregro
                 keyPresses += text.count
             case .key:
                 keyPresses += 1
+                specialKeyPresses += 1
             case .clear:
                 keyPresses += 2
+                specialKeyPresses += 2
             }
         }
-        return TypeResult(totalCharacters: characters, keyPresses: keyPresses)
+        return TypeResult(
+            totalCharacters: characters,
+            keyPresses: keyPresses,
+            specialKeyPresses: specialKeyPresses)
     }
 }
 

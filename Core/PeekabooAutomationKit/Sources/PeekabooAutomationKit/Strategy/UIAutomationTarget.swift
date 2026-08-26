@@ -237,9 +237,6 @@ public enum UIAutomationTarget: Sendable, Equatable {
         using automation: any UIAutomationServiceProtocol) async throws -> UIAutomationTarget
     {
         guard let exactWindow = self.exactWindow else { return self }
-        if exactWindow.focusedElement != nil {
-            return self
-        }
         guard let focusedElementService = automation as? any TargetedFocusedElementServiceProtocol else {
             throw PeekabooError.invalidInput(
                 field: "target",
@@ -281,6 +278,16 @@ public enum UIAutomationTarget: Sendable, Equatable {
             throw PeekabooError.invalidInput(
                 field: "target",
                 reason: FocusedElementReceiptError.elementOutsideWindow.localizedDescription)
+        }
+        if let expectedFocusedElement = exactWindow.focusedElement {
+            do {
+                try FocusedElementReceiptResolver.validate(focusedElement, matches: expectedFocusedElement)
+            } catch {
+                throw PeekabooError.invalidInput(
+                    field: "target",
+                    reason: "Exact focused-element receipt is stale: \(error.localizedDescription) " +
+                        BackgroundKeyboardFocusRemediation.message)
+            }
         }
         return try self.pinningFocusedElement(focusedElement)
     }
@@ -333,9 +340,33 @@ public enum ExactWindowKeyboardRuntime {
         return outcomeProvider
     }
 
+    public static func requireTypeOutcomeProvider(
+        automation: any UIAutomationServiceProtocol,
+        operation: String) throws -> any UIAutomationActionOutcomeProviding
+    {
+        let outcomeProvider = try self.requireOutcomeProvider(automation: automation, operation: operation)
+        try self.requireCompositeTypeDelivery(automation: automation, operation: operation)
+        return outcomeProvider
+    }
+
+    public static func requireCompositeTypeDelivery(
+        automation: any UIAutomationServiceProtocol,
+        operation: String) throws
+    {
+        guard let compositeService = automation as? any CompositeTypeDeliveryServiceProtocol,
+              compositeService.supportsExactWindowCompositeTypeDelivery
+        else {
+            let reason = (automation as? any CompositeTypeDeliveryServiceProtocol)?
+                .exactWindowCompositeTypeDeliveryUnavailableReason
+            throw PeekabooError.serviceUnavailable(
+                reason ?? "\(operation) requires truthful composite type-delivery receipts")
+        }
+    }
+
     public static func validateRouteReceipt<Payload>(
         _ result: UIAutomationActionResult<Payload>,
-        operation: String) throws -> UIAutomationActionResult<Payload>
+        operation: String,
+        allowsCompositeTypeDelivery: Bool = false) throws -> UIAutomationActionResult<Payload>
     {
         guard let outcome = result.outcome else {
             throw DesktopActionFailure.indeterminate(
@@ -344,10 +375,19 @@ public enum ExactWindowKeyboardRuntime {
                 message: "\(operation) returned without its required exact-window route receipt.",
                 hint: "Observe the target before any retry and update the runtime host.")
         }
-        let expectedDelivery = DesktopActionOutcome.Delivery(
-            mechanism: .windowTargetedEvents,
-            mode: .background)
-        guard !outcome.dispatchState.mutationDispatched || outcome.delivery == expectedDelivery else {
+        let deliveryIsValid: Bool = if let delivery = outcome.delivery, delivery.mode == .background {
+            switch delivery.mechanism {
+            case .windowTargetedEvents:
+                true
+            case .accessibilityValue, .composite:
+                allowsCompositeTypeDelivery
+            default:
+                false
+            }
+        } else {
+            false
+        }
+        guard !outcome.dispatchState.mutationDispatched || deliveryIsValid else {
             throw DesktopActionFailure.indeterminate(
                 route: outcome.route,
                 evidence: .completionUnknown,

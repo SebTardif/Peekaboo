@@ -182,6 +182,14 @@ host, then dispatches type or hotkey input while the Bridge mutation gate remain
 every character or key boundary. Exact clicks likewise retain the capture-time receipt through final native dispatch
 and completion validation. New clients reject older hosts for these exact-input operations.
 
+Protocol `1.36` adds `compositeTypeDelivery` for background type requests that may use AXValue delivery: non-empty text,
+clear, and editable focused-text keys. Each direct AX mutation counts as one dispatch and zero key presses; event fallback
+counts its posted key events, and mixed requests report composite delivery. Event-only special keys retain their earlier
+compatibility floor. Current clients require the raw capability before transport, and current hosts reject older
+negotiated sessions before handler entry; signed results correlate the request actions, key count, dispatch count, and
+actual delivery mechanisms. Current type results also carry an optional special-key event count; older payloads omit it
+and remain decodable, while present counts are bound by signed receipt validation.
+
 Protocol `1.18` also carries the initially selected application process-generation receipt through atomic relaunch.
 The daemon re-resolves the selector only to verify that exact receipt, then uses the same receipt for quit and fails
 closed if the PID was recycled. Current clients therefore require a 1.18 on-demand host for relaunch.
