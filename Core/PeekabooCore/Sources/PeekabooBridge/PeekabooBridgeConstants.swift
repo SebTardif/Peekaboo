@@ -65,7 +65,7 @@ public enum PeekabooBridgeConstants {
     }
 
     /// Current protocol version supported by this build.
-    public static let protocolVersion = PeekabooBridgeProtocolVersion(major: 1, minor: 34)
+    public static let protocolVersion = PeekabooBridgeProtocolVersion(major: 1, minor: 35)
 
     /// First protocol that can attest one exact Chrome bundle, process generation, listener, and DevTools identity.
     public static let nativeBrowserConnectionBindingVersion =
@@ -79,6 +79,11 @@ public enum PeekabooBridgeConstants {
     /// First protocol that can explicitly negotiate and enforce the AXFocused value-delivery policy for clicks.
     public static let targetedClickAccessibilityValueDeliveryVersion =
         PeekabooBridgeProtocolVersion(major: 1, minor: 34)
+
+    /// First protocol whose background scroll request carries a complete exact-window receipt that
+    /// is pinned through execution and every signed result, including retry-unsafe failures.
+    public static let requestPinnedExactWindowScrollReceiptVersion =
+        PeekabooBridgeProtocolVersion(major: 1, minor: 35)
 
     /// First protocol with host-atomic exact-window pixel-focus typing and modifier-click payloads.
     public static let composedInputParityVersion = PeekabooBridgeProtocolVersion(major: 1, minor: 33)
