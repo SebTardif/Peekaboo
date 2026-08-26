@@ -4,11 +4,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { deflateSync } from 'node:zlib';
 import { projectBindings } from '../project-live-bindings.mjs';
 import { constructLivePlan } from '../construct-live-plan.mjs';
 import { compareCrashInventories } from '../crash-inventory.mjs';
 import { runManagedLaunch } from '../managed-launcher.mjs';
-import { classifyPolicyFile } from '../executable-policy-scanner.mjs';
+import {
+  classifyPolicyFile,
+  policyFindingsForFile,
+} from '../executable-policy-scanner.mjs';
 import {
   accumulateDescendantPIDs,
   isFinalProcessTableSample,
@@ -902,7 +906,7 @@ function deploymentFixture(
     installedFile(
       'peekaboo_cli',
       'runtime/libswiftCompatibilitySpan.dylib',
-      Buffer.concat([Buffer.from('cafebabe', 'hex'), Buffer.from('fixture native library')]),
+      fs.readFileSync('/usr/bin/true'),
       0o644,
     ),
     installedFile(
@@ -1704,6 +1708,1853 @@ test('policy scanner classifies every thin and fat Mach-O byte order as loadable
       'data',
     );
   }
+  assert.equal(
+    classifyPolicyFile('runtime/disguised.sh', 0o644, fs.readFileSync('/usr/bin/true')),
+    'executable',
+  );
+});
+
+test('policy scanner recognizes native class symbols and bounds chained symbol decoding', () => {
+  const thinMachOWithRawString = (value) => {
+    const raw = Buffer.from(`${value}\0`);
+    const bytes = Buffer.alloc(129 + raw.length);
+    Buffer.from('cffaedfe', 'hex').copy(bytes);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(2, 12);
+    bytes.writeUInt32LE(2, 16);
+    bytes.writeUInt32LE(96, 20);
+    bytes.writeUInt32LE(0x19, 32);
+    bytes.writeUInt32LE(72, 36);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 64);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 80);
+    bytes.writeUInt32LE(0x02, 104);
+    bytes.writeUInt32LE(24, 108);
+    bytes.writeUInt32LE(128, 112);
+    bytes.writeUInt32LE(0, 116);
+    bytes.writeUInt32LE(128, 120);
+    bytes.writeUInt32LE(1, 124);
+    raw.copy(bytes, 129);
+    return bytes;
+  };
+
+  for (const className of ['VZUSBController', 'VZEFIBootLoader', 'VZMACAddress']) {
+    assert.deepEqual(
+      policyFindingsForFile(`runtime/${className}`, 0o755, thinMachOWithRawString(className)),
+      [{ family: 'virtualization' }],
+      className,
+    );
+  }
+  for (const unrelatedValue of ['VZA', 'VZIP', 'VZ_TEST']) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/unrelated-${unrelatedValue}`,
+        0o755,
+        thinMachOWithRawString(unrelatedValue),
+      ),
+      [],
+      unrelatedValue,
+    );
+  }
+  for (const [index, policyString] of [
+    'osascript',
+    'osascript -e return 1',
+    'osascript script.scpt argument',
+    'osascript ./script argument',
+    'osascript payload argument',
+    'OsaScript payload argument',
+    '/usr/bin/osascript',
+    '/usr/bin/osascript -e return 1',
+    '/usr/bin/osascript /tmp/script argument',
+    '/usr/bin/osascript payload argument',
+    '/usr/bin/osascript is unavailable',
+    '/USR/BIN/OSASCRIPT -e return 1',
+    '/usr/bin/OsaScript payload argument',
+    'osascript documentation unavailable',
+    'osascript command is unavailable',
+    'osascript support is disabled',
+    '/System/Library/Components/AppleScript.component',
+    '/System/Library/Components/AppleScript.component/Contents/MacOS/AppleScript',
+    '/System/Library/Components/AppleScript.component/Contents/MacOS/AppleScript -e return 1',
+    '/System/Library/Components/AppleScript.component/Contents/MacOS/AppleScript is unavailable',
+    '/sYsTeM/lIbRaRy/CoMpOnEnTs/aPpLeScRiPt.CoMpOnEnT/Contents/MacOS/AppleScript -e return 1',
+  ].entries()) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/native-policy-path-${index}`,
+        0o755,
+        thinMachOWithRawString(policyString),
+      ),
+      [{ family: 'apple-script' }],
+      policyString,
+    );
+  }
+  for (const [index, unrelatedString] of [
+    'prefix /usr/bin/osascript -e return 1',
+    '/usr/bin/osascripter -e return 1',
+    '/usr/bin/osascript-helper',
+    '/USR/BIN/OSASCRIPTER -e return 1',
+    '/usr/bin/OsaScript-Helper',
+    '/System/Library/Components/AppleScript.component.backup',
+    '/SYSTEM/LIBRARY/COMPONENTS/APPLESCRIPT.COMPONENT/CONTENTS/MACOS/APPLESCRIPTER',
+    '/SYSTEM/LIBRARY/COMPONENTS/APPLESCRIPT.COMPONENT.BACKUP',
+    '/System/Library/Components/AppleScript.component/Contents/MacOS/AppleScripter',
+    'AppleScript component support is disabled',
+  ].entries()) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/unrelated-native-policy-path-${index}`,
+        0o755,
+        thinMachOWithRawString(unrelatedString),
+      ),
+      [],
+      unrelatedString,
+    );
+  }
+  const fatMachO = (recordSubtype, sliceSubtype) => {
+    const slice = thinMachOWithRawString('_benign');
+    slice.writeUInt32LE(sliceSubtype, 8);
+    const bytes = Buffer.alloc(28 + slice.length);
+    Buffer.from('cafebabe', 'hex').copy(bytes);
+    bytes.writeUInt32BE(1, 4);
+    bytes.writeUInt32BE(0x0100000c, 8);
+    bytes.writeUInt32BE(recordSubtype, 12);
+    bytes.writeUInt32BE(28, 16);
+    bytes.writeUInt32BE(slice.length, 20);
+    bytes.writeUInt32BE(2, 24);
+    slice.copy(bytes, 28);
+    return bytes;
+  };
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/capability-masked-fat-subtype',
+      0o755,
+      fatMachO(0x80000002, 0x40000002),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/mismatched-fat-subtype',
+      0o755,
+      fatMachO(0x80000002, 0x40000003),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const firstCapabilitySlice = thinMachOWithRawString('_benign');
+  firstCapabilitySlice.writeUInt32LE(0x80000002, 8);
+  const secondCapabilitySlice = Buffer.from(firstCapabilitySlice);
+  secondCapabilitySlice.writeUInt32LE(0x40000002, 8);
+  const firstCapabilityOffset = 48;
+  const secondCapabilityOffset = Math.ceil(
+    (firstCapabilityOffset + firstCapabilitySlice.length) / 16,
+  ) * 16;
+  const distinctCapabilityFat = Buffer.alloc(secondCapabilityOffset + secondCapabilitySlice.length);
+  Buffer.from('cafebabe', 'hex').copy(distinctCapabilityFat);
+  distinctCapabilityFat.writeUInt32BE(2, 4);
+  for (const [entry, subtype, sliceOffset, slice] of [
+    [8, 0x80000002, firstCapabilityOffset, firstCapabilitySlice],
+    [28, 0x40000002, secondCapabilityOffset, secondCapabilitySlice],
+  ]) {
+    distinctCapabilityFat.writeUInt32BE(0x0100000c, entry);
+    distinctCapabilityFat.writeUInt32BE(subtype, entry + 4);
+    distinctCapabilityFat.writeUInt32BE(sliceOffset, entry + 8);
+    distinctCapabilityFat.writeUInt32BE(slice.length, entry + 12);
+    distinctCapabilityFat.writeUInt32BE(4, entry + 16);
+    slice.copy(distinctCapabilityFat, sliceOffset);
+  }
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/distinct-capability-fat-subtypes',
+      0o755,
+      distinctCapabilityFat,
+    ),
+    [],
+  );
+  const osaKitClassSymbols = [
+    'OBJC_CLASS_$_OSAScript',
+    '_OBJC_CLASS_$_OSAScript',
+    'OBJC_METACLASS_$_OSALanguage',
+    '_OBJC_CLASS_$_OSALanguageInstance',
+    'OBJC_CLASS_$_OSAScriptView',
+    'OBJC_CLASS_$_OSAScriptController',
+  ];
+  for (const classSymbol of osaKitClassSymbols) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/osa-class-${classSymbol.length}`,
+        0o755,
+        thinMachOWithRawString(classSymbol),
+      ),
+      [{ family: 'apple-script' }],
+      classSymbol,
+    );
+  }
+  for (const unrelatedSymbol of [
+    'OBJC_CLASS_$_OSAFake',
+    'OBJC_CLASS_$_OSALanguageModel',
+    'OBJC_CLASS_$_OSAScriptViewController',
+  ]) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/unrelated-osa-${unrelatedSymbol.length}`,
+        0o755,
+        thinMachOWithRawString(unrelatedSymbol),
+      ),
+      [],
+      unrelatedSymbol,
+    );
+  }
+
+  const thinMachOWithNListSymbol = (
+    value,
+    type,
+    { nameOffset = 1, unreferencedStrings = [] } = {},
+  ) => {
+    const stringTable = Buffer.from(`\0${[value, ...unreferencedStrings].join('\0')}\0`);
+    const bytes = Buffer.alloc(144 + stringTable.length);
+    Buffer.from('cffaedfe', 'hex').copy(bytes);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(2, 12);
+    bytes.writeUInt32LE(2, 16);
+    bytes.writeUInt32LE(96, 20);
+    bytes.writeUInt32LE(0x19, 32);
+    bytes.writeUInt32LE(72, 36);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 64);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 80);
+    bytes.writeUInt32LE(0x02, 104);
+    bytes.writeUInt32LE(24, 108);
+    bytes.writeUInt32LE(128, 112);
+    bytes.writeUInt32LE(1, 116);
+    bytes.writeUInt32LE(144, 120);
+    bytes.writeUInt32LE(stringTable.length, 124);
+    bytes.writeUInt32LE(nameOffset, 128);
+    bytes[132] = type;
+    stringTable.copy(bytes, 144);
+    return bytes;
+  };
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/defined-ae-symbol',
+      0o755,
+      thinMachOWithNListSymbol('_AECreateWidget', 0x0f),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/undefined-ae-symbol',
+      0o755,
+      thinMachOWithNListSymbol('_AECreateWidget', 0x01),
+    ),
+    [{ family: 'apple-script' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/prebound-undefined-ae-symbol',
+      0o755,
+      thinMachOWithNListSymbol('_AECreateWidget', 0x0d),
+    ),
+    [{ family: 'apple-script' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/unreferenced-osa-string',
+      0o755,
+      thinMachOWithNListSymbol('_benign', 0x0f, {
+        unreferencedStrings: ['_OBJC_CLASS_$_OSAScript'],
+      }),
+    ),
+    [{ family: 'apple-script' }],
+  );
+  const overlappingOSAClass = '_OBJC_CLASS_$_OSAScript';
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/overlapping-osa-string',
+      0o755,
+      thinMachOWithNListSymbol(overlappingOSAClass, 0x0f, {
+        nameOffset: 1 + overlappingOSAClass.indexOf('Script'),
+      }),
+    ),
+    [{ family: 'apple-script' }],
+  );
+
+  const thinMachOWithRawNList = (value) => {
+    const symbolTable = Buffer.alloc(32);
+    Buffer.from(`${value}\0`).copy(symbolTable);
+    const bytes = Buffer.alloc(161);
+    Buffer.from('cffaedfe', 'hex').copy(bytes);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(2, 12);
+    bytes.writeUInt32LE(2, 16);
+    bytes.writeUInt32LE(96, 20);
+    bytes.writeUInt32LE(0x19, 32);
+    bytes.writeUInt32LE(72, 36);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 80);
+    bytes.writeUInt32LE(0x02, 104);
+    bytes.writeUInt32LE(24, 108);
+    bytes.writeUInt32LE(128, 112);
+    bytes.writeUInt32LE(2, 116);
+    bytes.writeUInt32LE(160, 120);
+    bytes.writeUInt32LE(1, 124);
+    symbolTable.copy(bytes, 128);
+    return bytes;
+  };
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/raw-nlist-policy-string',
+      0o755,
+      thinMachOWithRawNList('_OBJC_CLASS_$_OSAScript'),
+    ),
+    [{ family: 'apple-script' }],
+  );
+
+  const thinMachOWithLinkeditCommand = (commandSize, payload, configureCommand) => {
+    const payloadOffset = 128 + commandSize;
+    const bytes = Buffer.alloc(payloadOffset + payload.length + 1);
+    Buffer.from('cffaedfe', 'hex').copy(bytes);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(2, 12);
+    bytes.writeUInt32LE(3, 16);
+    bytes.writeUInt32LE(96 + commandSize, 20);
+    bytes.writeUInt32LE(0x19, 32);
+    bytes.writeUInt32LE(72, 36);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 64);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 80);
+    bytes.writeUInt32LE(0x02, 104);
+    bytes.writeUInt32LE(24, 108);
+    bytes.writeUInt32LE(payloadOffset, 112);
+    bytes.writeUInt32LE(0, 116);
+    bytes.writeUInt32LE(bytes.length - 1, 120);
+    bytes.writeUInt32LE(1, 124);
+    configureCommand(bytes, 128, payloadOffset, payload.length);
+    payload.copy(bytes, payloadOffset);
+    return bytes;
+  };
+
+  const exportTrie = (definedName, trailing = Buffer.alloc(0)) => {
+    const edge = Buffer.from(`${definedName}\0`);
+    const childOffset = 2 + edge.length + 1;
+    assert(childOffset < 0x80);
+    return Buffer.concat([
+      Buffer.from([0x00, 0x01]),
+      edge,
+      Buffer.from([childOffset, 0x02, 0x00, 0x00, 0x00]),
+      trailing,
+    ]);
+  };
+  const exportPayloadMachO = (payload) => thinMachOWithLinkeditCommand(
+    16,
+    payload,
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000033, command);
+      bytes.writeUInt32LE(16, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 8);
+      bytes.writeUInt32LE(payloadSize, command + 12);
+    },
+  );
+  const exportCommandMachO = (definedName, trailing) => (
+    exportPayloadMachO(exportTrie(definedName, trailing))
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/defined-export',
+      0o755,
+      exportCommandMachO('_AECreateWidget'),
+    ),
+    [],
+  );
+  const functionVariantEdge = Buffer.from('_AECreateWidget\0');
+  const functionVariantOffset = 2 + functionVariantEdge.length + 1;
+  const functionVariantTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    functionVariantEdge,
+    Buffer.from([functionVariantOffset, 0x03, 0x20, 0x00, 0x01, 0x00]),
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/defined-function-variant',
+      0o755,
+      exportPayloadMachO(functionVariantTrie),
+    ),
+    [],
+  );
+  const absoluteExportEdge = Buffer.from('_benign\0');
+  const absoluteExportOffset = 2 + absoluteExportEdge.length + 1;
+  const absoluteExportTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    absoluteExportEdge,
+    Buffer.from([
+      absoluteExportOffset,
+      0x0b,
+      0x02,
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+      0x00,
+    ]),
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/full-width-absolute-export',
+      0o755,
+      exportPayloadMachO(absoluteExportTrie),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/empty-export-trie', 0o755, exportPayloadMachO(Buffer.alloc(0))),
+    [],
+  );
+  const highVMAddressMachO = exportPayloadMachO(Buffer.alloc(0));
+  highVMAddressMachO.writeBigUInt64LE(0x0020000000000000n, 56);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/high-vm-address', 0o755, highVMAddressMachO),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/export-with-overlapping-raw-policy',
+      0o755,
+      exportCommandMachO('_benign', Buffer.from('_OBJC_CLASS_$_OSAScript\0')),
+    ),
+    [{ family: 'apple-script' }],
+  );
+  const invalidAddressEdge = Buffer.from('_AECreateWidget\0');
+  const invalidAddressOffset = 2 + invalidAddressEdge.length + 1;
+  const invalidAddressTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    invalidAddressEdge,
+    Buffer.from([invalidAddressOffset, 0x04, 0x00, 0x80, 0x80, 0x40, 0x00]),
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/out-of-range-export',
+      0o755,
+      exportPayloadMachO(invalidAddressTrie),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const invalidResolverEdge = Buffer.from('_AECreateWidget\0');
+  const invalidResolverOffset = 2 + invalidResolverEdge.length + 1;
+  const invalidResolverTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    invalidResolverEdge,
+    Buffer.from([invalidResolverOffset, 0x05, 0x10, 0x00, 0x80, 0x80, 0x40, 0x00]),
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/out-of-range-export-resolver',
+      0o755,
+      exportPayloadMachO(invalidResolverTrie),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+
+  const encodeULEB64 = (input) => {
+    let value = input;
+    const result = [];
+    do {
+      let byte = Number(value & 0x7fn);
+      value >>= 7n;
+      if (value !== 0n) byte |= 0x80;
+      result.push(byte);
+    } while (value !== 0n);
+    return Buffer.from(result);
+  };
+  const lowerSegmentOffset = 0x10000000000000000n - 0x0f80n;
+  const lowerSegmentEdge = Buffer.from('_benign\0');
+  const lowerSegmentNodeOffset = 2 + lowerSegmentEdge.length + 1;
+  const encodedLowerSegmentOffset = encodeULEB64(lowerSegmentOffset);
+  const lowerSegmentTerminal = Buffer.concat([
+    Buffer.from([1 + encodedLowerSegmentOffset.length, 0x00]),
+    encodedLowerSegmentOffset,
+    Buffer.from([0x00]),
+  ]);
+  const lowerSegmentTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    lowerSegmentEdge,
+    Buffer.from([lowerSegmentNodeOffset]),
+    lowerSegmentTerminal,
+  ]);
+  const lowerSegmentPayloadOffset = 216;
+  const lowerSegmentMachO = Buffer.alloc(lowerSegmentPayloadOffset + lowerSegmentTrie.length + 1);
+  Buffer.from('cffaedfe', 'hex').copy(lowerSegmentMachO);
+  lowerSegmentMachO.writeUInt32LE(0x0100000c, 4);
+  lowerSegmentMachO.writeUInt32LE(2, 12);
+  lowerSegmentMachO.writeUInt32LE(4, 16);
+  lowerSegmentMachO.writeUInt32LE(184, 20);
+  for (const [command, name, vmAddress, vmSize, fileSize] of [
+    [32, '__LOW', 0x1000n, 0x100n, 0],
+    [104, '__TEXT', 0x2000n, 0x1000n, lowerSegmentMachO.length],
+  ]) {
+    lowerSegmentMachO.writeUInt32LE(0x19, command);
+    lowerSegmentMachO.writeUInt32LE(72, command + 4);
+    Buffer.from(name).copy(lowerSegmentMachO, command + 8);
+    lowerSegmentMachO.writeBigUInt64LE(vmAddress, command + 24);
+    lowerSegmentMachO.writeBigUInt64LE(vmSize, command + 32);
+    lowerSegmentMachO.writeBigUInt64LE(BigInt(fileSize), command + 48);
+  }
+  lowerSegmentMachO.writeUInt32LE(0x02, 176);
+  lowerSegmentMachO.writeUInt32LE(24, 180);
+  lowerSegmentMachO.writeUInt32LE(lowerSegmentPayloadOffset, 184);
+  lowerSegmentMachO.writeUInt32LE(0, 188);
+  lowerSegmentMachO.writeUInt32LE(lowerSegmentMachO.length - 1, 192);
+  lowerSegmentMachO.writeUInt32LE(1, 196);
+  lowerSegmentMachO.writeUInt32LE(0x80000033, 200);
+  lowerSegmentMachO.writeUInt32LE(16, 204);
+  lowerSegmentMachO.writeUInt32LE(lowerSegmentPayloadOffset, 208);
+  lowerSegmentMachO.writeUInt32LE(lowerSegmentTrie.length, 212);
+  lowerSegmentTrie.copy(lowerSegmentMachO, lowerSegmentPayloadOffset);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/lower-segment-export', 0o755, lowerSegmentMachO),
+    [],
+  );
+  const firstReexportEdge = Buffer.from('_OBJC_CLASS_$_NSApple\0');
+  const secondReexportEdge = Buffer.from('Script\0');
+  const middleOffset = 2 + firstReexportEdge.length + 1;
+  const terminalOffset = middleOffset + 2 + secondReexportEdge.length + 1;
+  const splitReexportTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    firstReexportEdge,
+    Buffer.from([middleOffset, 0x00, 0x01]),
+    secondReexportEdge,
+    Buffer.from([terminalOffset, 0x03, 0x08, 0x01, 0x00, 0x00]),
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/split-reexport-import',
+      0o755,
+      exportPayloadMachO(splitReexportTrie),
+    ),
+    [{ family: 'apple-script' }],
+  );
+  const utf8ReexportEdge = Buffer.from('_benign\0');
+  const utf8ReexportOffset = 2 + utf8ReexportEdge.length + 1;
+  const utf8ReexportTrie = Buffer.concat([
+    Buffer.from([0x00, 0x01]),
+    utf8ReexportEdge,
+    Buffer.from([utf8ReexportOffset, 0x05, 0x08, 0x01, 0xc3, 0xa9, 0x00, 0x00]),
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/utf8-reexport-import',
+      0o755,
+      exportPayloadMachO(utf8ReexportTrie),
+    ),
+    [],
+  );
+
+  const legacyBindStream = Buffer.concat([
+    Buffer.from([0x40]),
+    Buffer.from('_OBJC_CLASS_$_NSAppleScript\0'),
+    Buffer.from([0x90, 0x00]),
+  ]);
+  for (const [label, fieldOffset] of [['regular', 16], ['weak', 24], ['lazy', 32]]) {
+    const legacyMachO = thinMachOWithLinkeditCommand(
+      48,
+      legacyBindStream,
+      (bytes, command, payloadOffset, payloadSize) => {
+        bytes.writeUInt32LE(0x80000022, command);
+        bytes.writeUInt32LE(48, command + 4);
+        bytes.writeUInt32LE(payloadOffset, command + fieldOffset);
+        bytes.writeUInt32LE(payloadSize, command + fieldOffset + 4);
+      },
+    );
+    assert.deepEqual(
+      policyFindingsForFile(`runtime/legacy-${label}-bind`, 0o755, legacyMachO),
+      [{ family: 'apple-script' }],
+      label,
+    );
+  }
+  const threadedBindStream = Buffer.concat([
+    Buffer.from([0xd0, 0x01, 0x40]),
+    Buffer.from('_OBJC_CLASS_$_NSAppleScript\0'),
+    Buffer.from([0x90, 0xd1, 0x00]),
+  ]);
+  const threadedBindMachO = thinMachOWithLinkeditCommand(
+    48,
+    threadedBindStream,
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000022, command);
+      bytes.writeUInt32LE(48, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 16);
+      bytes.writeUInt32LE(payloadSize, command + 20);
+    },
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/threaded-regular-bind', 0o755, threadedBindMachO),
+    [{ family: 'apple-script' }],
+  );
+  const hugeBindOperand = encodeULEB64(1n << 60n);
+  const hugeOperandBindStream = Buffer.concat([
+    Buffer.from([0x70]),
+    hugeBindOperand,
+    Buffer.from([0x40]),
+    Buffer.from('_OBJC_CLASS_$_NSAppleScript\0'),
+    Buffer.from([0xa0]),
+    hugeBindOperand,
+    Buffer.from([0x00]),
+  ]);
+  const hugeOperandBindMachO = thinMachOWithLinkeditCommand(
+    48,
+    hugeOperandBindStream,
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000022, command);
+      bytes.writeUInt32LE(48, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 16);
+      bytes.writeUInt32LE(payloadSize, command + 20);
+    },
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/huge-uleb-bind-operands', 0o755, hugeOperandBindMachO),
+    [{ family: 'apple-script' }],
+  );
+  const unicodeThenPolicyBindStream = Buffer.concat([
+    Buffer.from([0x40, 0xc3, 0xa9, 0x00, 0x90, 0x40]),
+    Buffer.from('_OBJC_CLASS_$_NSAppleScript\0'),
+    Buffer.from([0x90, 0x00]),
+  ]);
+  const unicodeThenPolicyBindMachO = thinMachOWithLinkeditCommand(
+    48,
+    unicodeThenPolicyBindStream,
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000022, command);
+      bytes.writeUInt32LE(48, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 16);
+      bytes.writeUInt32LE(payloadSize, command + 20);
+    },
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/unicode-then-policy-bind', 0o755, unicodeThenPolicyBindMachO),
+    [{ family: 'apple-script' }],
+  );
+  const malformedLegacyBind = thinMachOWithLinkeditCommand(
+    48,
+    legacyBindStream.subarray(0, legacyBindStream.length - 1),
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000022, command);
+      bytes.writeUInt32LE(48, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 16);
+      bytes.writeUInt32LE(payloadSize, command + 20);
+    },
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/malformed-legacy-bind', 0o755, malformedLegacyBind),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const invalidDoneBind = thinMachOWithLinkeditCommand(
+    48,
+    Buffer.from([0x01]),
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000022, command);
+      bytes.writeUInt32LE(48, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 16);
+      bytes.writeUInt32LE(payloadSize, command + 20);
+    },
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/invalid-done-bind', 0o755, invalidDoneBind),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const truncatedLazyStream = Buffer.concat([
+    legacyBindStream,
+    Buffer.from([0x40]),
+    Buffer.from('_benign\0'),
+  ]);
+  const truncatedLazyBind = thinMachOWithLinkeditCommand(
+    48,
+    truncatedLazyStream,
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x80000022, command);
+      bytes.writeUInt32LE(48, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 32);
+      bytes.writeUInt32LE(payloadSize, command + 36);
+    },
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/truncated-lazy-bind', 0o755, truncatedLazyBind),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  for (const [label, fieldOffset, opcode] of [
+    ['lazy-type', 32, 0x50],
+    ['weak-ordinal', 24, 0x10],
+  ]) {
+    const invalidStream = thinMachOWithLinkeditCommand(
+      48,
+      Buffer.from([opcode, 0x00]),
+      (bytes, command, payloadOffset, payloadSize) => {
+        bytes.writeUInt32LE(0x80000022, command);
+        bytes.writeUInt32LE(48, command + 4);
+        bytes.writeUInt32LE(payloadOffset, command + fieldOffset);
+        bytes.writeUInt32LE(payloadSize, command + fieldOffset + 4);
+      },
+    );
+    assert.deepEqual(
+      policyFindingsForFile(`runtime/invalid-${label}-bind`, 0o755, invalidStream),
+      [{ family: 'uninspectable-native-executable' }],
+      label,
+    );
+  }
+
+  const codeDirectory = (mutate = () => {}) => {
+    const identifier = Buffer.from('dev.peekaboo.fixture\0');
+    const hashOffset = 44 + identifier.length;
+    const payload = Buffer.alloc(hashOffset + 32);
+    payload.writeUInt32BE(0xfade0c02, 0);
+    payload.writeUInt32BE(payload.length, 4);
+    payload.writeUInt32BE(0x20001, 8);
+    payload.writeUInt32BE(hashOffset, 16);
+    payload.writeUInt32BE(44, 20);
+    payload.writeUInt32BE(0, 24);
+    payload.writeUInt32BE(1, 28);
+    payload.writeUInt32BE(1, 32);
+    payload[36] = 32;
+    payload[37] = 2;
+    payload[39] = 12;
+    identifier.copy(payload, 44);
+    mutate(payload);
+    return payload;
+  };
+  const signedMachO = (payload) => thinMachOWithLinkeditCommand(
+    16,
+    payload,
+    (bytes, command, payloadOffset, payloadSize) => {
+      bytes.writeUInt32LE(0x1d, command);
+      bytes.writeUInt32LE(16, command + 4);
+      bytes.writeUInt32LE(payloadOffset, command + 8);
+      bytes.writeUInt32LE(payloadSize, command + 12);
+    },
+  );
+  const signatureSuperBlob = (entries) => {
+    const indexSize = 12 + entries.length * 8;
+    const totalSize = indexSize + entries.reduce((total, entry) => total + entry.blob.length, 0);
+    const payload = Buffer.alloc(totalSize);
+    payload.writeUInt32BE(0xfade0cc0, 0);
+    payload.writeUInt32BE(totalSize, 4);
+    payload.writeUInt32BE(entries.length, 8);
+    let blobOffset = indexSize;
+    for (const [index, entry] of entries.entries()) {
+      payload.writeUInt32BE(entry.type, 12 + index * 8);
+      payload.writeUInt32BE(blobOffset, 16 + index * 8);
+      entry.blob.copy(payload, blobOffset);
+      blobOffset += entry.blob.length;
+    }
+    return payload;
+  };
+  const genericSignatureBlob = Buffer.alloc(8);
+  genericSignatureBlob.writeUInt32BE(0xfade0b01, 0);
+  genericSignatureBlob.writeUInt32BE(8, 4);
+  const signatureBlobWithMagic = (magic) => {
+    const blob = Buffer.alloc(8);
+    blob.writeUInt32BE(magic, 0);
+    blob.writeUInt32BE(8, 4);
+    return blob;
+  };
+  for (const [type, magic] of [
+    [2, 0xfade0c01],
+    [5, 0xfade7171],
+    [7, 0xfade7172],
+    [8, 0xfade8181],
+    [9, 0xfade8181],
+    [10, 0xfade8181],
+    [11, 0xfade8181],
+    [0x10000, 0xfade0b01],
+  ]) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/known-signature-slot-${type}`,
+        0o755,
+        signedMachO(signatureSuperBlob([
+          { type: 0, blob: codeDirectory() },
+          { type, blob: signatureBlobWithMagic(magic) },
+        ])),
+      ),
+      [],
+    );
+  }
+  for (const type of [5, 7, 8, 11]) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/mismatched-known-signature-slot-${type}`,
+        0o755,
+        signedMachO(signatureSuperBlob([
+          { type: 0, blob: codeDirectory() },
+          { type, blob: genericSignatureBlob },
+        ])),
+      ),
+      [{ family: 'uninspectable-native-executable' }],
+    );
+  }
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/unknown-generic-signature-slot',
+      0o755,
+      signedMachO(signatureSuperBlob([
+        { type: 0, blob: codeDirectory() },
+        { type: 0x4242, blob: genericSignatureBlob },
+      ])),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/unauthorized-code-directory-slot',
+      0o755,
+      signedMachO(signatureSuperBlob([{ type: 5, blob: codeDirectory() }])),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  for (const type of [0, 0x1000, 0x1004]) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/authorized-code-directory-slot-${type}`,
+        0o755,
+        signedMachO(signatureSuperBlob([{ type, blob: codeDirectory() }])),
+      ),
+      [],
+    );
+  }
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/mixed-code-directory-slots',
+      0o755,
+      signedMachO(signatureSuperBlob([
+        { type: 0, blob: codeDirectory() },
+        { type: 0x1000, blob: codeDirectory((payload) => {
+          payload[36] = 20;
+          payload[37] = 1;
+        }) },
+        { type: 0x4242, blob: genericSignatureBlob },
+      ])),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/duplicate-code-directory-hash-type',
+      0o755,
+      signedMachO(signatureSuperBlob([
+        { type: 0, blob: codeDirectory() },
+        { type: 0x1000, blob: codeDirectory() },
+      ])),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const adjacentSignatureBlobs = signatureSuperBlob([
+    { type: 0x4242, blob: genericSignatureBlob },
+    { type: 0, blob: codeDirectory() },
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/adjacent-signature-blobs',
+      0o755,
+      signedMachO(adjacentSignatureBlobs),
+    ),
+    [],
+  );
+  const partialOverlapSignatureBlobs = Buffer.from(adjacentSignatureBlobs);
+  const firstSignatureBlobOffset = partialOverlapSignatureBlobs.readUInt32BE(16);
+  partialOverlapSignatureBlobs.writeUInt32BE(12, firstSignatureBlobOffset + 4);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/partially-overlapping-signature-blobs',
+      0o755,
+      signedMachO(partialOverlapSignatureBlobs),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const nestedSignatureBlobs = Buffer.from(adjacentSignatureBlobs);
+  nestedSignatureBlobs.writeUInt32BE(
+    nestedSignatureBlobs.length - firstSignatureBlobOffset,
+    firstSignatureBlobOffset + 4,
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/nested-signature-blobs',
+      0o755,
+      signedMachO(nestedSignatureBlobs),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const aliasedCodeDirectorySlots = signatureSuperBlob([
+    { type: 0, blob: codeDirectory() },
+    { type: 0x1000, blob: codeDirectory() },
+  ]);
+  aliasedCodeDirectorySlots.writeUInt32BE(aliasedCodeDirectorySlots.readUInt32BE(16), 24);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/aliased-code-directory-slots',
+      0o755,
+      signedMachO(aliasedCodeDirectorySlots),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const distinctGenericSlots = signatureSuperBlob([
+    { type: 0, blob: codeDirectory() },
+    { type: 0x4242, blob: genericSignatureBlob },
+    { type: 0x4243, blob: genericSignatureBlob },
+  ]);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/distinct-generic-slots',
+      0o755,
+      signedMachO(distinctGenericSlots),
+    ),
+    [],
+  );
+  const aliasedGenericSlots = Buffer.from(distinctGenericSlots);
+  aliasedGenericSlots.writeUInt32BE(aliasedGenericSlots.readUInt32BE(24), 32);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/aliased-generic-slots',
+      0o755,
+      signedMachO(aliasedGenericSlots),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/mismatched-primary-slot',
+      0o755,
+      signedMachO(signatureSuperBlob([{ type: 0, blob: genericSignatureBlob }])),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(policyFindingsForFile('runtime/valid-code-directory', 0o755, signedMachO(codeDirectory())), []);
+  const versionedCodeDirectory = (
+    version,
+    mutate = () => {},
+    { codeLimit = 1, codeSlotCount = 1 } = {},
+  ) => {
+    const headerSize = version >= 0x20600 ? 108
+      : version >= 0x20500 ? 96
+        : version >= 0x20400 ? 88
+          : version >= 0x20300 ? 64
+            : version >= 0x20200 ? 52 : 48;
+    const identifier = Buffer.from('dev.peekaboo.versioned\0');
+    const hashOffset = headerSize + identifier.length;
+    const payload = Buffer.alloc(hashOffset + codeSlotCount * 32);
+    payload.writeUInt32BE(0xfade0c02, 0);
+    payload.writeUInt32BE(payload.length, 4);
+    payload.writeUInt32BE(version, 8);
+    payload.writeUInt32BE(hashOffset, 16);
+    payload.writeUInt32BE(headerSize, 20);
+    payload.writeUInt32BE(codeSlotCount, 28);
+    payload.writeUInt32BE(codeLimit, 32);
+    payload[36] = 32;
+    payload[37] = 2;
+    payload[39] = 12;
+    identifier.copy(payload, headerSize);
+    mutate(payload, { hashOffset, headerSize });
+    return payload;
+  };
+  for (const version of [0x20200, 0x20300, 0x20400, 0x20500, 0x20600]) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/code-directory-${version.toString(16)}`,
+        0o755,
+        signedMachO(versionedCodeDirectory(version)),
+      ),
+      [],
+    );
+  }
+  const extendedCodeLimit = (payload) => payload.writeBigUInt64BE(0x2000n, 56);
+  const platformCodeLimitDirectory = versionedCodeDirectory(
+    0x20300,
+    extendedCodeLimit,
+    { codeLimit: 1, codeSlotCount: 2 },
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/code-directory-platform-code-limit',
+      0o755,
+      signedMachO(platformCodeLimitDirectory),
+    ),
+    [],
+  );
+  const underCoveredCodeLimitDirectory = versionedCodeDirectory(
+    0x20300,
+    extendedCodeLimit,
+    { codeLimit: 1, codeSlotCount: 1 },
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/code-directory-under-covered-code-limit64',
+      0o755,
+      signedMachO(underCoveredCodeLimitDirectory),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const malformedVersionedDirectories = [
+    ['team-offset', 0x20200, (payload, layout) => payload.writeUInt32BE(layout.hashOffset, 48)],
+    ['spare3', 0x20300, (payload) => payload.writeUInt32BE(1, 52)],
+    ['exec-segment', 0x20400, (payload) => payload.writeBigUInt64BE(2n, 72)],
+    ['pre-encrypt', 0x20500, (payload) => payload.writeUInt32BE(payload.length - 1, 92)],
+    ['linkage', 0x20600, (payload) => {
+      payload[96] = 2;
+      payload[97] = 1;
+      payload.writeUInt32BE(payload.length - 1, 100);
+      payload.writeUInt32BE(20, 104);
+    }],
+  ];
+  for (const [label, version, mutate] of malformedVersionedDirectories) {
+    assert.deepEqual(
+      policyFindingsForFile(
+        `runtime/code-directory-invalid-${label}`,
+        0o755,
+        signedMachO(versionedCodeDirectory(version, mutate)),
+      ),
+      [{ family: 'uninspectable-native-executable' }],
+      label,
+    );
+  }
+  const scatteredCodeDirectory = (
+    codeLimit = 0x1000,
+    codeSlotCount = 1,
+    scatterCount = codeSlotCount,
+  ) => {
+    const identifier = Buffer.from('dev.peekaboo.scatter\0');
+    const scatterOffset = 48 + identifier.length;
+    const hashOffset = scatterOffset + 48;
+    const payload = Buffer.alloc(hashOffset + codeSlotCount * 32);
+    payload.writeUInt32BE(0xfade0c02, 0);
+    payload.writeUInt32BE(payload.length, 4);
+    payload.writeUInt32BE(0x20100, 8);
+    payload.writeUInt32BE(hashOffset, 16);
+    payload.writeUInt32BE(48, 20);
+    payload.writeUInt32BE(0, 24);
+    payload.writeUInt32BE(codeSlotCount, 28);
+    payload.writeUInt32BE(codeLimit, 32);
+    payload[36] = 32;
+    payload[37] = 2;
+    payload[39] = 12;
+    payload.writeUInt32BE(scatterOffset, 44);
+    identifier.copy(payload, 48);
+    payload.writeUInt32BE(scatterCount, scatterOffset);
+    return payload;
+  };
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/scattered-code-directory',
+      0o755,
+      signedMachO(scatteredCodeDirectory()),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/scatter-slot-count-mismatch',
+      0o755,
+      signedMachO(scatteredCodeDirectory(0x2000)),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/scatter-partial-slot-coverage',
+      0o755,
+      signedMachO(scatteredCodeDirectory(0x2000, 2, 1)),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const invalidScatterBase = scatteredCodeDirectory();
+  invalidScatterBase.writeUInt32BE(0xffffffff, invalidScatterBase.readUInt32BE(44) + 4);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/scatter-base-overflow',
+      0o755,
+      signedMachO(invalidScatterBase),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const pseudoCodeDirectory = Buffer.alloc(48);
+  pseudoCodeDirectory.writeUInt32BE(0xfade0c02, 0);
+  pseudoCodeDirectory.writeUInt32BE(pseudoCodeDirectory.length, 4);
+  pseudoCodeDirectory.writeUInt32BE(24, 20);
+  Buffer.from('dev.fake\0').copy(pseudoCodeDirectory, 24);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/pseudo-code-directory', 0o755, signedMachO(pseudoCodeDirectory)),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/code-directory-invalid-hashes',
+      0o755,
+      signedMachO(codeDirectory((payload) => payload.writeUInt32BE(0xffff, 28))),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+
+  const chainedMachO = (
+    nameOffsets,
+    symbolBytes = Buffer.concat([Buffer.alloc(1024, 0x41), Buffer.alloc(1)]),
+    symbolsFormat = 0,
+    startsBytes = null,
+    segments = [{ name: '__TEXT', virtualSize: 0x1000 }],
+  ) => {
+    const encodedSymbols = symbolsFormat === 0 ? symbolBytes : deflateSync(symbolBytes);
+    const startsOffset = 28;
+    const starts = startsBytes ?? Buffer.alloc(8);
+    if (startsBytes === null) starts.writeUInt32LE(1, 0);
+    const importsOffset = startsOffset + starts.length;
+    const symbolsOffset = importsOffset + nameOffsets.length * 4;
+    const payload = Buffer.alloc(symbolsOffset + encodedSymbols.length);
+    payload.writeUInt32LE(startsOffset, 4);
+    payload.writeUInt32LE(importsOffset, 8);
+    payload.writeUInt32LE(symbolsOffset, 12);
+    payload.writeUInt32LE(nameOffsets.length, 16);
+    payload.writeUInt32LE(1, 20);
+    payload.writeUInt32LE(symbolsFormat, 24);
+    starts.copy(payload, startsOffset);
+    for (const [index, nameOffset] of nameOffsets.entries()) {
+      payload.writeUInt32LE(nameOffset << 9, importsOffset + index * 4);
+    }
+    encodedSymbols.copy(payload, symbolsOffset);
+
+    const commandBytes = segments.length * 72 + 24 + 16;
+    const payloadOffset = 32 + commandBytes;
+    const bytes = Buffer.alloc(payloadOffset + payload.length);
+    Buffer.from('cffaedfe', 'hex').copy(bytes);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(2, 12);
+    bytes.writeUInt32LE(segments.length + 2, 16);
+    bytes.writeUInt32LE(commandBytes, 20);
+    for (const [index, segment] of segments.entries()) {
+      const command = 32 + index * 72;
+      bytes.writeUInt32LE(0x19, command);
+      bytes.writeUInt32LE(72, command + 4);
+      Buffer.from(segment.name).copy(bytes, command + 8, 0, 16);
+      bytes.writeBigUInt64LE(BigInt(segment.virtualAddress ?? 0), command + 24);
+      bytes.writeBigUInt64LE(BigInt(segment.virtualSize), command + 32);
+      bytes.writeBigUInt64LE(BigInt(index === 0 ? bytes.length : 0), command + 48);
+    }
+    const symbolCommand = 32 + segments.length * 72;
+    bytes.writeUInt32LE(0x02, symbolCommand);
+    bytes.writeUInt32LE(24, symbolCommand + 4);
+    bytes.writeUInt32LE(payloadOffset, symbolCommand + 8);
+    bytes.writeUInt32LE(0, symbolCommand + 12);
+    bytes.writeUInt32LE(bytes.length - 1, symbolCommand + 16);
+    bytes.writeUInt32LE(1, symbolCommand + 20);
+    const chainedCommand = symbolCommand + 24;
+    bytes.writeUInt32LE(0x80000034, chainedCommand);
+    bytes.writeUInt32LE(16, chainedCommand + 4);
+    bytes.writeUInt32LE(payloadOffset, chainedCommand + 8);
+    bytes.writeUInt32LE(payload.length, chainedCommand + 12);
+    payload.copy(bytes, payloadOffset);
+    return bytes;
+  };
+
+  assert.deepEqual(
+    policyFindingsForFile('runtime/repeated-chained-name', 0o755, chainedMachO([0, 0, 0, 0, 0])),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/hostile-chained-names', 0o755, chainedMachO([0, 1, 2, 3, 4])),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/compressed-osa-class',
+      0o755,
+      chainedMachO([0], Buffer.from('_OBJC_CLASS_$_OSAScript\0'), 1),
+    ),
+    [{ family: 'apple-script' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/empty-chained-import-table',
+      0o755,
+      chainedMachO([], Buffer.alloc(0)),
+    ),
+    [],
+  );
+  const invalidPageStarts = Buffer.alloc(32);
+  invalidPageStarts.writeUInt32LE(1, 0);
+  invalidPageStarts.writeUInt32LE(8, 4);
+  invalidPageStarts.writeUInt32LE(24, 8);
+  invalidPageStarts.writeUInt16LE(0x1000, 12);
+  invalidPageStarts.writeUInt16LE(2, 14);
+  invalidPageStarts.writeUInt16LE(1, 28);
+  invalidPageStarts.writeUInt16LE(0x1000, 30);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/invalid-chained-page-start',
+      0o755,
+      chainedMachO([0], Buffer.from('_benign\0'), 0, invalidPageStarts),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const repeatedOverflowStarts = Buffer.alloc(42);
+  repeatedOverflowStarts.writeUInt32LE(1, 0);
+  repeatedOverflowStarts.writeUInt32LE(8, 4);
+  repeatedOverflowStarts.writeUInt32LE(34, 8);
+  repeatedOverflowStarts.writeUInt16LE(0x1000, 12);
+  repeatedOverflowStarts.writeUInt16LE(2, 14);
+  repeatedOverflowStarts.writeUInt16LE(4, 28);
+  for (let page = 0; page < 4; page += 1) {
+    repeatedOverflowStarts.writeUInt16LE(0x8004, 30 + page * 2);
+  }
+  repeatedOverflowStarts.writeUInt16LE(0x0010, 38);
+  repeatedOverflowStarts.writeUInt16LE(0x8020, 40);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/repeated-chained-overflow-list',
+      0o755,
+      chainedMachO([0], Buffer.from('_benign\0'), 0, repeatedOverflowStarts),
+    ),
+    [],
+  );
+  const mismatchedSegmentOffset = Buffer.from(repeatedOverflowStarts);
+  mismatchedSegmentOffset.writeBigUInt64LE(1n, 16);
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/mismatched-chained-segment-offset',
+      0o755,
+      chainedMachO([0], Buffer.from('_benign\0'), 0, mismatchedSegmentOffset),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const wrappedSegmentStarts = Buffer.alloc(34);
+  wrappedSegmentStarts.writeUInt32LE(2, 0);
+  wrappedSegmentStarts.writeUInt32LE(12, 8);
+  wrappedSegmentStarts.writeUInt32LE(22, 12);
+  wrappedSegmentStarts.writeUInt16LE(0x1000, 16);
+  wrappedSegmentStarts.writeUInt16LE(2, 18);
+  wrappedSegmentStarts.writeBigUInt64LE(0xfffffffffffff000n, 20);
+  const wrappedSegmentLayout = [
+    { name: '__TEXT', virtualAddress: 0x2000, virtualSize: 0x1000 },
+    { name: '__LOW', virtualAddress: 0x1000, virtualSize: 0x100 },
+  ];
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/wrapped-chained-segment-offset',
+      0o755,
+      chainedMachO(
+        [0],
+        Buffer.from('_benign\0'),
+        0,
+        wrappedSegmentStarts,
+        wrappedSegmentLayout,
+      ),
+    ),
+    [],
+  );
+  const ctfCompatibleStarts = Buffer.alloc(12);
+  ctfCompatibleStarts.writeUInt32LE(2, 0);
+  const ctfSegments = [
+    { name: '__TEXT', virtualSize: 0x1000 },
+    { name: '__CTF', virtualSize: 0 },
+    { name: '__LINKEDIT', virtualSize: 0x1000 },
+  ];
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/ctf-compatible-chained-count',
+      0o755,
+      chainedMachO([0], Buffer.from('_benign\0'), 0, ctfCompatibleStarts, ctfSegments),
+    ),
+    [],
+  );
+  const nonemptyInsertedSegments = ctfSegments.map((segment) => ({ ...segment }));
+  nonemptyInsertedSegments[1].virtualSize = 1;
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/nonempty-inserted-chained-count',
+      0o755,
+      chainedMachO(
+        [0],
+        Buffer.from('_benign\0'),
+        0,
+        ctfCompatibleStarts,
+        nonemptyInsertedSegments,
+      ),
+    ),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+});
+
+test('policy scanner uses structural Mach-O evidence and broad markers only for text scripts', () => {
+  const cleanMachO = fs.readFileSync('/usr/bin/true');
+  const legacyProse = Buffer.concat([
+    cleanMachO,
+    Buffer.from(' random .utm. jxa applescript remote desktop observation post-processing '),
+  ]);
+  assert.deepEqual(policyFindingsForFile('runtime/helper', 0o755, legacyProse), []);
+
+  const systemLibrary = Buffer.from('/usr/lib/libSystem.B.dylib\0');
+  const virtualizationLibrary = Buffer.from('Virtualization.framework/V\0');
+  assert.equal(systemLibrary.length, virtualizationLibrary.length);
+  const virtualizationMachO = Buffer.from(cleanMachO);
+  const loadOffset = virtualizationMachO.indexOf(systemLibrary);
+  assert(loadOffset >= 0);
+  virtualizationLibrary.copy(virtualizationMachO, loadOffset);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/helper', 0o755, virtualizationMachO),
+    [{ family: 'virtualization' }],
+  );
+  const appleScriptMachO = Buffer.from(cleanMachO);
+  appleScriptMachO.fill(0, loadOffset, loadOffset + systemLibrary.length);
+  Buffer.from('/usr/bin/osascript\0').copy(appleScriptMachO, loadOffset);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/helper', 0o755, appleScriptMachO),
+    [{ family: 'apple-script' }],
+  );
+  const benignIdentifier = Buffer.from('com.apple.true\0');
+  const virtualizationIdentifier = Buffer.from('com.utm.UTM\0');
+  const identifierMachO = Buffer.from(cleanMachO);
+  const identifierOffset = identifierMachO.indexOf(benignIdentifier);
+  assert(identifierOffset >= 0);
+  identifierMachO.fill(0, identifierOffset, identifierOffset + benignIdentifier.length);
+  virtualizationIdentifier.copy(identifierMachO, identifierOffset);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/helper', 0o755, identifierMachO),
+    [{ family: 'virtualization' }],
+  );
+
+  const structuralExecutables = [
+    ['runtime/helper', '/usr/bin/osascript', 'apple-script'],
+    ['runtime/cua-driver', '/usr/bin/true', 'cua-driver'],
+    ['runtime/Lume/helper', '/usr/bin/true', 'virtualization'],
+    ['runtime/prl_vm_app', '/usr/bin/true', 'virtualization'],
+    ['runtime/UTM/helper', '/usr/bin/true', 'virtualization'],
+    ['runtime/VirtualBoxVM', '/usr/bin/true', 'virtualization'],
+    ['runtime/virtualization/helper', '/usr/bin/true', 'virtualization'],
+    ['runtime/ARDAgent', '/usr/bin/true', 'remote-desktop'],
+    ['runtime/Jump Desktop/helper', '/usr/bin/true', 'remote-desktop'],
+    ['runtime/rdc', '/usr/bin/true', 'remote-desktop'],
+    ['runtime/remotedesktop/helper', '/usr/bin/true', 'remote-desktop'],
+    ['runtime/vncviewer', '/usr/bin/true', 'remote-desktop'],
+  ];
+  for (const [relativePath, filePath, family] of structuralExecutables) {
+    assert.deepEqual(
+      policyFindingsForFile(relativePath, 0o755, fs.readFileSync(filePath)),
+      [{ family }],
+      relativePath,
+    );
+  }
+  assert.deepEqual(
+    policyFindingsForFile('runtime/opaque', 0o755, Buffer.from([0x00, 0x01, 0x02, 0x03])),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile('Resources/payload.scpt', 0o644, Buffer.from([0x00, 0x01, 0x02])),
+    [{ family: 'apple-script' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile('Resources/readme.txt', 0o644, Buffer.from('AppleScript UTM remote desktop')),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/text-helper', 0o755, Buffer.from('exec osascript payload\n')),
+    [{ family: 'apple-script' }],
+  );
+
+  const appleScriptFixtureRoot = fs.mkdtempSync('/private/tmp/pbq-policy-applescript-');
+  fs.chmodSync(appleScriptFixtureRoot, 0o700);
+  try {
+    const disabledProseSource = writeFile(path.join(appleScriptFixtureRoot, 'disabled.c'), [
+      '#include <stdio.h>',
+      'int main(void) { return puts("NSAppleScript support is disabled") < 0; }',
+      '',
+    ].join('\n'));
+    const disabledProseExecutable = path.join(appleScriptFixtureRoot, 'disabled-helper');
+    const disabledProseBuild = spawnSync('/usr/bin/xcrun', [
+      'clang', disabledProseSource, '-o', disabledProseExecutable,
+    ], { encoding: 'utf8' });
+    assert.equal(disabledProseBuild.status, 0, disabledProseBuild.stderr);
+    assert.deepEqual(
+      policyFindingsForFile(
+        'runtime/disabled-helper',
+        0o755,
+        fs.readFileSync(disabledProseExecutable),
+      ),
+      [],
+    );
+
+    const dynamicFrameworkFixtures = [
+      {
+        name: 'helper-one',
+        framework: '/System/Library/Frameworks/ScriptingBridge.framework/ScriptingBridge',
+        symbol: 'OBJC_CLASS_$_SBApplication',
+        family: 'apple-script',
+      },
+      {
+        name: 'helper-two',
+        framework: '/System/Library/Frameworks/Virtualization.framework/Virtualization',
+        symbol: 'OBJC_CLASS_$_VZVirtualMachine',
+        family: 'virtualization',
+      },
+      {
+        name: 'helper-three',
+        framework: '/System/Library/Frameworks/Foundation.framework/Foundation',
+        symbol: 'OBJC_CLASS_$_NSAppleScript',
+        family: 'apple-script',
+      },
+      {
+        name: 'helper-four',
+        framework: '/System/Library/Frameworks/Foundation.framework/Foundation',
+        symbol: 'NSAppleEventDescriptor',
+        family: 'apple-script',
+      },
+      {
+        name: 'helper-five',
+        framework: '/System/Library/Frameworks/ScriptingBridge.framework/ScriptingBridge',
+        symbol: 'SBApplication',
+        family: 'apple-script',
+      },
+      {
+        name: 'helper-six',
+        framework: '/System/Library/Frameworks/Virtualization.framework/Virtualization',
+        symbol: 'VZVirtualMachine',
+        family: 'virtualization',
+      },
+    ];
+    for (const fixture of dynamicFrameworkFixtures) {
+      const dynamicSource = writeFile(path.join(appleScriptFixtureRoot, `${fixture.name}.c`), [
+        '#include <dlfcn.h>',
+        'int main(void) {',
+        `  void *handle = dlopen("${fixture.framework}", RTLD_LAZY);`,
+        '  if (handle == 0) return 1;',
+        `  return dlsym(handle, "${fixture.symbol}") == 0;`,
+        '}',
+        '',
+      ].join('\n'));
+      const dynamicExecutable = path.join(appleScriptFixtureRoot, fixture.name);
+      const dynamicBuild = spawnSync('/usr/bin/xcrun', [
+        'clang', dynamicSource, '-o', dynamicExecutable,
+      ], { encoding: 'utf8' });
+      assert.equal(dynamicBuild.status, 0, dynamicBuild.stderr);
+      assert.deepEqual(
+        policyFindingsForFile(
+          `runtime/${fixture.name}`,
+          0o755,
+          fs.readFileSync(dynamicExecutable),
+        ),
+        [{ family: fixture.family }],
+      );
+    }
+
+    const signedNeutralExecutable = path.join(appleScriptFixtureRoot, 'signed-neutral-helper');
+    fs.copyFileSync(disabledProseExecutable, signedNeutralExecutable);
+    const signNeutral = spawnSync('/usr/bin/codesign', [
+      '--force', '--sign', '-', '--identifier', 'dev.peekaboo.neutral', signedNeutralExecutable,
+    ], { encoding: 'utf8' });
+    assert.equal(signNeutral.status, 0, signNeutral.stderr);
+    const signedNeutralBytes = fs.readFileSync(signedNeutralExecutable);
+    assert.equal(signedNeutralBytes.subarray(0, 4).toString('hex'), 'cffaedfe');
+    const commandCount = signedNeutralBytes.readUInt32LE(16);
+    let commandOffset = 32;
+    let signatureCommandOffset = null;
+    for (let index = 0; index < commandCount; index += 1) {
+      const command = signedNeutralBytes.readUInt32LE(commandOffset) & 0x7fffffff;
+      const commandSize = signedNeutralBytes.readUInt32LE(commandOffset + 4);
+      if (command === 0x1d) signatureCommandOffset = commandOffset;
+      commandOffset += commandSize;
+    }
+    assert.notEqual(signatureCommandOffset, null);
+    const signatureOffset = signedNeutralBytes.readUInt32LE(signatureCommandOffset + 8);
+    const signatureSize = signedNeutralBytes.readUInt32LE(signatureCommandOffset + 12);
+    assert.equal(signatureOffset + signatureSize, signedNeutralBytes.length);
+    assert.deepEqual(
+      policyFindingsForFile('runtime/signed-neutral-helper', 0o755, signedNeutralBytes),
+      [],
+    );
+    const signatureCollision = Buffer.from('OBJC_CLASS_$_VZVirtualMachine\0');
+    const signatureCollisionBytes = Buffer.concat([signedNeutralBytes, signatureCollision]);
+    signatureCollisionBytes.writeUInt32LE(
+      signatureSize + signatureCollision.length,
+      signatureCommandOffset + 12,
+    );
+    assert.deepEqual(
+      policyFindingsForFile('runtime/signed-neutral-helper', 0o755, signatureCollisionBytes),
+      [{ family: 'virtualization' }],
+    );
+
+    const sourcePath = writeFile(path.join(appleScriptFixtureRoot, 'fixture.m'), [
+      '#import <Foundation/Foundation.h>',
+      'int main(void) {',
+      '  NSAppleScript *script = [[NSAppleScript alloc] initWithSource:@"return 1"];',
+      '  return script == nil;',
+      '}',
+      '',
+    ].join('\n'));
+    const executablePath = path.join(appleScriptFixtureRoot, 'native-helper');
+    const build = spawnSync('/usr/bin/xcrun', [
+      'clang', '-fobjc-arc', sourcePath, '-framework', 'Foundation', '-o', executablePath,
+    ], { encoding: 'utf8' });
+    assert.equal(build.status, 0, build.stderr);
+    assert.deepEqual(
+      policyFindingsForFile('runtime/native-helper', 0o755, fs.readFileSync(executablePath)),
+      [{ family: 'apple-script' }],
+    );
+
+    const descriptorSource = writeFile(path.join(appleScriptFixtureRoot, 'descriptor.m'), [
+      '#import <Foundation/Foundation.h>',
+      'int main(void) {',
+      '  NSAppleEventDescriptor *descriptor = [NSAppleEventDescriptor descriptorWithInt32:1];',
+      '  return descriptor == nil;',
+      '}',
+      '',
+    ].join('\n'));
+    const descriptorExecutable = path.join(appleScriptFixtureRoot, 'descriptor-helper');
+    const descriptorBuild = spawnSync('/usr/bin/xcrun', [
+      'clang', '-fobjc-arc', descriptorSource,
+      '-framework', 'Foundation', '-o', descriptorExecutable,
+    ], { encoding: 'utf8' });
+    assert.equal(descriptorBuild.status, 0, descriptorBuild.stderr);
+    assert.deepEqual(
+      policyFindingsForFile('runtime/descriptor-helper', 0o755, fs.readFileSync(descriptorExecutable)),
+      [{ family: 'apple-script' }],
+    );
+
+    const scriptingBridgeSource = writeFile(path.join(appleScriptFixtureRoot, 'bridge.m'), [
+      '#import <ScriptingBridge/ScriptingBridge.h>',
+      'int main(void) {',
+      '  SBApplication *application = [SBApplication applicationWithBundleIdentifier:@"com.apple.Finder"];',
+      '  return application == nil;',
+      '}',
+      '',
+    ].join('\n'));
+    const scriptingBridgeExecutable = path.join(appleScriptFixtureRoot, 'bridge-helper');
+    const scriptingBridgeBuild = spawnSync('/usr/bin/xcrun', [
+      'clang', '-fobjc-arc', scriptingBridgeSource,
+      '-framework', 'ScriptingBridge', '-framework', 'Foundation',
+      '-o', scriptingBridgeExecutable,
+    ], { encoding: 'utf8' });
+    assert.equal(scriptingBridgeBuild.status, 0, scriptingBridgeBuild.stderr);
+    assert.deepEqual(
+      policyFindingsForFile(
+        'runtime/bridge-helper',
+        0o755,
+        fs.readFileSync(scriptingBridgeExecutable),
+      ),
+      [{ family: 'apple-script' }],
+    );
+
+    const signedCuaExecutable = path.join(appleScriptFixtureRoot, 'signed-native-helper');
+    fs.copyFileSync('/usr/bin/true', signedCuaExecutable);
+    fs.chmodSync(signedCuaExecutable, 0o755);
+    const signCua = spawnSync('/usr/bin/codesign', [
+      '--force', '--sign', '-', '--identifier', 'com.trycua.driver', signedCuaExecutable,
+    ], { encoding: 'utf8' });
+    assert.equal(signCua.status, 0, signCua.stderr);
+    assert.deepEqual(
+      policyFindingsForFile('runtime/signed-native-helper', 0o755, fs.readFileSync(signedCuaExecutable)),
+      [{ family: 'cua-driver' }],
+    );
+
+    const dylibSource = writeFile(
+      path.join(appleScriptFixtureRoot, 'remote.c'),
+      'int fixture(void) { return 0; }\n',
+    );
+    const dylibPath = path.join(appleScriptFixtureRoot, 'neutral.dylib');
+    const dylibBuild = spawnSync('/usr/bin/xcrun', [
+      'clang', '-dynamiclib', dylibSource,
+      '-Wl,-install_name,@rpath/VNC/helper.dylib', '-o', dylibPath,
+    ], { encoding: 'utf8' });
+    assert.equal(dylibBuild.status, 0, dylibBuild.stderr);
+    assert.deepEqual(
+      policyFindingsForFile('runtime/neutral.dylib', 0o644, fs.readFileSync(dylibPath)),
+      [{ family: 'remote-desktop' }],
+    );
+  } finally {
+    fs.rmSync(appleScriptFixtureRoot, { recursive: true, force: true });
+  }
+
+  const hostileScripts = [
+    ['bootstrap.sh', '#!/bin/sh\nexec /usr/bin/osascript payload.applescript\n', 'apple-script'],
+    ['driver.jxa', '#!/usr/bin/osascript -l JavaScript\nObjC.import("AppKit")\n', 'apple-script'],
+    ['payload.osa', 'OSAExecute forbidden\n', 'apple-script'],
+    ['launch.sh', '#!/bin/sh\nexec cua-driver run\n', 'cua-driver'],
+    ['vm.sh', '#!/bin/sh\nexec lume run fixture\n', 'virtualization'],
+    ['utm.sh', '#!/bin/sh\nexec utm run fixture\n', 'virtualization'],
+    ['remote.sh', '#!/bin/sh\nexec remotedesktop fixture\n', 'remote-desktop'],
+  ];
+  for (const [relativePath, source, family] of hostileScripts) {
+    assert.deepEqual(
+      policyFindingsForFile(relativePath, 0o755, Buffer.from(source)),
+      [{ family }],
+      relativePath,
+    );
+  }
+
+  const emptyMachO = Buffer.alloc(32);
+  Buffer.from('cffaedfe', 'hex').copy(emptyMachO);
+  emptyMachO.writeUInt32LE(0x0100000c, 4);
+  emptyMachO.writeUInt32LE(2, 12);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/empty-native', 0o755, emptyMachO),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+
+  const chainedFixupOnlyMachO = Buffer.alloc(160);
+  Buffer.from('cffaedfe', 'hex').copy(chainedFixupOnlyMachO);
+  chainedFixupOnlyMachO.writeUInt32LE(0x0100000c, 4);
+  chainedFixupOnlyMachO.writeUInt32LE(2, 12);
+  chainedFixupOnlyMachO.writeUInt32LE(2, 16);
+  chainedFixupOnlyMachO.writeUInt32LE(88, 20);
+  chainedFixupOnlyMachO.writeUInt32LE(0x19, 32);
+  chainedFixupOnlyMachO.writeUInt32LE(72, 36);
+  chainedFixupOnlyMachO.writeBigUInt64LE(BigInt(chainedFixupOnlyMachO.length), 80);
+  chainedFixupOnlyMachO.writeUInt32LE(0x80000034, 104);
+  chainedFixupOnlyMachO.writeUInt32LE(16, 108);
+  chainedFixupOnlyMachO.writeUInt32LE(120, 112);
+  chainedFixupOnlyMachO.writeUInt32LE(40, 116);
+  chainedFixupOnlyMachO.writeUInt32LE(28, 124);
+  chainedFixupOnlyMachO.writeUInt32LE(28, 128);
+  chainedFixupOnlyMachO.writeUInt32LE(32, 132);
+  chainedFixupOnlyMachO.writeUInt32LE(1, 136);
+  chainedFixupOnlyMachO.writeUInt32LE(1, 140);
+  chainedFixupOnlyMachO.writeUInt32LE(1, 144);
+  Buffer.from('compressed-import-pool').copy(chainedFixupOnlyMachO, 148);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/chained-fixups-only', 0o755, chainedFixupOnlyMachO),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+
+  const chainedSymbol = Buffer.from('_OBJC_CLASS_$_NSAppleScript\0');
+  const compressedSymbols = deflateSync(chainedSymbol);
+  const chainedPayloadSize = 40 + compressedSymbols.length;
+  const chainedPayloadOffset = 144;
+  const chainedAndSymtabMachO = Buffer.alloc(chainedPayloadOffset + chainedPayloadSize);
+  Buffer.from('cffaedfe', 'hex').copy(chainedAndSymtabMachO);
+  chainedAndSymtabMachO.writeUInt32LE(0x0100000c, 4);
+  chainedAndSymtabMachO.writeUInt32LE(2, 12);
+  chainedAndSymtabMachO.writeUInt32LE(3, 16);
+  chainedAndSymtabMachO.writeUInt32LE(112, 20);
+  chainedAndSymtabMachO.writeUInt32LE(0x19, 32);
+  chainedAndSymtabMachO.writeUInt32LE(72, 36);
+  chainedAndSymtabMachO.writeBigUInt64LE(BigInt(chainedAndSymtabMachO.length), 80);
+  chainedAndSymtabMachO.writeUInt32LE(0x02, 104);
+  chainedAndSymtabMachO.writeUInt32LE(24, 108);
+  chainedAndSymtabMachO.writeUInt32LE(chainedPayloadOffset, 112);
+  chainedAndSymtabMachO.writeUInt32LE(0, 116);
+  chainedAndSymtabMachO.writeUInt32LE(chainedAndSymtabMachO.length - 1, 120);
+  chainedAndSymtabMachO.writeUInt32LE(1, 124);
+  chainedAndSymtabMachO.writeUInt32LE(0x80000034, 128);
+  chainedAndSymtabMachO.writeUInt32LE(16, 132);
+  chainedAndSymtabMachO.writeUInt32LE(chainedPayloadOffset, 136);
+  chainedAndSymtabMachO.writeUInt32LE(chainedPayloadSize, 140);
+  chainedAndSymtabMachO.writeUInt32LE(28, chainedPayloadOffset + 4);
+  chainedAndSymtabMachO.writeUInt32LE(36, chainedPayloadOffset + 8);
+  chainedAndSymtabMachO.writeUInt32LE(40, chainedPayloadOffset + 12);
+  chainedAndSymtabMachO.writeUInt32LE(1, chainedPayloadOffset + 16);
+  chainedAndSymtabMachO.writeUInt32LE(1, chainedPayloadOffset + 20);
+  chainedAndSymtabMachO.writeUInt32LE(1, chainedPayloadOffset + 24);
+  chainedAndSymtabMachO.writeUInt32LE(1, chainedPayloadOffset + 28);
+  chainedAndSymtabMachO.writeUInt32LE(0, chainedPayloadOffset + 32);
+  chainedAndSymtabMachO.writeUInt32LE(0, chainedPayloadOffset + 36);
+  compressedSymbols.copy(chainedAndSymtabMachO, chainedPayloadOffset + 40);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/chained-fixups-and-symtab', 0o755, chainedAndSymtabMachO),
+    [{ family: 'apple-script' }],
+  );
+
+  const invalidDylibCommand = Buffer.from(cleanMachO);
+  const invalidDylibOffset = invalidDylibCommand.indexOf(systemLibrary) - 24;
+  assert(invalidDylibOffset >= 0);
+  invalidDylibCommand.writeUInt32LE(0xfffffff0, invalidDylibOffset + 8);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/invalid-load', 0o755, invalidDylibCommand),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+
+  const symbolMachO = (uniqueOffsets, symbolName = null) => {
+    const symbolCount = 10_000;
+    const stringSize = 4096;
+    const symbolOffset = 128;
+    const stringOffset = symbolOffset + symbolCount * 16;
+    const bytes = Buffer.alloc(stringOffset + stringSize);
+    Buffer.from('cffaedfe', 'hex').copy(bytes);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(1, 12);
+    bytes.writeUInt32LE(2, 16);
+    bytes.writeUInt32LE(96, 20);
+    bytes.writeUInt32LE(0x19, 32);
+    bytes.writeUInt32LE(72, 36);
+    bytes.writeBigUInt64LE(BigInt(bytes.length), 80);
+    bytes.writeUInt32LE(0x02, 104);
+    bytes.writeUInt32LE(24, 108);
+    bytes.writeUInt32LE(symbolOffset, 112);
+    bytes.writeUInt32LE(symbolCount, 116);
+    bytes.writeUInt32LE(stringOffset, 120);
+    bytes.writeUInt32LE(stringSize, 124);
+    for (let index = 0; index < symbolCount; index += 1) {
+      bytes.writeUInt32LE(uniqueOffsets ? 1 + (index % (stringSize - 2)) : 1, symbolOffset + index * 16);
+      bytes[symbolOffset + index * 16 + 4] = 0x01;
+    }
+    if (symbolName === null) {
+      bytes.fill(0x41, stringOffset + 1, stringOffset + stringSize - 1);
+    } else {
+      const encoded = Buffer.from(`${symbolName}\0`);
+      assert(encoded.length < stringSize);
+      encoded.copy(bytes, stringOffset + 1);
+    }
+    return bytes;
+  };
+  assert.deepEqual(policyFindingsForFile('runtime/cached-symbols', 0o755, symbolMachO(false)), []);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/hostile-symbols', 0o755, symbolMachO(true)),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/sb-json',
+      0o755,
+      symbolMachO(false, '_OBJC_CLASS_$_SBJsonParser'),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    policyFindingsForFile(
+      'runtime/sb-button',
+      0o755,
+      symbolMachO(false, '_OBJC_CLASS_$_SBButton'),
+    ),
+    [],
+  );
+
+  const unalignedLoadCommand = Buffer.from(cleanMachO);
+  unalignedLoadCommand.writeUInt32LE(25, invalidDylibOffset + 4);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/unaligned-load', 0o755, unalignedLoadCommand),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const fakeCodeDirectory = Buffer.from(cleanMachO);
+  const codeDirectoryOffset = fakeCodeDirectory.indexOf(Buffer.from('fade0c02', 'hex'));
+  assert(codeDirectoryOffset >= 0);
+  fakeCodeDirectory.writeUInt32BE(0xfade0c03, codeDirectoryOffset);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/fake-code-directory', 0o755, fakeCodeDirectory),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+
+  assert.equal(cleanMachO.subarray(0, 4).toString('hex'), 'cafebabe');
+  assert(cleanMachO.readUInt32BE(4) >= 2);
+  const mismatchedFatMachO = Buffer.from(cleanMachO);
+  const firstCPUType = mismatchedFatMachO.readUInt32BE(8);
+  mismatchedFatMachO.writeUInt32BE(
+    firstCPUType === 0x01000007 ? 0x0100000c : 0x01000007,
+    8,
+  );
+  assert.deepEqual(
+    policyFindingsForFile('runtime/mismatched-fat', 0o755, mismatchedFatMachO),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const overlappingFatMachO = Buffer.from(cleanMachO);
+  overlappingFatMachO.writeUInt32BE(overlappingFatMachO.readUInt32BE(16), 36);
+  assert.deepEqual(
+    policyFindingsForFile('runtime/overlapping-fat', 0o755, overlappingFatMachO),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+  const firstCPU = cleanMachO.readUInt32BE(8);
+  const firstSubtype = cleanMachO.readUInt32BE(12);
+  const firstSliceOffset = cleanMachO.readUInt32BE(16);
+  const firstSliceSize = cleanMachO.readUInt32BE(20);
+  const duplicateAlignment = 12;
+  const duplicateFirstOffset = 2 ** duplicateAlignment;
+  const duplicateSecondOffset = Math.ceil(
+    (duplicateFirstOffset + firstSliceSize) / (2 ** duplicateAlignment),
+  ) * (2 ** duplicateAlignment);
+  const duplicateFatMachO = Buffer.alloc(duplicateSecondOffset + firstSliceSize);
+  Buffer.from('cafebabe', 'hex').copy(duplicateFatMachO);
+  duplicateFatMachO.writeUInt32BE(2, 4);
+  for (const [entry, sliceOffset] of [[8, duplicateFirstOffset], [28, duplicateSecondOffset]]) {
+    duplicateFatMachO.writeUInt32BE(firstCPU, entry);
+    duplicateFatMachO.writeUInt32BE(firstSubtype, entry + 4);
+    duplicateFatMachO.writeUInt32BE(sliceOffset, entry + 8);
+    duplicateFatMachO.writeUInt32BE(firstSliceSize, entry + 12);
+    duplicateFatMachO.writeUInt32BE(duplicateAlignment, entry + 16);
+    cleanMachO.copy(
+      duplicateFatMachO,
+      sliceOffset,
+      firstSliceOffset,
+      firstSliceOffset + firstSliceSize,
+    );
+  }
+  assert.deepEqual(
+    policyFindingsForFile('runtime/duplicate-fat', 0o755, duplicateFatMachO),
+    [{ family: 'uninspectable-native-executable' }],
+  );
+});
+
+test('installed Foundation-signed Peekaboo 4.2.2 CLI and app tree are benign', (context) => {
+  const fixtures = [
+    {
+      label: 'CLI',
+      executable: '/Users/steipete/bin/peekaboo',
+      identifier: 'boo.peekaboo.peekaboo',
+      signatureTarget: '/Users/steipete/bin/peekaboo',
+      verifyArguments: ['--verify', '--strict'],
+      relativePath: 'bin/peekaboo',
+    },
+    {
+      label: 'app',
+      executable: '/Applications/Peekaboo.app/Contents/MacOS/Peekaboo',
+      identifier: 'boo.peekaboo.mac',
+      signatureTarget: '/Applications/Peekaboo.app',
+      verifyArguments: ['--verify', '--deep', '--strict'],
+      relativePath: 'Peekaboo.app/Contents/MacOS/Peekaboo',
+    },
+  ];
+  if (fixtures.some((fixture) => !fs.existsSync(fixture.executable))) {
+    context.skip('installed Peekaboo 4.2.2 fixtures are unavailable on this host');
+    return;
+  }
+  const cliVersion = spawnSync(fixtures[0].executable, ['--version'], { encoding: 'utf8' });
+  if (cliVersion.status !== 0 || !/^Peekaboo 4\.2\.2\b/.test(cliVersion.stdout)) {
+    context.skip('installed Peekaboo CLI is not the 4.2.2 release fixture');
+    return;
+  }
+  const appVersion = spawnSync('/usr/libexec/PlistBuddy', [
+    '-c', 'Print :CFBundleShortVersionString', '/Applications/Peekaboo.app/Contents/Info.plist',
+  ], { encoding: 'utf8' });
+  if (appVersion.status !== 0 || appVersion.stdout.trim() !== '4.2.2') {
+    context.skip('installed Peekaboo app is not the 4.2.2 release fixture');
+    return;
+  }
+  for (const fixture of fixtures) {
+    const verify = spawnSync('/usr/bin/codesign', [...fixture.verifyArguments, fixture.signatureTarget], {
+      encoding: 'utf8',
+    });
+    assert.equal(verify.status, 0, `${fixture.label}: ${verify.stderr}`);
+    const detail = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', fixture.signatureTarget], {
+      encoding: 'utf8',
+    });
+    assert.equal(detail.status, 0, `${fixture.label}: ${detail.stderr}`);
+    assert.match(detail.stderr, new RegExp(`Identifier=${fixture.identifier.replaceAll('.', '\\.')}`));
+    assert.match(detail.stderr, /TeamIdentifier=FWJYW4S8P8/);
+    assert.match(detail.stderr, /Authority=Developer ID Application: OpenClaw Foundation \(FWJYW4S8P8\)/);
+    const bytes = fs.readFileSync(fixture.executable);
+    const legacySearch = bytes.toString('latin1').toLowerCase();
+    assert.match(legacySearch, /jxa/);
+    assert.match(legacySearch, /applescript/);
+    assert.match(legacySearch, /remote desktop observation post-processing/);
+    assert.deepEqual(policyFindingsForFile(fixture.relativePath, 0o755, bytes), []);
+  }
+  const appRoot = '/Applications/Peekaboo.app';
+  const pending = [appRoot];
+  let scannedCodeCount = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    for (const name of fs.readdirSync(current)) {
+      const filePath = path.join(current, name);
+      const info = fs.lstatSync(filePath);
+      if (info.isSymbolicLink()) continue;
+      if (info.isDirectory()) {
+        pending.push(filePath);
+        continue;
+      }
+      if (!info.isFile()) continue;
+      const bytes = fs.readFileSync(filePath);
+      const relativePath = path.relative('/Applications', filePath);
+      if (classifyPolicyFile(relativePath, info.mode & 0o7777, bytes) === 'data') continue;
+      scannedCodeCount += 1;
+      assert.deepEqual(
+        policyFindingsForFile(relativePath, info.mode & 0o7777, bytes),
+        [],
+        relativePath,
+      );
+    }
+  }
+  assert(scannedCodeCount >= 5);
 });
 
 test('process-tree collector is read-only and continuously detects short-lived children', async () => {
@@ -4615,7 +6466,7 @@ test('qualification manifest closes every required evidence class and detects by
       '--output', path.join(root, 'forbidden-scanner-report.json'),
     ], { encoding: 'utf8' });
     assert.notEqual(forbiddenScannerRun.status, 0);
-    assert.match(forbiddenScannerRun.stderr, /forbidden executable or script markers/);
+    assert.match(forbiddenScannerRun.stderr, /forbidden executable or script policy evidence/);
     writeFile(installedScriptPath, cleanInstalledScript, 0o755);
     const installedDylibPath = path.join(
       deployment.artifactRoots.peekaboo_cli,
@@ -4624,7 +6475,7 @@ test('qualification manifest closes every required evidence class and detects by
     const cleanInstalledDylib = fs.readFileSync(installedDylibPath);
     writeFile(
       installedDylibPath,
-      Buffer.concat([Buffer.from('cffaedfe', 'hex'), Buffer.from(' osascript ')]),
+      fs.readFileSync('/usr/bin/osascript'),
       0o644,
     );
     const forbiddenDylibEntries = structuredClone(
@@ -4656,8 +6507,51 @@ test('qualification manifest closes every required evidence class and detects by
       '--output', path.join(root, 'forbidden-dylib-report.json'),
     ], { encoding: 'utf8' });
     assert.notEqual(forbiddenDylibRun.status, 0);
-    assert.match(forbiddenDylibRun.stderr, /forbidden executable or script markers/);
+    assert.match(forbiddenDylibRun.stderr, /forbidden executable or script policy evidence/);
     writeFile(installedDylibPath, cleanInstalledDylib, 0o644);
+    const installedSymlinkPath = path.join(
+      deployment.artifactRoots.peekaboo_cli,
+      'symlink/peekaboo',
+    );
+    const cleanInstalledSymlinkTarget = fs.readlinkSync(installedSymlinkPath);
+    for (const [target, suffix, expected] of [
+      ['../runtime/cua-driver', 'forbidden-symlink', /forbidden executable or script policy evidence/],
+      ['/usr/bin/osascript', 'escaping-symlink', /symlink escapes its artifact root/],
+    ]) {
+      fs.unlinkSync(installedSymlinkPath);
+      fs.symlinkSync(target, installedSymlinkPath);
+      const symlinkEntries = structuredClone(
+        JSON.parse(fs.readFileSync(deployment.installed[0])).entries,
+      );
+      const symlinkEntry = symlinkEntries.find((entry) => (
+        entry.relative_path === 'symlink/peekaboo'
+      ));
+      symlinkEntry.target = target;
+      const symlinkInventory = installedInventory(
+        root,
+        'local',
+        deployment.localUUID,
+        symlinkEntries,
+        qualificationToolsAggregate,
+        sha256(fs.readFileSync(deployment.elevationReceipts[0])),
+        `-${suffix}`,
+      );
+      const symlinkSpec = writeJSON(path.join(root, `${suffix}-spec.json`), {
+        version: 1,
+        installed_inventory: symlinkInventory,
+        artifact_roots: deployment.artifactRoots,
+      });
+      const symlinkRun = spawnSync(process.execPath, [
+        deployment.policyScanner,
+        'generate',
+        '--spec', symlinkSpec,
+        '--output', path.join(root, `${suffix}-report.json`),
+      ], { encoding: 'utf8' });
+      assert.notEqual(symlinkRun.status, 0);
+      assert.match(symlinkRun.stderr, expected);
+    }
+    fs.unlinkSync(installedSymlinkPath);
+    fs.symlinkSync(cleanInstalledSymlinkTarget, installedSymlinkPath);
     const legacyInput = structuredClone(inputValue);
     legacyInput.version = 1;
     assert.throws(
