@@ -34,7 +34,13 @@ extension SeeCommand {
         }
     }
 
-    func makeOutputURL(preferredName: String?, index: Int?) -> URL {
+    func makeOutputURL(
+        preferredName: String?,
+        index: Int?,
+        defaultDirectory: String? = nil,
+        timestamp: Date = Date(),
+        uniqueToken: UUID = UUID()
+    ) -> URL {
         if self.streamsImageToStdout {
             let suffix = index.map { "-\($0)" } ?? ""
             return FileManager.default.temporaryDirectory
@@ -47,7 +53,12 @@ extension SeeCommand {
             if ObservationOutputPathResolver.isDirectoryLike(expanded) {
                 return URL(fileURLWithPath: expanded, isDirectory: true)
                     .appendingPathComponent(
-                        self.defaultOutputFilename(preferredName: preferredName, index: index)
+                        self.defaultOutputFilename(
+                            preferredName: preferredName,
+                            index: index,
+                            timestamp: timestamp,
+                            uniqueToken: uniqueToken
+                        )
                     )
             }
 
@@ -68,9 +79,16 @@ extension SeeCommand {
             return url
         }
 
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let configuredDirectory = defaultDirectory
+            ?? ConfigurationManager.shared.getDefaultSavePath(cliValue: nil)
+        return URL(fileURLWithPath: configuredDirectory, isDirectory: true)
             .appendingPathComponent(
-                self.defaultOutputFilename(preferredName: preferredName, index: index)
+                self.defaultOutputFilename(
+                    preferredName: preferredName,
+                    index: index,
+                    timestamp: timestamp,
+                    uniqueToken: uniqueToken
+                )
             )
     }
 
@@ -94,8 +112,13 @@ extension SeeCommand {
         )
     }
 
-    private func defaultOutputFilename(preferredName: String?, index: Int?) -> String {
-        let timestamp = Self.imageFilenameDateFormatter.string(from: Date())
+    private func defaultOutputFilename(
+        preferredName: String?,
+        index: Int?,
+        timestamp: Date,
+        uniqueToken: UUID
+    ) -> String {
+        let readableTimestamp = Self.imageFilenameDateFormatter.string(from: timestamp)
         var components: [String] = []
         if let preferred = preferredName {
             components.append(self.sanitizeFilenameComponent(preferred))
@@ -106,10 +129,11 @@ extension SeeCommand {
         } else {
             components.append("capture")
         }
-        components.append(timestamp)
+        components.append(readableTimestamp)
         if let index, index > 0 {
             components.append(String(index))
         }
+        components.append(uniqueToken.uuidString.lowercased())
 
         return components.joined(separator: "_") + ".\(self.format.fileExtension)"
     }

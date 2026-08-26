@@ -166,6 +166,12 @@ struct HelpCommandTests {
     }
 
     @Test
+    func `See help explains the pathless pixel capture destination`() async throws {
+        let help = try await runPeekaboo(["see", "--help"]).stdout
+        #expect(help.contains("pixel-only captures default to the configured save directory"))
+    }
+
+    @Test
     func `V4 inventory and interaction help omit removed CLI forms`() async throws {
         let helpPaths = [
             ["app", "list", "--help"],

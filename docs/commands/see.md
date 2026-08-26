@@ -52,7 +52,7 @@ peekaboo see --app Calendar --window-id 12345 --ocr --json --path /tmp/calendar.
 | `--tree` | Print the accessibility text tree. For an explicit WindowServer ID with no matching AX window, tree-only read-only observation may return application-scoped partial semantics instead of relabeling another window as the requested target. |
 | `--no-screenshot` | Skip pixel capture; requires `--tree` and rejects `--capture-engine` because no backend runs. Ambient engine configuration is ignored so it cannot reroute this AX-only form. Element IDs and a snapshot publish only after pinning the exact process generation, window, and bounds; target drift or a missing receipt fails before publication. |
 | `--annotate` | Overlay element bounds/IDs on the output image. |
-| `--path <file>` / `--save` / `--output` / `-o` | Save the screenshot/annotation to disk. |
+| `--path <file>` / `--save` / `--output` / `-o` | Save the screenshot/annotation to disk. Pixel-only `--no-elements` captures otherwise use the configured default save directory; pass `-` for raw screenshot bytes on stdout. |
 | `--json` | Emit structured metadata (recommended for scripting). |
 | `--menubar` | Capture menu bar popovers via window list + OCR (useful for status-item settings panels). When `--app` is set, the app name is used as an OCR hint for popover selection. |
 | `--timeout <duration>` | Increase overall timeout for large/complex windows (defaults to `20s`, or `60s` with `--analyze`; bare values are milliseconds). |
@@ -74,11 +74,11 @@ relaunch that host, or pass `--no-remote` to explicitly run Vision OCR in the ca
 preferred-OCR path retains its legacy Bridge contract. Incomplete AX warnings remain in the successful result so OCR
 text never turns missing Accessibility evidence into a false completeness claim.
 
-For agent and automation runs, pass `--path` to a known temporary file when using `see` so capture artifacts land where expected. Use `peekaboo see --tree --no-screenshot --json` when you need AX metadata without a screenshot artifact.
+For agent and automation runs, pass `--path` to a known temporary file when using `see` so capture artifacts land at one exact caller-owned path. Use `peekaboo see --tree --no-screenshot --json` when you need AX metadata without a screenshot artifact.
 
 Passive background observations retry one resolve-and-capture transaction when the target's exact receipt changes during capture, then fail closed if it changes again. Foreground capture, explicit web-focus fallback, and menu-opening observations never retry because they can mutate visible desktop state.
 
-When `--json` is used without `--path`, Peekaboo retains the raw image only in managed snapshot storage and returns empty `screenshot_raw` and `screenshot_annotated` fields. Pass `--path` when the caller needs a directly accessible image file.
+Pixel-only `see --no-elements` captures without `--path` write a generated file beneath `PEEKABOO_DEFAULT_SAVE_PATH`, `defaults.savePath`, or the built-in `~/Desktop` default, in that order. Generated names retain a readable timestamp and include a unique token so concurrent callers do not share a path. This also applies with `--json`; `data.files[].path` reports the saved file. Ordinary element-producing `--json` observations without `--path` instead retain the raw image only in managed snapshot storage and return empty `screenshot_raw` and `screenshot_annotated` fields.
 
 ## Exact-window ROI capture
 

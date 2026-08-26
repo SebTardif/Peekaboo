@@ -65,6 +65,66 @@ struct ImageCaptureLogicTests {
 
     @Test(.tags(.fast))
     @MainActor
+    func `Implicit output path uses configured save directory`() throws {
+        let command = try SeeCommand.parse(["--mode", "screen", "--screen-index", "0"])
+        let directory = "/tmp/peekaboo configured captures"
+
+        let output = command.makeOutputURL(
+            preferredName: "screen0",
+            index: nil,
+            defaultDirectory: directory
+        )
+
+        #expect(output.deletingLastPathComponent().path == directory)
+        #expect(output.lastPathComponent.hasPrefix("screen0_"))
+        #expect(output.pathExtension == "png")
+    }
+
+    @Test(.tags(.fast))
+    @MainActor
+    func `Concurrent implicit outputs stay unique and immutable`() async throws {
+        let command = try SeeCommand.parse(["--mode", "screen", "--screen-index", "0"])
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let timestamp = Date(timeIntervalSince1970: 1_735_689_600)
+        let firstToken = try #require(UUID(uuidString: "00000000-0000-4000-8000-000000000001"))
+        let secondToken = try #require(UUID(uuidString: "00000000-0000-4000-8000-000000000002"))
+        let firstURL = command.makeOutputURL(
+            preferredName: "screen0",
+            index: nil,
+            defaultDirectory: directory.path,
+            timestamp: timestamp,
+            uniqueToken: firstToken
+        )
+        let secondURL = command.makeOutputURL(
+            preferredName: "screen0",
+            index: nil,
+            defaultDirectory: directory.path,
+            timestamp: timestamp,
+            uniqueToken: secondToken
+        )
+
+        #expect(firstURL != secondURL)
+        #expect(firstURL.lastPathComponent.contains("2025-01-01T00:00:00Z"))
+        #expect(secondURL.lastPathComponent.contains("2025-01-01T00:00:00Z"))
+
+        let firstPixels = Data("first-capture-pixels".utf8)
+        let secondPixels = Data("second-capture-pixels".utf8)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try firstPixels.write(to: firstURL, options: .atomic) }
+            group.addTask { try secondPixels.write(to: secondURL, options: .atomic) }
+            try await group.waitForAll()
+        }
+
+        #expect(try Data(contentsOf: firstURL) == firstPixels)
+        #expect(try Data(contentsOf: secondURL) == secondPixels)
+    }
+
+    @Test(.tags(.fast))
+    @MainActor
     func `Stdout image streaming rejects structured or text output`() throws {
         let jsonCommand = try SeeCommand.parse(["--path", "-", "--json"])
         #expect(throws: ValidationError.self) {

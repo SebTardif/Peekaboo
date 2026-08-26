@@ -110,6 +110,8 @@ struct CommanderBinderProgramResolutionTests {
         }
         let modeHelp = SeeCommand.commanderSignature().options.first { $0.label == "mode" }?.help
         #expect(modeHelp?.contains("multi") == true)
+        let pathHelp = SeeCommand.commanderSignature().options.first { $0.label == "path" }?.help
+        #expect(pathHelp?.contains("pixel-only captures default to the configured save directory") == true)
     }
 
     @Test

@@ -58,7 +58,8 @@ extension SeeCommand: CommanderSignatureProviding {
                         .aliasLong("output"),
                         .short("o"),
                     ],
-                    help: "Output path for screenshot (aliases: --save, --output, -o)",
+                    help: "Output screenshot path; pixel-only captures default to the configured save directory "
+                        + "(aliases: --save, --output, -o)",
                     parsing: .singleValue
                 ),
                 .commandOption(
