@@ -1,5 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreGraphics
+import Darwin
+import Dispatch
 import Foundation
 import ImageIO
 import PeekabooFoundation
@@ -7,7 +9,41 @@ import Testing
 import UniformTypeIdentifiers
 @testable @_spi(Testing) import PeekabooAutomationKit
 
+@Suite(.serialized)
 struct WatchCaptureSessionTests {
+    @Test
+    func `Retained capture reads reject special files and observe cancellation`() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("capture-retained-read-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("artifact")
+
+        #expect(path.path.withCString { mkfifo($0, 0o600) } == 0)
+        #expect(throws: CaptureArtifactIntegrityError.self) {
+            try CaptureArtifactIntegrityValidator.retainedRegularFile(path: path.path, maximumBytes: 1024)
+        }
+        try FileManager.default.removeItem(at: path)
+        try FileManager.default.createSymbolicLink(atPath: path.path, withDestinationPath: "/dev/zero")
+        #expect(throws: CaptureArtifactIntegrityError.self) {
+            try CaptureArtifactIntegrityValidator.retainedRegularFile(path: path.path, maximumBytes: 1024)
+        }
+        try FileManager.default.removeItem(at: path)
+        try Data(repeating: 1, count: 64).write(to: path)
+
+        let cancelled = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return Result {
+                try CaptureArtifactIntegrityValidator.retainedRegularFile(path: path.path, maximumBytes: 1024)
+            }
+        }
+        guard case let .failure(error) = await cancelled.value else {
+            Issue.record("Expected retained read cancellation")
+            return
+        }
+        #expect(error is CancellationError)
+    }
+
     @Test
     @MainActor
     func `video decoder suspension releases MainActor`() async throws {
@@ -30,6 +66,44 @@ struct WatchCaptureSessionTests {
         #expect(mainActorRemainedResponsive)
         await decoder.release()
         #expect(try await frameTask.value?.cgImage != nil)
+    }
+
+    @Test
+    @MainActor
+    func `final artifact validation releases MainActor`() async throws {
+        let gate = BlockingCaptureArtifactValidationGate()
+        let validationTask = Task { @MainActor in
+            try await WatchCaptureSession.performFinalArtifactValidation {
+                try gate.block()
+            }
+        }
+
+        await gate.waitUntilEntered()
+        let mainActorRemainedResponsive = await MainActor.run { true }
+        gate.release()
+        try await validationTask.value
+
+        #expect(mainActorRemainedResponsive)
+    }
+
+    @Test
+    @MainActor
+    func `final artifact validation forwards parent cancellation`() async throws {
+        let gate = BlockingCaptureArtifactValidationGate()
+        let validationTask = Task { @MainActor in
+            try await WatchCaptureSession.performFinalArtifactValidation {
+                try gate.block()
+            }
+        }
+
+        await gate.waitUntilEntered()
+        validationTask.cancel()
+        gate.release()
+
+        await #expect(throws: CancellationError.self) {
+            try await validationTask.value
+        }
+        #expect(gate.didObserveCancellation)
     }
 
     @Test
@@ -630,7 +704,151 @@ struct WatchCaptureSessionTests {
 
         #expect(result.frames.count == 1)
         #expect(elapsed < .milliseconds(150))
+        #expect(session.retiringCaptureTaskCount == 1)
         await releaseTask.value
+        await Self.waitForCaptureTaskRetirement(session)
+        #expect(session.retiringCaptureTaskCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func `Session deadline returns while an in-flight frame source ignores cancellation`() async throws {
+        let image = try #require(WatchCaptureArtifactWriter.makeCGImage(from: Self.makePNG(
+            size: CGSize(width: 20, height: 20))))
+        let source = NoncooperativeCaptureFrameSource(image: image)
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watch-noncooperative-deadline-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let options = CaptureOptions(
+            duration: 0.15,
+            idleFps: 5,
+            activeFps: 5,
+            changeThresholdPercent: 100,
+            heartbeatSeconds: 0,
+            quietMsToIdle: 0,
+            maxFrames: 10,
+            maxMegabytes: nil,
+            highlightChanges: false,
+            captureFocus: .background,
+            resolutionCap: nil,
+            diffStrategy: .fast,
+            diffBudgetMs: nil)
+        let session = WatchCaptureSession(
+            dependencies: WatchCaptureDependencies(
+                screenCapture: StubScreenCaptureService(
+                    result: Self.makePNG(size: CGSize(width: 20, height: 20)),
+                    size: CGSize(width: 20, height: 20)),
+                screenService: StubScreenService(),
+                frameSource: source),
+            configuration: WatchCaptureConfiguration(
+                scope: CaptureScope(kind: .frontmost),
+                options: options,
+                outputRoot: output,
+                autoclean: WatchAutocleanConfig(minutes: 1, managed: false),
+                sourceKind: .live,
+                keepAllFrames: true))
+
+        let started = ContinuousClock.now
+        let task = Task { @MainActor in try await session.run() }
+        await source.waitUntilBlocked()
+        let releaseTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            source.release()
+        }
+        let result = try await task.value
+        let elapsed = started.duration(to: .now)
+
+        #expect(result.frames.count == 1)
+        #expect(elapsed >= .milliseconds(100))
+        #expect(elapsed < .milliseconds(300))
+        #expect(session.retiringCaptureTaskCount == 1)
+        await #expect(throws: PeekabooError.self) {
+            _ = try await session.captureFrameOrStop(deadlineNs: UInt64.max)
+        }
+
+        let independentOutput = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watch-independent-retirement-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: independentOutput) }
+        let independentSession = WatchCaptureSession(
+            dependencies: WatchCaptureDependencies(
+                screenCapture: StubScreenCaptureService(
+                    result: Self.makePNG(size: CGSize(width: 20, height: 20)),
+                    size: CGSize(width: 20, height: 20)),
+                screenService: StubScreenService()),
+            configuration: WatchCaptureConfiguration(
+                scope: CaptureScope(kind: .frontmost),
+                options: Self.defaultWatchOptions(),
+                outputRoot: independentOutput,
+                autoclean: WatchAutocleanConfig(minutes: 1, managed: false)))
+        let independentResult = try await independentSession.run()
+        #expect(independentResult.frames.count == 1)
+        #expect(independentSession.retiringCaptureTaskCount == 0)
+
+        await releaseTask.value
+        await Self.waitForCaptureTaskRetirement(session)
+        #expect(session.retiringCaptureTaskCount == 0)
+    }
+
+    @MainActor
+    private static func waitForCaptureTaskRetirement(_ session: WatchCaptureSession) async {
+        for _ in 0..<100 where session.retiringCaptureTaskCount > 0 {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    @Test
+    @MainActor
+    func `Frames finishing at or after the absolute deadline are not admitted`() async throws {
+        let image = try #require(WatchCaptureArtifactWriter.makeCGImage(from: Self.makePNG(
+            size: CGSize(width: 20, height: 20))))
+
+        for completionNs in [UInt64(50), 51] {
+            let clock = DeadlineEdgeWatchCaptureClock()
+            let source = DeadlineEdgeCaptureFrameSource(
+                image: image,
+                clock: clock,
+                completionNs: completionNs)
+            let session = WatchCaptureSession(
+                dependencies: WatchCaptureDependencies(
+                    screenCapture: StubScreenCaptureService(
+                        result: Self.makePNG(size: CGSize(width: 20, height: 20)),
+                        size: CGSize(width: 20, height: 20)),
+                    screenService: StubScreenService(),
+                    frameSource: source,
+                    clock: clock),
+                configuration: WatchCaptureConfiguration(
+                    scope: CaptureScope(kind: .frontmost),
+                    options: Self.defaultWatchOptions(),
+                    outputRoot: FileManager.default.temporaryDirectory,
+                    autoclean: WatchAutocleanConfig(minutes: 1, managed: false),
+                    sourceKind: .live,
+                    keepAllFrames: true))
+
+            let result = try await session.captureFrameOrStop(deadlineNs: 50)
+            guard case .stopRequested = result else {
+                Issue.record("Expected a frame completing at \(completionNs)ns to lose the 50ns deadline")
+                continue
+            }
+            #expect(session.retiringCaptureTaskCount == 0)
+        }
+    }
+
+    @Test
+    func `Capture completion registers before a later deadline observer`() async {
+        let gate = WatchCaptureAttemptContinuation()
+        let completion = WatchCaptureSession.CaptureAttemptCompletion(
+            result: .success(.frame(nil, warning: nil)),
+            finishedAtNs: 49)
+
+        gate.resume(with: .capture(completion))
+        gate.resume(with: .deadline(.success(.stopRequested)))
+
+        let result = await gate.wait()
+        guard case let .capture(observed) = result else {
+            Issue.record("Expected the already-registered capture completion to win")
+            return
+        }
+        #expect(observed.finishedAtNs == 49)
     }
 
     @Test
@@ -920,6 +1138,49 @@ struct WatchCaptureSessionTests {
 
 // MARK: - Stubs
 
+private final class DeadlineEdgeWatchCaptureClock: WatchCaptureMonotonicClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var now: UInt64 = 0
+
+    func nowNanoseconds() -> UInt64 {
+        self.lock.withLock { self.now }
+    }
+
+    func advance(to nanoseconds: UInt64) {
+        self.lock.withLock {
+            self.now = nanoseconds
+        }
+    }
+
+    func sleep(nanoseconds _: UInt64) async throws {
+        // Keep the deadline observer pending so the test deterministically exercises late-result admission.
+        try await Task.sleep(nanoseconds: 60_000_000_000)
+    }
+}
+
+@MainActor
+private final class DeadlineEdgeCaptureFrameSource: CaptureFrameSource {
+    private let image: CGImage
+    private let clock: DeadlineEdgeWatchCaptureClock
+    private let completionNs: UInt64
+
+    init(image: CGImage, clock: DeadlineEdgeWatchCaptureClock, completionNs: UInt64) {
+        self.image = image
+        self.clock = clock
+        self.completionNs = completionNs
+    }
+
+    func nextFrame() async throws -> (cgImage: CGImage?, metadata: CaptureMetadata)? {
+        self.clock.advance(to: self.completionNs)
+        return (
+            self.image,
+            CaptureMetadata(
+                size: CGSize(width: self.image.width, height: self.image.height),
+                mode: .screen,
+                timestamp: Date()))
+    }
+}
+
 private final class NoncooperativeVideoFrameDecoder: @unchecked Sendable, VideoFrameDecoding {
     private let lock = NSLock()
     private let image: CGImage
@@ -1036,6 +1297,41 @@ private actor ControlledVideoFrameDecoder: VideoFrameDecoding {
     func release() {
         self.releaseContinuation?.resume()
         self.releaseContinuation = nil
+    }
+}
+
+private final class BlockingCaptureArtifactValidationGate: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+    private let stateLock = NSLock()
+    private nonisolated(unsafe) var observedCancellation = false
+
+    var didObserveCancellation: Bool {
+        self.stateLock.withLock { self.observedCancellation }
+    }
+
+    func block() throws {
+        self.entered.signal()
+        self.released.wait()
+        do {
+            try Task.checkCancellation()
+        } catch {
+            self.stateLock.withLock { self.observedCancellation = true }
+            throw error
+        }
+    }
+
+    func waitUntilEntered() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                self.entered.wait()
+                continuation.resume()
+            }
+        }
+    }
+
+    func release() {
+        self.released.signal()
     }
 }
 

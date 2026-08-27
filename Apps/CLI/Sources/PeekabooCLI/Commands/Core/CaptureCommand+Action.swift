@@ -1,11 +1,80 @@
 import Commander
 import CoreGraphics
+import Darwin
+import Dispatch
 import Foundation
+import PeekabooBridge
 import PeekabooCore
 import PeekabooFoundation
 
+private struct CaptureActionPublicationIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
+private struct CaptureActionPublicationProbeDirectory {
+    let url: URL
+    let identity: CaptureActionPublicationIdentity
+}
+
 @MainActor
-struct CaptureActionCommand: ApplicationResolvable, ErrorHandlingCommand, OutputFormattable,
+struct CaptureActionExecutionDependencies {
+    typealias FrameSourceFactory = @MainActor (CaptureScope) -> (any CaptureFrameSource)?
+    typealias LegacyProcessRunner = @MainActor (
+        [String],
+        TimeInterval,
+        @escaping @Sendable (UInt64) -> Void
+    ) async throws -> CaptureActionProcessResult
+    typealias HostIdentityProvider = @MainActor () throws -> PeekabooBridgeAuthenticatedHostIdentity
+    typealias ProcessRunner = @MainActor (
+        [String],
+        TimeInterval,
+        UInt64,
+        @escaping @Sendable (UInt64) -> Void
+    ) async throws -> CaptureActionProcessResult
+
+    static let live = CaptureActionExecutionDependencies(
+        frameSourceFactory: { _ in nil },
+        deadlineProcessRunner: { command, timeoutSeconds, completionDeadlineNanoseconds, onLaunch in
+            try await CaptureActionProcessRunner.run(
+                command: command,
+                timeoutSeconds: timeoutSeconds,
+                completionDeadlineNanoseconds: completionDeadlineNanoseconds,
+                onLaunch: onLaunch
+            )
+        },
+        hostIdentityProvider: nil
+    )
+
+    let frameSourceFactory: FrameSourceFactory
+    let processRunner: ProcessRunner
+    let hostIdentityProvider: HostIdentityProvider?
+
+    init(
+        frameSourceFactory: @escaping FrameSourceFactory,
+        processRunner: @escaping LegacyProcessRunner,
+        hostIdentityProvider: HostIdentityProvider? = nil
+    ) {
+        self.frameSourceFactory = frameSourceFactory
+        self.processRunner = { command, timeoutSeconds, _, onLaunch in
+            try await processRunner(command, timeoutSeconds, onLaunch)
+        }
+        self.hostIdentityProvider = hostIdentityProvider
+    }
+
+    init(
+        frameSourceFactory: @escaping FrameSourceFactory,
+        deadlineProcessRunner: @escaping ProcessRunner,
+        hostIdentityProvider: HostIdentityProvider? = nil
+    ) {
+        self.frameSourceFactory = frameSourceFactory
+        self.processRunner = deadlineProcessRunner
+        self.hostIdentityProvider = hostIdentityProvider
+    }
+}
+
+@MainActor
+struct CaptureActionCommand: ActionOutputFormattable, ApplicationResolvable, ErrorHandlingCommand, OutputFormattable,
 RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
     var app: String?
     var pid: Int32?
@@ -41,6 +110,10 @@ RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
     @RuntimeStorage var runtime: CommandRuntime?
     var runtimeOptions = CommandRuntimeOptions()
     var captureMutationDispatched = false
+    var captureFocusOutcome: DesktopActionOutcome?
+    var childCommandDispatched = false
+    var childCommandCompleted = false
+    var executionDependencies = CaptureActionExecutionDependencies.live
 
     nonisolated(unsafe) static var commandDescription: CommandDescription {
         MainActorCommandDescription.describe {
@@ -70,125 +143,308 @@ RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
         self.logger.operationStart("capture_action", metadata: ["mode": self.mode ?? "auto"])
 
         do {
-            guard !self.command.isEmpty else {
-                throw ValidationError("Pass the action command after --")
-            }
-
-            let scope = try await resolveScope()
-            let options = try buildOptions()
-            let timing = try resolveActionTiming(durationLimit: options.duration)
-            if scope.kind == .window, let identifier = scope.applicationIdentifier {
-                try await focusIfNeeded(
-                    appIdentifier: identifier,
-                    windowID: scope.windowId,
-                    windowMutationIdentity: scope.windowMutationIdentity
-                )
-            }
-
-            let outputDir = try resolveOutputDirectory()
-            let deps = WatchCaptureDependencies(
-                screenCapture: services.screenCapture,
-                screenService: self.services.screens,
-                frameSource: nil
+            let result = try await self.executeActionCapture()
+            self.output(result)
+            self.logger.operationComplete(
+                "capture_action",
+                success: result.success,
+                metadata: ["frames_kept": result.capture.stats.framesKept]
             )
-            let config = WatchCaptureConfiguration(
-                scope: scope,
-                options: options,
-                outputRoot: outputDir,
-                autoclean: WatchAutocleanConfig(
-                    minutes: self.autoclean.map { Int(($0.seconds / 60).rounded()) } ?? 120,
-                    managed: self.path == nil
-                ),
-                sourceKind: .live,
-                videoIn: nil,
-                videoOut: CaptureCommandPathResolver.filePath(from: self.videoOut),
-                keepAllFrames: false
-            )
-            let session = WatchCaptureSession(dependencies: deps, configuration: config)
-            let captureTask = self.startCaptureTask(session: session, scope: scope)
-
-            do {
-                if try await Self.waitForPreRollOrCaptureEnd(
-                    milliseconds: timing.startupGateMs,
-                    captureTask: captureTask
-                ) != nil {
-                    throw ValidationError("Capture ended before action started")
-                }
-                self.resolvedRuntime.beginInteractionMutation()
-                let action = try await CaptureActionProcessRunner.run(
-                    command: self.command,
-                    timeoutSeconds: timing.actionTimeout
-                )
-                self.captureMutationDispatched = true
-                try await Self.sleep(milliseconds: timing.postRollMs)
-                session.requestStop()
-
-                let capture = try await captureTask.value
-                let validation = validateArtifacts(capture)
-                let result = CaptureActionCommandResult(
-                    success: action.succeeded && validation.ok,
-                    action: action,
-                    capture: capture,
-                    validation: validation
-                )
-                self.output(result)
-                self.logger.operationComplete(
-                    "capture_action",
-                    success: result.success,
-                    metadata: ["frames_kept": capture.stats.framesKept]
-                )
-                if !result.success {
-                    throw ExitCode(1)
-                }
-            } catch {
-                session.requestStop()
-                captureTask.cancel()
-                _ = try? await captureTask.value
-                throw error
+            if !result.success {
+                throw ExitCode(1)
             }
         } catch let exit as ExitCode {
             throw exit
         } catch {
-            handleError(error)
+            let reportedError = self.canonicalFailure(after: error)
+            handleError(reportedError)
             self.logger.operationComplete(
                 "capture_action",
                 success: false,
-                metadata: ["error": error.localizedDescription]
+                metadata: ["error": reportedError.localizedDescription]
             )
             throw ExitCode(1)
         }
     }
 
+    mutating func executeActionCapture() async throws -> CaptureActionCommandResult {
+        guard !self.command.isEmpty else {
+            throw ValidationError("Pass the action command after --")
+        }
+        self.captureFocusOutcome = nil
+        self.childCommandDispatched = false
+        self.childCommandCompleted = false
+
+        let scope = try await resolveScope()
+        let options = try buildOptions()
+        let timing = try resolveActionTiming(durationLimit: options.duration)
+        let requestedEngine = liveCaptureEnginePreference(for: scope)
+        let (outputDir, resolvedVideoOut) = try self.resolveOutputPathsBeforeDispatch()
+        let captureHostIdentity = try await captureHostIdentity()
+        let runID = UUID().uuidString
+        if scope.kind == .window, let identifier = scope.applicationIdentifier {
+            let focusOutcome = try await focusIfNeeded(
+                appIdentifier: identifier,
+                windowID: scope.windowId,
+                windowMutationIdentity: scope.windowMutationIdentity
+            )
+            self.recordCaptureFocusOutcome(focusOutcome)
+        }
+
+        let deps = WatchCaptureDependencies(
+            screenCapture: services.screenCapture,
+            screenService: self.services.screens,
+            frameSource: self.executionDependencies.frameSourceFactory(scope)
+        )
+        let config = WatchCaptureConfiguration(
+            scope: scope,
+            options: options,
+            outputRoot: outputDir,
+            autoclean: WatchAutocleanConfig(
+                minutes: self.autoclean.map { Int(($0.seconds / 60).rounded()) } ?? 120,
+                managed: self.path == nil
+            ),
+            sourceKind: .live,
+            videoIn: nil,
+            videoOut: resolvedVideoOut,
+            keepAllFrames: false
+        )
+        let session = WatchCaptureSession(dependencies: deps, configuration: config)
+        let captureStartedAtUnixMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let captureStartedNs = DispatchTime.now().uptimeNanoseconds
+        let captureDeadlineNs = try CaptureActionTiming.captureDeadline(
+            captureStartedNs: captureStartedNs,
+            durationLimit: options.duration
+        )
+        let actionCompletionDeadlineNs = try timing.actionCompletionDeadline(
+            captureDeadlineNs: captureDeadlineNs
+        )
+        let captureTask = self.startCaptureTask(
+            session: session,
+            enginePreference: requestedEngine,
+            captureStartedNs: captureStartedNs
+        )
+
+        do {
+            if try await Self.waitForPreRollOrCaptureEnd(
+                milliseconds: timing.startupGateMs,
+                captureTask: captureTask
+            ) != nil {
+                throw ValidationError("Capture ended before action started")
+            }
+            self.resolvedRuntime.beginInteractionMutation()
+            let dispatchState = CaptureActionDispatchState()
+            let action: CaptureActionProcessResult
+            do {
+                action = try await self.executionDependencies.processRunner(
+                    self.command,
+                    timing.actionTimeout,
+                    actionCompletionDeadlineNs
+                ) { dispatchState.markDispatched(at: $0) }
+                self.captureMutationDispatched = self.captureMutationDispatched || dispatchState.wasDispatched
+                self.childCommandDispatched = self.childCommandDispatched || dispatchState.wasDispatched
+                self.childCommandCompleted = true
+            } catch {
+                self.captureMutationDispatched = self.captureMutationDispatched || dispatchState.wasDispatched
+                self.childCommandDispatched = self.childCommandDispatched || dispatchState.wasDispatched
+                throw error
+            }
+            guard let actionStartedNs = dispatchState.dispatchedAtMonotonicNanoseconds else {
+                throw CaptureActionProcessLaunchError(
+                    message: "Action runner returned without admitting child dispatch"
+                )
+            }
+            let actionStartedMs = Self.elapsedMilliseconds(
+                since: captureStartedNs,
+                endingAt: actionStartedNs
+            )
+            let resumedAtNs = DispatchTime.now().uptimeNanoseconds
+            let actionCompletedNs = action.completedAtMonotonicNanoseconds ?? resumedAtNs
+            guard actionCompletedNs >= actionStartedNs, actionCompletedNs <= resumedAtNs else {
+                throw CaptureActionProcessLaunchError(
+                    message: "Action runner returned an invalid completion boundary"
+                )
+            }
+            let actionCompletedMs = Self.elapsedMilliseconds(
+                since: captureStartedNs,
+                endingAt: actionCompletedNs
+            )
+            let postRollDeadlineNs = try timing.postRollDeadline(startingAtNs: actionCompletedNs)
+            guard postRollDeadlineNs <= captureDeadlineNs else {
+                throw ValidationError("Action completion left insufficient time for the requested post-roll")
+            }
+            try await Self.sleep(untilMonotonicNanoseconds: postRollDeadlineNs)
+            session.requestStop()
+
+            let captureCompletion = try await captureTask.value
+            try Task.checkCancellation()
+            let capture = captureCompletion.result
+            try await self.revalidateCaptureHostIdentity(captureHostIdentity)
+            let samplingCompletedMs = captureCompletion.samplingCompletedMs
+            let captureCompletedMs = captureCompletion.completedMs
+            let artifactValidation = try self.validateArtifacts(capture)
+            let requiredCaptureCompletedMs = actionCompletedMs + timing.postRollMs
+            var validationFailures = artifactValidation.missing
+            if samplingCompletedMs < requiredCaptureCompletedMs {
+                validationFailures.append(
+                    "capture ended before the action and requested post-roll completed"
+                )
+            }
+            let validation = CaptureActionArtifactValidation(
+                ok: validationFailures.isEmpty,
+                checked: artifactValidation.checked,
+                missing: validationFailures
+            )
+            let childOutcome = CaptureActionOutcomeSemantics.completedChildOutcome
+            let outcome = CaptureActionOutcomeSemantics.aggregate(
+                focusOutcome: self.captureFocusOutcome,
+                childOutcome: childOutcome
+            )
+            let commandSucceeded = action.succeeded && validation.ok
+            var manifestReceipt: CaptureActionManifestReceipt?
+            if artifactValidation.ok {
+                manifestReceipt = try self.publishActionManifest(
+                    .init(
+                        outputRoot: outputDir,
+                        runID: runID,
+                        captureStartedAtUnixMs: captureStartedAtUnixMs,
+                        actionStartedMs: actionStartedMs,
+                        actionCompletedMs: actionCompletedMs,
+                        samplingCompletedMs: samplingCompletedMs,
+                        captureCompletedMs: captureCompletedMs,
+                        timing: timing,
+                        options: options,
+                        requestedEngine: requestedEngine,
+                        action: action,
+                        capture: capture,
+                        captureHostIdentity: captureHostIdentity,
+                        commandSucceeded: commandSucceeded,
+                        validation: validation,
+                        focusOutcome: self.captureFocusOutcome,
+                        childOutcome: childOutcome,
+                        outcome: outcome
+                    )
+                )
+            }
+            return CaptureActionCommandResult(
+                commandSucceeded: commandSucceeded,
+                focusOutcome: self.captureFocusOutcome,
+                childOutcome: childOutcome,
+                outcome: outcome,
+                action: action,
+                capture: capture,
+                validation: validation,
+                manifest: manifestReceipt
+            )
+        } catch {
+            session.requestStop()
+            captureTask.cancel()
+            _ = try? await captureTask.value
+            throw error
+        }
+    }
+
+    private func publishActionManifest(
+        _ context: CaptureActionManifestContext
+    ) throws -> CaptureActionManifestReceipt {
+        let integrityReceipt = try CaptureArtifactIntegrityValidator.validate(context.capture)
+        try Task.checkCancellation()
+        let artifacts = try CaptureActionManifestWriter.makeArtifacts(
+            capture: context.capture,
+            outputRoot: context.outputRoot,
+            metadataSHA256: integrityReceipt.metadataSHA256
+        )
+        try Task.checkCancellation()
+        let manifest = try CaptureActionManifest(
+            schemaVersion: 1,
+            runID: context.runID,
+            timeline: .init(
+                captureStartedAtUnixMs: context.captureStartedAtUnixMs,
+                actionStartedMs: context.actionStartedMs,
+                actionCompletedMs: context.actionCompletedMs,
+                samplingCompletedMs: context.samplingCompletedMs,
+                captureCompletedMs: context.captureCompletedMs
+            ),
+            request: .init(
+                commandSHA256: CaptureActionManifestWriter.commandSHA256(self.command),
+                commandArgumentCount: self.command.count,
+                preRollMs: context.timing.preRollMs,
+                postRollMs: context.timing.postRollMs,
+                actionTimeoutSeconds: context.timing.actionTimeout,
+                captureDurationLimitSeconds: context.options.duration,
+                captureFocus: context.options.captureFocus,
+                requestedCaptureEngine: context.requestedEngine
+            ),
+            action: .init(
+                containmentScope: .processGroup,
+                processIdentifier: context.action.processIdentifier,
+                processStartIdentity: context.action.processStartIdentity,
+                processStartIdentityDecimal: String(context.action.processStartIdentity),
+                exitCode: context.action.exitCode,
+                timedOut: context.action.timedOut,
+                processGroupCleaned: context.action.processGroupCleaned,
+                durationMs: context.action.durationMs,
+                stdout: CaptureActionManifestWriter.stream(
+                    context.action.stdout,
+                    truncated: context.action.stdoutTruncated
+                ),
+                stderr: CaptureActionManifestWriter.stream(
+                    context.action.stderr,
+                    truncated: context.action.stderrTruncated
+                )
+            ),
+            capture: .init(
+                scope: context.capture.scope,
+                executionRoute: self.services.executionHost,
+                hostDescription: self.resolvedRuntime.hostDescription,
+                remoteSocketPath: self.resolvedRuntime.selectedRemoteSocketPath,
+                hostIdentity: context.captureHostIdentity,
+                observedCaptureEngines: Array(Set(context.capture.frames.compactMap(\.captureEngine))).sorted()
+            ),
+            artifacts: artifacts,
+            result: .init(
+                commandSucceeded: context.commandSucceeded,
+                validation: context.validation,
+                focusOutcome: context.focusOutcome,
+                childOutcome: context.childOutcome,
+                outcome: context.outcome
+            )
+        )
+        return try CaptureActionManifestWriter.write(manifest, outputRoot: context.outputRoot)
+    }
+
     private func startCaptureTask(
         session: WatchCaptureSession,
-        scope: CaptureScope
-    ) -> Task<CaptureSessionResult, any Error> {
+        enginePreference: CaptureEnginePreference,
+        captureStartedNs: UInt64
+    ) -> Task<CaptureActionCaptureCompletion, any Error> {
         let runSession: @MainActor @Sendable () async throws -> CaptureSessionResult = {
             try await session.run()
         }
-        let enginePreference = liveCaptureEnginePreference(for: scope)
         return Task { @MainActor in
-            if let engineAware = services.screenCapture as? any EngineAwareScreenCaptureServiceProtocol {
+            let result: CaptureSessionResult = if let engineAware = services
+                .screenCapture as? any EngineAwareScreenCaptureServiceProtocol {
                 try await engineAware.withCaptureEngine(enginePreference, operation: runSession)
             } else {
                 try await runSession()
             }
+            guard let samplingEndedNs = session.samplingEndedAtMonotonicNanoseconds else {
+                throw ValidationError("capture session did not report its sampling completion boundary")
+            }
+            return CaptureActionCaptureCompletion(
+                result: result,
+                samplingCompletedMs: Self.elapsedMilliseconds(
+                    since: captureStartedNs,
+                    endingAt: samplingEndedNs
+                ),
+                completedMs: Self.elapsedMilliseconds(since: captureStartedNs)
+            )
         }
     }
 
     private func output(_ result: CaptureActionCommandResult) {
         if self.jsonOutput {
-            let error = result.success
-                ? nil
-                : ErrorInfo(message: result.failureMessage, code: .VALIDATION_ERROR)
-            let envelope = ResultEnvelope(
-                success: result.success,
-                data: result,
-                messages: nil,
-                debug_logs: self.outputLogger.getDebugLogs(),
-                error: error
-            )
-            outputJSONCodable(envelope, logger: self.outputLogger)
+            outputJSONCodable(self.jsonEnvelope(for: result), logger: self.outputLogger)
             return
         }
 
@@ -200,6 +456,9 @@ RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
         )
         print("contact sheet: \(result.capture.contactSheet.path)")
         print("metadata: \(result.capture.metadataFile)")
+        if let manifest = result.manifest {
+            print("action manifest: \(manifest.path) (sha256: \(manifest.sha256))")
+        }
         if let videoOut = result.capture.videoOut {
             print("video: \(videoOut)")
         }
@@ -213,6 +472,27 @@ RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
         for warning in result.capture.warnings {
             print("warning: \(warning.code.rawValue): \(warning.message)")
         }
+    }
+
+    func jsonEnvelope(for result: CaptureActionCommandResult) -> ResultEnvelope<CaptureActionCommandResult> {
+        let projection = result.outcome?.projection
+        let error = result.success
+            ? nil
+            : ErrorInfo(
+                message: result.failureMessage,
+                code: .VALIDATION_ERROR,
+                retrySafe: projection?.retrySafe ?? false,
+                mutationDispatched: projection?.mutationDispatched ?? true
+            )
+        return ResultEnvelope(
+            success: result.success,
+            effect: projection?.effect ?? .unverifiable,
+            outcome: projection,
+            data: result,
+            messages: nil,
+            debug_logs: self.outputLogger.getDebugLogs(),
+            error: error
+        )
     }
 
     private func buildOptions() throws -> CaptureOptions {
@@ -247,20 +527,11 @@ RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
     private func resolveActionTiming(durationLimit: TimeInterval) throws -> CaptureActionTiming {
         let preRoll = max(preRoll?.roundedMilliseconds ?? 250, 0)
         let postRoll = max(postRoll?.roundedMilliseconds ?? 500, 0)
-        let rollSeconds = Double(preRoll + postRoll) / 1000.0
-        guard rollSeconds < durationLimit else {
-            throw ValidationError("--pre-roll + --post-roll must be less than --duration-limit")
-        }
-        let defaultActionTimeout = max(0.1, durationLimit - rollSeconds)
-        let actionTimeout = max(
-            0.1,
-            min(actionTimeout?.seconds ?? defaultActionTimeout, durationLimit - rollSeconds)
-        )
-        return CaptureActionTiming(
+        return try CaptureActionTiming.resolve(
+            durationLimit: durationLimit,
             preRollMs: preRoll,
             postRollMs: postRoll,
-            startupGateMs: max(preRoll, 100),
-            actionTimeout: actionTimeout
+            requestedActionTimeout: self.actionTimeout?.seconds
         )
     }
 
@@ -268,67 +539,763 @@ RuntimeOptionsConfigurable, InjectedRuntimeBackedCommand {
         CaptureCommandPathResolver.outputDirectory(from: self.path)
     }
 
+    private func resolveOutputPathsBeforeDispatch() throws -> (URL, String?) {
+        let outputDirectory = try self.resolveOutputDirectory()
+        let videoOut = CaptureCommandPathResolver.filePath(from: self.videoOut)
+        try self.validateOutputPathsBeforeDispatch(outputDirectory: outputDirectory, videoOut: videoOut)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        try Self.validateExclusiveRenameSupport(in: outputDirectory)
+        if let videoOut {
+            let videoDirectory = URL(fileURLWithPath: videoOut).deletingLastPathComponent()
+            try Self.validateExclusiveRenameSupport(in: videoDirectory)
+            try Self.validateVideoOutputIsAbsent(videoOut)
+        }
+        return (outputDirectory, videoOut)
+    }
+
+    static func validateVideoOutputIsAbsent(_ path: String) throws {
+        var information = stat()
+        let result = URL(fileURLWithPath: path).withUnsafeFileSystemRepresentation { representation in
+            guard let representation else {
+                errno = EINVAL
+                return Int32(-1)
+            }
+            return lstat(representation, &information)
+        }
+        let failure = errno
+        guard result != 0 else {
+            throw ValidationError("--video-out must not already exist before capture starts: \(path)")
+        }
+        guard failure == ENOENT else {
+            throw ValidationError("Could not preflight --video-out before capture starts: \(path)")
+        }
+    }
+
+    private func validateOutputPathsBeforeDispatch(
+        outputDirectory: URL,
+        videoOut: String?
+    ) throws {
+        guard let videoOut else { return }
+        let outputRoot = outputDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let videoURL = URL(fileURLWithPath: videoOut).standardizedFileURL.resolvingSymlinksInPath()
+        let reservedNames = [
+            CaptureActionManifestWriter.fileName,
+            "contact.png",
+            "metadata.json",
+        ]
+        let aliasesReservedPath = reservedNames.contains { name in
+            Self.pathsMayAlias(outputRoot.appendingPathComponent(name), videoURL)
+        }
+        let aliasesFramePath = Self.pathsMayAlias(videoURL.deletingLastPathComponent(), outputRoot) &&
+            videoURL.lastPathComponent.lowercased().hasPrefix("keep-") &&
+            videoURL.pathExtension.lowercased() == "png"
+        guard !Self.pathsMayAlias(videoURL, outputRoot), !aliasesReservedPath, !aliasesFramePath else {
+            throw ValidationError(
+                "--video-out must not resolve to a capture-owned artifact under --path: \(videoOut)"
+            )
+        }
+    }
+
+    static func validateExclusiveRenameSupport(
+        in directory: URL,
+        renameExclusively: (URL, URL) -> Int32 = Self.renameExclusively
+    ) throws {
+        let parent = directory.standardizedFileURL.resolvingSymlinksInPath()
+        let probeDirectory = try Self.createPublicationProbeDirectory(in: parent)
+        let source = probeDirectory.url.appendingPathComponent("source")
+        let destination = probeDirectory.url.appendingPathComponent("destination")
+        let descriptor = source.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return open(path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        }
+        guard descriptor >= 0 else {
+            _ = Self.removePublicationProbeDirectoryIfEmpty(probeDirectory)
+            throw ValidationError(
+                "Capture output directory must exist and support private temporary files: \(parent.path)"
+            )
+        }
+        var sourceInformation = stat()
+        let sourceIdentity = fstat(descriptor, &sourceInformation) == 0
+            ? CaptureActionPublicationIdentity(device: sourceInformation.st_dev, inode: sourceInformation.st_ino)
+            : nil
+        close(descriptor)
+        guard let sourceIdentity else {
+            _ = Self.removePublicationProbeDirectoryIfEmpty(probeDirectory)
+            throw ValidationError("Capture output publication probe could not retain file identity: \(parent.path)")
+        }
+
+        guard renameExclusively(source, destination) == 0 else {
+            let code = errno
+            _ = Self.removePublicationProbeFile(at: source, expected: sourceIdentity)
+            _ = Self.removePublicationProbeDirectoryIfEmpty(probeDirectory)
+            throw ValidationError(
+                "Capture output filesystem must support atomic no-replace publication (errno \(code)): " +
+                    parent.path
+            )
+        }
+        guard Self.removePublicationProbeFile(at: destination, expected: sourceIdentity),
+              Self.removePublicationProbeDirectoryIfEmpty(probeDirectory)
+        else {
+            throw ValidationError("Capture output publication preflight cleanup failed: \(parent.path)")
+        }
+    }
+
+    private static func createPublicationProbeDirectory(
+        in parent: URL
+    ) throws -> CaptureActionPublicationProbeDirectory {
+        for _ in 0..<4 {
+            let url = parent.appendingPathComponent(
+                ".peekaboo-rename-probe-\(UUID().uuidString.lowercased())",
+                isDirectory: true
+            )
+            let created = url.withUnsafeFileSystemRepresentation { path in
+                guard let path else { return Int32(-1) }
+                return mkdir(path, S_IRWXU)
+            }
+            if created == 0 {
+                var information = stat()
+                let inspected = url.withUnsafeFileSystemRepresentation { path in
+                    guard let path else { return Int32(-1) }
+                    return lstat(path, &information)
+                }
+                guard inspected == 0,
+                      information.st_mode & S_IFMT == S_IFDIR,
+                      information.st_uid == geteuid(),
+                      information.st_mode & (S_IRWXG | S_IRWXO) == 0
+                else {
+                    _ = url.withUnsafeFileSystemRepresentation { path in
+                        guard let path else { return Int32(-1) }
+                        return rmdir(path)
+                    }
+                    throw ValidationError("Capture output publication probe is not owner-private: \(url.path)")
+                }
+                return CaptureActionPublicationProbeDirectory(
+                    url: url,
+                    identity: CaptureActionPublicationIdentity(
+                        device: information.st_dev,
+                        inode: information.st_ino
+                    )
+                )
+            }
+            guard errno == EEXIST else {
+                throw ValidationError("Capture output publication probe could not be created: \(parent.path)")
+            }
+        }
+        throw ValidationError("Capture output publication probe name could not be reserved: \(parent.path)")
+    }
+
+    private static func removePublicationProbeFile(
+        at url: URL,
+        expected: CaptureActionPublicationIdentity?
+    ) -> Bool {
+        var information = stat()
+        let inspected = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &information)
+        }
+        if inspected != 0 {
+            return errno == ENOENT
+        }
+        guard information.st_mode & S_IFMT == S_IFREG,
+              expected == nil || expected == CaptureActionPublicationIdentity(
+                  device: information.st_dev,
+                  inode: information.st_ino
+              )
+        else {
+            return false
+        }
+        let removed = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return unlink(path)
+        }
+        return removed == 0 || errno == ENOENT
+    }
+
+    private static func removePublicationProbeDirectoryIfEmpty(
+        _ directory: CaptureActionPublicationProbeDirectory
+    ) -> Bool {
+        var information = stat()
+        let inspected = directory.url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &information)
+        }
+        if inspected != 0 {
+            return errno == ENOENT
+        }
+        guard information.st_mode & S_IFMT == S_IFDIR,
+              directory.identity == CaptureActionPublicationIdentity(
+                  device: information.st_dev,
+                  inode: information.st_ino
+              )
+        else {
+            return false
+        }
+        let removed = directory.url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return rmdir(path)
+        }
+        return removed == 0 || errno == ENOENT
+    }
+
+    private static func pathsMayAlias(_ lhs: URL, _ rhs: URL) -> Bool {
+        let left = lhs.standardizedFileURL.resolvingSymlinksInPath().path
+        let right = rhs.standardizedFileURL.resolvingSymlinksInPath().path
+        return left.compare(right, options: [.caseInsensitive]) == .orderedSame
+    }
+
+    private nonisolated static func renameExclusively(_ source: URL, _ destination: URL) -> Int32 {
+        source.withUnsafeFileSystemRepresentation { sourcePath in
+            destination.withUnsafeFileSystemRepresentation { destinationPath in
+                guard let sourcePath, let destinationPath else { return Int32(-1) }
+                return renameatx_np(
+                    AT_FDCWD,
+                    sourcePath,
+                    AT_FDCWD,
+                    destinationPath,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+    }
+
     private static func sleep(milliseconds: Int) async throws {
+        try Task.checkCancellation()
         guard milliseconds > 0 else { return }
         try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
+        try Task.checkCancellation()
+    }
+
+    private static func sleep(untilMonotonicNanoseconds deadlineNs: UInt64) async throws {
+        try Task.checkCancellation()
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        if deadlineNs > nowNs {
+            try await Task.sleep(nanoseconds: deadlineNs - nowNs)
+        }
+        try Task.checkCancellation()
+    }
+
+    private static func elapsedMilliseconds(since start: UInt64) -> Int {
+        self.elapsedMilliseconds(since: start, endingAt: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    private static func elapsedMilliseconds(since start: UInt64, endingAt end: UInt64) -> Int {
+        Int(end >= start ? (end - start) / 1_000_000 : 0)
+    }
+
+    private func captureHostIdentity() async throws -> CaptureActionManifest.AuthenticatedHostIdentity {
+        let identity: PeekabooBridgeAuthenticatedHostIdentity
+        if let provider = self.executionDependencies.hostIdentityProvider {
+            identity = try provider()
+        } else if self.services.executionHost == .remote {
+            let selectedIdentity = if let provider = self.resolvedRuntime
+                .selectedRemoteAuthenticatedHostIdentityProvider {
+                await provider()
+            } else {
+                self.resolvedRuntime.selectedRemoteAuthenticatedHostIdentity
+            }
+            guard let selectedIdentity else {
+                throw CaptureActionHostProvenanceError(
+                    message: "capture action requires an authenticated identity from the selected remote capture host"
+                )
+            }
+            identity = selectedIdentity
+        } else {
+            guard let currentIdentity = PeekabooBridgeAuthenticatedHostIdentity.current() else {
+                throw CaptureActionHostProvenanceError(
+                    message: "capture action requires an Apple-anchored, source-stamped Peekaboo executable"
+                )
+            }
+            identity = currentIdentity
+        }
+        return try CaptureActionManifest.AuthenticatedHostIdentity(validating: identity)
+    }
+
+    private func revalidateCaptureHostIdentity(
+        _ expected: CaptureActionManifest.AuthenticatedHostIdentity
+    ) async throws {
+        guard try await self.captureHostIdentity() == expected else {
+            throw CaptureActionHostProvenanceError(
+                message: "capture action host identity changed while capture was active"
+            )
+        }
+    }
+
+    mutating func recordCaptureFocusOutcome(_ outcome: DesktopActionOutcome?) {
+        self.captureFocusOutcome = outcome
+        self.captureMutationDispatched = self.captureMutationDispatched ||
+            (outcome?.dispatchState.mutationDispatched == true)
+    }
+
+    private func canonicalFailure(after error: any Error) -> any Error {
+        if error is DesktopActionFailure || error is PreDispatchActionError {
+            return error
+        }
+        guard self.captureMutationDispatched else {
+            let reason: DesktopActionOutcome.RefusalReason? = switch error {
+            case is CancellationError: .requestCancelled
+            case is CaptureActionHostProvenanceError: .runtimeIncompatible
+            case let launchError as CaptureActionProcessLaunchError: launchError.refusalReason
+            default: nil
+            }
+            return self.preDispatchActionError(for: error, reason: reason)
+        }
+
+        let outcome: DesktopActionOutcome
+        if self.childCommandDispatched {
+            let childOutcome = self.childCommandCompleted
+                ? CaptureActionOutcomeSemantics.completedChildOutcome
+                : CaptureActionOutcomeSemantics.uncertainChildOutcome
+            outcome = CaptureActionOutcomeSemantics.failureAggregate(
+                focusOutcome: self.captureFocusOutcome,
+                childOutcome: childOutcome
+            )
+        } else if let focusOutcome = self.captureFocusOutcome,
+                  focusOutcome.dispatchState.mutationDispatched {
+            outcome = CaptureActionOutcomeSemantics.focusOnlyFailureOutcome(focusOutcome)
+        } else {
+            return self.preDispatchActionError(for: error, reason: .invalidRequest)
+        }
+        guard let failure = DesktopActionFailure(
+            outcome: outcome,
+            message: self.childCommandDispatched
+                ? "Capture action failed after its child command was released."
+                : "Capture action failed after foreground focus changed desktop state.",
+            hint: "Observe the affected target before deciding whether to retry.",
+            causeDescription: error.localizedDescription
+        )
+        else {
+            preconditionFailure("Capture action failure outcome must be non-confirmed")
+        }
+        return failure
     }
 
     private static func waitForPreRollOrCaptureEnd(
         milliseconds: Int,
-        captureTask: Task<CaptureSessionResult, any Error>
-    ) async throws -> CaptureSessionResult? {
-        try await withThrowingTaskGroup(of: CaptureActionStartupGate.self) { group in
-            group.addTask {
-                if milliseconds > 0 {
-                    try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
+        captureTask: Task<CaptureActionCaptureCompletion, any Error>
+    ) async throws -> CaptureActionCaptureCompletion? {
+        let race = CaptureActionStartupRace()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                race.install(continuation)
+                let preRollTask = Task {
+                    do {
+                        if milliseconds > 0 {
+                            try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
+                        }
+                        try Task.checkCancellation()
+                        race.resolve(.success(nil))
+                    } catch {
+                        // Another branch or the parent cancellation owns the terminal result.
+                    }
                 }
-                return .preRollElapsed
+                let captureWaitTask = Task {
+                    do {
+                        let result = try await captureTask.value
+                        race.resolve(.success(result))
+                    } catch {
+                        race.resolve(.failure(error))
+                    }
+                }
+                race.installTasks([preRollTask, captureWaitTask])
             }
-            group.addTask {
-                try await .captureEnded(captureTask.value)
-            }
+        } onCancel: {
+            race.resolve(.failure(CancellationError()))
+        }
+    }
+}
 
-            guard let first = try await group.next() else {
-                return nil
-            }
-            group.cancelAll()
+struct CaptureActionTiming {
+    let preRollMs: Int
+    let postRollMs: Int
+    let startupGateMs: Int
+    let actionTimeout: TimeInterval
 
-            switch first {
-            case .preRollElapsed:
-                return nil
-            case let .captureEnded(result):
-                return result
+    static func resolve(
+        durationLimit: TimeInterval,
+        preRollMs: Int,
+        postRollMs: Int,
+        requestedActionTimeout: TimeInterval?
+    ) throws -> Self {
+        let startupGateMs = max(preRollMs, 100)
+        let (fixedMilliseconds, overflowed) = startupGateMs.addingReportingOverflow(postRollMs)
+        let fixedSeconds = Double(fixedMilliseconds) / 1000.0 +
+            CaptureActionProcessRunner.completionReserveSeconds
+        let availableActionSeconds = durationLimit - fixedSeconds
+        guard !overflowed,
+              durationLimit.isFinite,
+              availableActionSeconds >= 0.1,
+              requestedActionTimeout?.isFinite != false
+        else {
+            throw ValidationError(
+                "--duration-limit must reserve startup/pre-roll, post-roll, and child process-group cleanup"
+            )
+        }
+        return Self(
+            preRollMs: preRollMs,
+            postRollMs: postRollMs,
+            startupGateMs: startupGateMs,
+            actionTimeout: max(0.1, min(requestedActionTimeout ?? availableActionSeconds, availableActionSeconds))
+        )
+    }
+
+    static func captureDeadline(captureStartedNs: UInt64, durationLimit: TimeInterval) throws -> UInt64 {
+        let durationNs = try self.nanoseconds(seconds: durationLimit)
+        let (deadlineNs, overflowed) = captureStartedNs.addingReportingOverflow(durationNs)
+        guard !overflowed else {
+            throw ValidationError("--duration-limit overflowed the capture deadline")
+        }
+        return deadlineNs
+    }
+
+    func actionCompletionDeadline(captureDeadlineNs: UInt64) throws -> UInt64 {
+        let postRollNs = try Self.nanoseconds(milliseconds: self.postRollMs)
+        guard captureDeadlineNs > postRollNs else {
+            throw ValidationError("--post-roll exceeds the capture deadline")
+        }
+        return captureDeadlineNs - postRollNs
+    }
+
+    func postRollFits(startingAtNs: UInt64, captureDeadlineNs: UInt64) -> Bool {
+        guard let deadlineNs = try? self.postRollDeadline(startingAtNs: startingAtNs) else { return false }
+        return deadlineNs <= captureDeadlineNs
+    }
+
+    func postRollDeadline(startingAtNs: UInt64) throws -> UInt64 {
+        let postRollNs = try Self.nanoseconds(milliseconds: self.postRollMs)
+        let (deadlineNs, overflowed) = startingAtNs.addingReportingOverflow(postRollNs)
+        guard !overflowed else {
+            throw ValidationError("--post-roll overflowed the capture deadline")
+        }
+        return deadlineNs
+    }
+
+    private static func nanoseconds(seconds: TimeInterval) throws -> UInt64 {
+        guard seconds.isFinite,
+              seconds >= 0,
+              seconds <= Double(UInt64.max) / 1_000_000_000.0
+        else {
+            throw ValidationError("Capture timing cannot be represented as a monotonic deadline")
+        }
+        return UInt64((seconds * 1_000_000_000.0).rounded(.down))
+    }
+
+    private static func nanoseconds(milliseconds: Int) throws -> UInt64 {
+        guard milliseconds >= 0 else {
+            throw ValidationError("Capture timing cannot be negative")
+        }
+        let (value, overflowed) = UInt64(milliseconds).multipliedReportingOverflow(by: 1_000_000)
+        guard !overflowed else {
+            throw ValidationError("Capture timing overflowed its monotonic deadline")
+        }
+        return value
+    }
+}
+
+private struct CaptureActionCaptureCompletion: Sendable {
+    let result: CaptureSessionResult
+    let samplingCompletedMs: Int
+    let completedMs: Int
+}
+
+private struct CaptureActionManifestContext {
+    let outputRoot: URL
+    let runID: String
+    let captureStartedAtUnixMs: Int64
+    let actionStartedMs: Int
+    let actionCompletedMs: Int
+    let samplingCompletedMs: Int
+    let captureCompletedMs: Int
+    let timing: CaptureActionTiming
+    let options: CaptureOptions
+    let requestedEngine: CaptureEnginePreference
+    let action: CaptureActionProcessResult
+    let capture: CaptureSessionResult
+    let captureHostIdentity: CaptureActionManifest.AuthenticatedHostIdentity
+    let commandSucceeded: Bool
+    let validation: CaptureActionArtifactValidation
+    let focusOutcome: DesktopActionOutcome?
+    let childOutcome: DesktopActionOutcome
+    let outcome: DesktopActionOutcome?
+}
+
+private final nonisolated class CaptureActionDispatchState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var dispatched = false
+    private var dispatchedAtNs: UInt64?
+
+    var wasDispatched: Bool {
+        self.lock.withLock { self.dispatched }
+    }
+
+    var dispatchedAtMonotonicNanoseconds: UInt64? {
+        self.lock.withLock { self.dispatchedAtNs }
+    }
+
+    func markDispatched(at monotonicNanoseconds: UInt64) {
+        self.lock.withLock {
+            self.dispatched = true
+            if self.dispatchedAtNs == nil {
+                self.dispatchedAtNs = monotonicNanoseconds
             }
         }
     }
 }
 
-private struct CaptureActionTiming {
-    let preRollMs: Int
-    let postRollMs: Int
-    let startupGateMs: Int
-    let actionTimeout: TimeInterval
+private final nonisolated class CaptureActionStartupRace: @unchecked Sendable {
+    typealias Resolution = Result<CaptureActionCaptureCompletion?, any Error>
+
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<CaptureActionCaptureCompletion?, any Error>?
+    private var resolution: Resolution?
+    private var tasks: [Task<Void, Never>] = []
+
+    func install(_ continuation: CheckedContinuation<CaptureActionCaptureCompletion?, any Error>) {
+        self.lock.lock()
+        if let resolution = self.resolution {
+            self.lock.unlock()
+            continuation.resume(with: resolution)
+            return
+        }
+        self.continuation = continuation
+        self.lock.unlock()
+    }
+
+    func installTasks(_ tasks: [Task<Void, Never>]) {
+        self.lock.lock()
+        if self.resolution != nil {
+            self.lock.unlock()
+            tasks.forEach { $0.cancel() }
+            return
+        }
+        self.tasks = tasks
+        self.lock.unlock()
+    }
+
+    func resolve(_ resolution: Resolution) {
+        self.lock.lock()
+        guard self.resolution == nil else {
+            self.lock.unlock()
+            return
+        }
+        self.resolution = resolution
+        let continuation = self.continuation
+        self.continuation = nil
+        let tasks = self.tasks
+        self.tasks.removeAll()
+        self.lock.unlock()
+
+        tasks.forEach { $0.cancel() }
+        continuation?.resume(with: resolution)
+    }
 }
 
-private enum CaptureActionStartupGate {
-    case preRollElapsed
-    case captureEnded(CaptureSessionResult)
+enum CaptureActionOutcomeSemantics {
+    static let childDelivery = DesktopActionOutcome.Delivery(
+        mechanism: .capturePipeline,
+        mode: .background
+    )
+
+    static var completedChildOutcome: DesktopActionOutcome {
+        .dispatchedUnverified(
+            route: .local,
+            delivery: self.childDelivery,
+            evidence: .deliveryAccepted,
+            unitCount: .one
+        )
+    }
+
+    static var uncertainChildOutcome: DesktopActionOutcome {
+        .indeterminate(
+            route: .local,
+            delivery: self.childDelivery,
+            evidence: .completionUnknown,
+            unitCount: .one
+        )
+    }
+
+    static func aggregate(
+        focusOutcome: DesktopActionOutcome?,
+        childOutcome: DesktopActionOutcome
+    ) -> DesktopActionOutcome? {
+        var sequence = DesktopActionSequenceAccumulator()
+        if let focusOutcome {
+            sequence.record(.reportedOutcome(focusOutcome, defaultDispatchedUnitCount: .one))
+        }
+        sequence.record(.reportedOutcome(childOutcome, defaultDispatchedUnitCount: .one))
+        let resolution = sequence.successResolution()
+        if let outcome = resolution.outcome {
+            return outcome
+        }
+        return nil
+    }
+
+    static func focusOnlyFailureOutcome(_ focusOutcome: DesktopActionOutcome) -> DesktopActionOutcome {
+        .indeterminate(
+            route: focusOutcome.route,
+            delivery: focusOutcome.delivery,
+            evidence: .completionUnknown,
+            unitCount: focusOutcome.dispatchState.unitCount ?? .one
+        )
+    }
+
+    static func failureAggregate(
+        focusOutcome: DesktopActionOutcome?,
+        childOutcome: DesktopActionOutcome
+    ) -> DesktopActionOutcome {
+        if let aggregate = self.aggregate(focusOutcome: focusOutcome, childOutcome: childOutcome) {
+            return aggregate
+        }
+        guard let focusOutcome else { return childOutcome }
+        let focusUnits = focusOutcome.dispatchState.unitCount?.rawValue ?? 1
+        let childUnits = childOutcome.dispatchState.unitCount?.rawValue ?? 1
+        let (combinedUnits, unitCountOverflow) = focusUnits.addingReportingOverflow(childUnits)
+        let unitCount = unitCountOverflow ? nil : DesktopActionOutcome.DispatchUnitCount(combinedUnits)
+        let delivery = DesktopActionOutcome.Delivery(
+            mechanism: .composite,
+            mode: focusOutcome.delivery?.mode == .foreground || childOutcome.delivery?.mode == .foreground
+                ? .foreground
+                : .background
+        )
+        let hasSingleRoute = focusOutcome.route == childOutcome.route
+        return .indeterminate(
+            route: childOutcome.route,
+            delivery: hasSingleRoute ? delivery : nil,
+            evidence: .completionUnknown,
+            unitCount: unitCount
+        )
+    }
+
+    static func isCanonicalChildOutcome(_ outcome: DesktopActionOutcome) -> Bool {
+        (outcome == self.completedChildOutcome || outcome == self.uncertainChildOutcome) &&
+            outcome.delivery == self.childDelivery
+    }
+
+    static func isCanonicalAggregate(
+        _ outcome: DesktopActionOutcome?,
+        focusOutcome: DesktopActionOutcome?,
+        childOutcome: DesktopActionOutcome
+    ) -> Bool {
+        self.isCanonicalChildOutcome(childOutcome) &&
+            outcome == self.aggregate(focusOutcome: focusOutcome, childOutcome: childOutcome)
+    }
 }
 
 struct CaptureActionCommandResult: Codable {
-    let success: Bool
+    let commandSucceeded: Bool
+    let focusOutcome: DesktopActionOutcome?
+    let childOutcome: DesktopActionOutcome
+    let outcome: DesktopActionOutcome?
     let action: CaptureActionProcessResult
     let capture: CaptureSessionResult
     let validation: CaptureActionArtifactValidation
+    let manifest: CaptureActionManifestReceipt?
+
+    var success: Bool {
+        self.commandSucceeded
+    }
+
+    init(
+        commandSucceeded: Bool,
+        focusOutcome: DesktopActionOutcome?,
+        childOutcome: DesktopActionOutcome,
+        outcome: DesktopActionOutcome?,
+        action: CaptureActionProcessResult,
+        capture: CaptureSessionResult,
+        validation: CaptureActionArtifactValidation,
+        manifest: CaptureActionManifestReceipt?
+    ) {
+        precondition(
+            CaptureActionOutcomeSemantics.isCanonicalAggregate(
+                outcome,
+                focusOutcome: focusOutcome,
+                childOutcome: childOutcome
+            ),
+            "Capture action results require canonical focus and child outcomes"
+        )
+        precondition(childOutcome == CaptureActionOutcomeSemantics.completedChildOutcome)
+        precondition(capture.options.captureFocus != .background || focusOutcome == nil)
+        precondition(validation.isCanonical)
+        precondition(
+            commandSucceeded == (action.succeeded && validation.ok && manifest != nil),
+            "Capture action success must match action, validation, and manifest state"
+        )
+        self.commandSucceeded = commandSucceeded
+        self.focusOutcome = focusOutcome
+        self.childOutcome = childOutcome
+        self.outcome = outcome
+        self.action = action
+        self.capture = capture
+        self.validation = validation
+        self.manifest = manifest
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case success
+        case focusOutcome
+        case childOutcome
+        case outcome
+        case action
+        case capture
+        case validation
+        case manifest
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let encodedSuccess = try container.decode(Bool.self, forKey: .success)
+        self.focusOutcome = try container.decodeIfPresent(DesktopActionOutcome.self, forKey: .focusOutcome)
+        self.childOutcome = try container.decode(DesktopActionOutcome.self, forKey: .childOutcome)
+        self.outcome = try container.decodeIfPresent(DesktopActionOutcome.self, forKey: .outcome)
+        self.action = try container.decode(CaptureActionProcessResult.self, forKey: .action)
+        self.capture = try container.decode(CaptureSessionResult.self, forKey: .capture)
+        self.validation = try container.decode(CaptureActionArtifactValidation.self, forKey: .validation)
+        self.manifest = try container.decodeIfPresent(CaptureActionManifestReceipt.self, forKey: .manifest)
+        let expectedSuccess = self.action.succeeded && self.validation.ok && self.manifest != nil
+        guard self.validation.isCanonical,
+              CaptureActionOutcomeSemantics.isCanonicalAggregate(
+                  self.outcome,
+                  focusOutcome: self.focusOutcome,
+                  childOutcome: self.childOutcome
+              ),
+              self.childOutcome == CaptureActionOutcomeSemantics.completedChildOutcome,
+              self.capture.options.captureFocus != .background || self.focusOutcome == nil,
+              encodedSuccess == expectedSuccess
+        else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .outcome,
+                in: container,
+                debugDescription: "Capture action fields contradict canonical result semantics"
+            )
+        }
+        self.commandSucceeded = encodedSuccess
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.success, forKey: .success)
+        try container.encodeIfPresent(self.focusOutcome, forKey: .focusOutcome)
+        try container.encode(self.childOutcome, forKey: .childOutcome)
+        try container.encodeIfPresent(self.outcome, forKey: .outcome)
+        try container.encode(self.action, forKey: .action)
+        try container.encode(self.capture, forKey: .capture)
+        try container.encode(self.validation, forKey: .validation)
+        try container.encodeIfPresent(self.manifest, forKey: .manifest)
+    }
 
     var failureMessage: String {
         if self.action.timedOut {
             return "Action timed out after \(self.action.timeoutSeconds)s"
         }
+        if !self.action.processGroupCleaned {
+            return "Action process group could not be fully terminated"
+        }
         if !self.action.succeeded {
             return "Action exited with status \(self.action.exitCode)"
         }
-        return "Capture artifact validation failed"
+        if let failure = self.validation.missing.first {
+            return "Capture validation failed: \(failure)"
+        }
+        return "Capture validation failed"
     }
 }
 
@@ -336,43 +1303,173 @@ struct CaptureActionArtifactValidation: Codable {
     let ok: Bool
     let checked: [String]
     let missing: [String]
+
+    var isCanonical: Bool {
+        self.ok == self.missing.isEmpty &&
+            !self.checked.isEmpty &&
+            Set(self.checked).count == self.checked.count
+    }
 }
 
-struct CaptureActionProcessResult: Codable {
+nonisolated struct CaptureActionProcessResult: Codable, Sendable {
     let command: [String]
+    let processIdentifier: pid_t
+    let processStartIdentity: UInt64
+    let processStartIdentityDecimal: String
     let exitCode: Int32
     let timedOut: Bool
+    let processGroupCleaned: Bool
     let timeoutSeconds: TimeInterval
     let durationMs: Int
     let stdout: String
     let stderr: String
     let stdoutTruncated: Bool
     let stderrTruncated: Bool
+    /// Process-local scheduling boundary used by `capture action`; deliberately omitted from Codable output.
+    let completedAtMonotonicNanoseconds: UInt64?
+
+    init(
+        command: [String],
+        processIdentifier: pid_t,
+        processStartIdentity: UInt64,
+        exitCode: Int32,
+        timedOut: Bool,
+        processGroupCleaned: Bool,
+        timeoutSeconds: TimeInterval,
+        durationMs: Int,
+        stdout: String,
+        stderr: String,
+        stdoutTruncated: Bool,
+        stderrTruncated: Bool,
+        completedAtMonotonicNanoseconds: UInt64? = nil
+    ) {
+        precondition(
+            processIdentifier > 0 && processStartIdentity > 0 &&
+                completedAtMonotonicNanoseconds.map { $0 > 0 } != false
+        )
+        self.command = command
+        self.processIdentifier = processIdentifier
+        self.processStartIdentity = processStartIdentity
+        self.processStartIdentityDecimal = String(processStartIdentity)
+        self.exitCode = exitCode
+        self.timedOut = timedOut
+        self.processGroupCleaned = processGroupCleaned
+        self.timeoutSeconds = timeoutSeconds
+        self.durationMs = durationMs
+        self.stdout = stdout
+        self.stderr = stderr
+        self.stdoutTruncated = stdoutTruncated
+        self.stderrTruncated = stderrTruncated
+        self.completedAtMonotonicNanoseconds = completedAtMonotonicNanoseconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case command
+        case processIdentifier
+        case processStartIdentity
+        case processStartIdentityDecimal
+        case exitCode
+        case timedOut
+        case processGroupCleaned
+        case timeoutSeconds
+        case durationMs
+        case stdout
+        case stderr
+        case stdoutTruncated
+        case stderrTruncated
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let processIdentifier = try container.decode(pid_t.self, forKey: .processIdentifier)
+        let processStartIdentity = try container.decode(UInt64.self, forKey: .processStartIdentity)
+        let processStartIdentityDecimal = try container.decode(
+            String.self,
+            forKey: .processStartIdentityDecimal
+        )
+        let timeoutSeconds = try container.decode(TimeInterval.self, forKey: .timeoutSeconds)
+        let durationMs = try container.decode(Int.self, forKey: .durationMs)
+        guard processIdentifier > 0,
+              processStartIdentity > 0,
+              processStartIdentityDecimal == String(processStartIdentity),
+              timeoutSeconds.isFinite,
+              timeoutSeconds >= 0,
+              durationMs >= 0
+        else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .processStartIdentity,
+                in: container,
+                debugDescription: "Capture action process result has invalid custody fields"
+            )
+        }
+        self.command = try container.decode([String].self, forKey: .command)
+        self.processIdentifier = processIdentifier
+        self.processStartIdentity = processStartIdentity
+        self.processStartIdentityDecimal = processStartIdentityDecimal
+        self.exitCode = try container.decode(Int32.self, forKey: .exitCode)
+        self.timedOut = try container.decode(Bool.self, forKey: .timedOut)
+        self.processGroupCleaned = try container.decode(Bool.self, forKey: .processGroupCleaned)
+        self.timeoutSeconds = timeoutSeconds
+        self.durationMs = durationMs
+        self.stdout = try container.decode(String.self, forKey: .stdout)
+        self.stderr = try container.decode(String.self, forKey: .stderr)
+        self.stdoutTruncated = try container.decode(Bool.self, forKey: .stdoutTruncated)
+        self.stderrTruncated = try container.decode(Bool.self, forKey: .stderrTruncated)
+        self.completedAtMonotonicNanoseconds = nil
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.command, forKey: .command)
+        try container.encode(self.processIdentifier, forKey: .processIdentifier)
+        try container.encode(self.processStartIdentity, forKey: .processStartIdentity)
+        try container.encode(self.processStartIdentityDecimal, forKey: .processStartIdentityDecimal)
+        try container.encode(self.exitCode, forKey: .exitCode)
+        try container.encode(self.timedOut, forKey: .timedOut)
+        try container.encode(self.processGroupCleaned, forKey: .processGroupCleaned)
+        try container.encode(self.timeoutSeconds, forKey: .timeoutSeconds)
+        try container.encode(self.durationMs, forKey: .durationMs)
+        try container.encode(self.stdout, forKey: .stdout)
+        try container.encode(self.stderr, forKey: .stderr)
+        try container.encode(self.stdoutTruncated, forKey: .stdoutTruncated)
+        try container.encode(self.stderrTruncated, forKey: .stderrTruncated)
+    }
 
     var succeeded: Bool {
-        !self.timedOut && self.exitCode == 0
+        !self.timedOut && self.processGroupCleaned && self.exitCode == 0
     }
 }
 
 @MainActor
 extension CaptureActionCommand {
-    private func validateArtifacts(_ result: CaptureSessionResult) -> CaptureActionArtifactValidation {
+    func validateArtifacts(_ result: CaptureSessionResult) throws -> CaptureActionArtifactValidation {
         var checked = [result.metadataFile, result.contactSheet.path]
         checked.append(contentsOf: result.frames.map(\.path))
-        if let videoOut = result.videoOut {
-            checked.append(videoOut)
-        } else if let expectedVideoOut = CaptureCommandPathResolver.filePath(from: videoOut) {
-            checked.append(expectedVideoOut)
+        var failures: [String] = []
+        do {
+            try CaptureArtifactIntegrityValidator.validate(result)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            failures.append(error.localizedDescription)
         }
 
-        var missing: [String] = []
-        if result.frames.isEmpty {
-            missing.append("frame files")
+        let captureArtifactPaths = Set(checked.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        })
+        let resolvedVideoOut = result.videoOut ?? CaptureCommandPathResolver.filePath(from: self.videoOut)
+        if let resolvedVideoOut {
+            let canonicalVideoOut = URL(fileURLWithPath: resolvedVideoOut).standardizedFileURL.path
+            if captureArtifactPaths.contains(canonicalVideoOut) {
+                failures.append("video output aliases a capture-owned artifact: \(resolvedVideoOut)")
+            } else {
+                checked.append(resolvedVideoOut)
+                if !Self.fileExistsAndIsNonEmpty(resolvedVideoOut) {
+                    failures.append(resolvedVideoOut)
+                }
+            }
         }
-        for path in checked where !Self.fileExistsAndIsNonEmpty(path) {
-            missing.append(path)
-        }
-        return CaptureActionArtifactValidation(ok: missing.isEmpty, checked: checked, missing: missing)
+        return CaptureActionArtifactValidation(ok: failures.isEmpty, checked: checked, missing: failures)
     }
 
     private static func fileExistsAndIsNonEmpty(_ path: String) -> Bool {
@@ -521,7 +1618,7 @@ extension CaptureActionCommand: CommanderSignatureProviding {
             .commandOption("postRoll", help: "Capture time after the action exits", long: "post-roll"),
             .commandOption(
                 "actionTimeout",
-                help: "Action timeout; bare values are milliseconds (defaults to remaining duration)",
+                help: "Action timeout within the capture/cleanup budget; bare values are milliseconds",
                 long: "action-timeout"
             ),
             .commandOption(
