@@ -19,6 +19,15 @@ final class OutcomeStubAutomationService: StubAutomationService, ScriptedUIAutom
     }
 
     let uiAutomationOutcomeScript = UIAutomationOutcomeScript()
+    var setValueResultTargetBindingSupported = true
+    override var supportsSetValueResultTargetBinding: Bool {
+        self.setValueResultTargetBindingSupported
+    }
+
+    override var supportsProcessGenerationBoundElementMutations: Bool {
+        true
+    }
+
     let supportsExactWindowTargetedKeyboard = true
     let supportsExactWindowCompositeTypeDelivery = true
     let exactWindowTargetedKeyboardUnavailableReason: String? = nil

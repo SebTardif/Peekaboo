@@ -50,51 +50,56 @@ public struct ActionTool: MCPTool {
                     errorCode: "RUNTIME_INCOMPATIBLE",
                     refusalReason: .runtimeIncompatible)
             }
+            guard automation.supportsProcessGenerationBoundElementMutations else {
+                throw DesktopActionFailure.preDispatchRefusal(
+                    reason: .runtimeIncompatible,
+                    message: "The automation host cannot bind element actions to one process generation.",
+                    hint: "Update the runtime host before retrying this element action.")
+            }
+            guard let outcomeAutomation = automation as? any UIAutomationActionOutcomeProviding else {
+                throw DesktopActionFailure.preDispatchRefusal(
+                    reason: .runtimeIncompatible,
+                    message: "The automation host cannot return a receipted action outcome.",
+                    hint: "Update the runtime host before retrying this element action.")
+            }
 
             let startTime = Date()
-            effectiveSnapshotId = try await self.effectiveSnapshotId(request.snapshotId)
-            let actionResult: UIAutomationActionResult<ElementActionResult> = if let outcomeAutomation =
-                automation as? any UIAutomationActionOutcomeProviding
-            {
-                try await outcomeAutomation.performActionWithOutcome(
-                    target: request.target,
-                    actionName: request.actionName,
-                    snapshotId: effectiveSnapshotId)
-            } else {
-                try await UIAutomationActionResult(
-                    payload: automation.performAction(
-                        target: request.target,
-                        actionName: request.actionName,
-                        snapshotId: effectiveSnapshotId),
-                    outcome: nil)
-            }
-            try DesktopActionFailure.requireConfirmedIfReported(
-                actionResult.outcome,
+            let snapshot = try await self.effectiveSnapshot(request.snapshotId)
+            effectiveSnapshotId = snapshot.id
+            let expectedTarget = try MCPElementActionSnapshotAuthority.expectedTargetIdentity(snapshot)
+            let actionResult = try await outcomeAutomation.performActionWithOutcome(
+                target: request.target,
+                actionName: request.actionName,
+                snapshotId: effectiveSnapshotId)
+            _ = try UIAutomationActionResultSemantics.requireAcceptedOutcome(
+                actionResult,
+                policy: .confirmed(requiring: .background),
+                targetRequirement: .compatible(expectedTarget),
                 operation: "Action")
             let invalidatedSnapshotId = await MCPDesktopActionSnapshotInvalidator.invalidate(
                 uiSnapshots: self.context.uiSnapshots,
                 snapshotID: effectiveSnapshotId,
                 outcome: actionResult.outcome)
             return try self.buildResponse(
-                result: actionResult.payload,
+                actionResult: actionResult,
                 requestedAction: request.actionName,
                 executionTime: Date().timeIntervalSince(startTime),
-                invalidatedSnapshotId: invalidatedSnapshotId,
-                outcome: actionResult.outcome)
+                invalidatedSnapshotId: invalidatedSnapshotId)
         } catch let error as ActionToolError {
             return try Self.preDispatchErrorResponse(error)
         } catch let failure as DesktopActionFailure {
             return try await MCPDesktopActionFailureHandler.response(
                 for: failure,
                 uiSnapshots: self.context.uiSnapshots,
-                snapshotID: effectiveSnapshotId)
+                snapshotID: effectiveSnapshotId,
+                additionalFields: ObservationActionResultSupport.standardErrorFields(failure))
         } catch {
             self.logger.error("action failed: \(error.localizedDescription)")
             return ToolResponse.error("Failed to perform action: \(error.localizedDescription)")
         }
     }
 
-    private func effectiveSnapshotId(_ requestedSnapshotId: String?) async throws -> String {
+    private func effectiveSnapshot(_ requestedSnapshotId: String?) async throws -> UISnapshot {
         if let requestedSnapshotId {
             guard let snapshot = await self.context.uiSnapshots.getSnapshot(id: requestedSnapshotId) else {
                 throw ActionToolError(
@@ -102,7 +107,7 @@ public struct ActionTool: MCPTool {
                     errorCode: "SNAPSHOT_NOT_FOUND",
                     refusalReason: .targetUnavailable)
             }
-            return snapshot.id
+            return snapshot
         }
         guard let snapshot = await self.context.uiSnapshots.getSnapshot(id: nil) else {
             throw ActionToolError(
@@ -110,7 +115,7 @@ public struct ActionTool: MCPTool {
                 errorCode: "SNAPSHOT_NOT_FOUND",
                 refusalReason: .targetUnavailable)
         }
-        return snapshot.id
+        return snapshot
     }
 
     private static func preDispatchErrorResponse(_ error: ActionToolError) throws -> ToolResponse {
@@ -121,12 +126,12 @@ public struct ActionTool: MCPTool {
     }
 
     private func buildResponse(
-        result: ElementActionResult,
+        actionResult: UIAutomationActionResult<ElementActionResult>,
         requestedAction: String,
         executionTime: TimeInterval,
-        invalidatedSnapshotId: String?,
-        outcome: DesktopActionOutcome?) throws -> ToolResponse
+        invalidatedSnapshotId: String?) throws -> ToolResponse
     {
+        let result = actionResult.payload
         let actionName = result.actionName ?? requestedAction
         let message = "\(AgentDisplayTokens.Status.success) Performed \(actionName) on \(result.target) in " +
             "\(String(format: "%.2f", executionTime))s"
@@ -141,9 +146,10 @@ public struct ActionTool: MCPTool {
         if let invalidatedSnapshotId {
             meta["invalidated_snapshot"] = .string(invalidatedSnapshotId)
         }
+        meta = try MCPDesktopTargetMetadataProjector.fields(actionResult.targetIdentity, merging: meta)
         return try ToolResponse.text(
             message,
-            meta: MCPToolResponseMetadataProjector.metadata(merging: meta, outcome: outcome))
+            meta: MCPToolResponseMetadataProjector.metadata(merging: meta, outcome: actionResult.outcome))
     }
 }
 

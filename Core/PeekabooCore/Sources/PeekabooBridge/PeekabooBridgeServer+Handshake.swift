@@ -221,6 +221,17 @@ extension PeekabooBridgeServer {
         {
             advertisedCapabilities.remove(PeekabooBridgeHostCapability.setValueResultTargetBinding)
         }
+        let elementMutationOperations: Set<PeekabooBridgeOperation> = [.setValue, .performAction]
+        if !supportsAttestedOperationReceipts ||
+            negotiated < PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion ||
+            !(self.services.automation is any UIAutomationActionOutcomeProviding) ||
+            (self.services.automation as? any ElementActionAutomationServiceProtocol)?
+            .supportsProcessGenerationBoundElementMutations != true ||
+            elementMutationOperations.isDisjoint(with: advertisedOps)
+        {
+            advertisedCapabilities.remove(
+                PeekabooBridgeHostCapability.processGenerationBoundElementMutations)
+        }
         if !supportsAttestedOperationReceipts ||
             negotiated < PeekabooBridgeConstants.composedInputParityVersion ||
             !self.services.snapshots.supportsSnapshotMutationLeases ||
@@ -279,7 +290,9 @@ extension PeekabooBridgeServer {
                         requestPinnedExactWindowScrollReceipt: advertisedCapabilities.contains(
                             PeekabooBridgeHostCapability.requestPinnedExactWindowScrollReceipt),
                         compositeTypeDelivery: advertisedCapabilities.contains(
-                            PeekabooBridgeHostCapability.compositeTypeDelivery)),
+                            PeekabooBridgeHostCapability.compositeTypeDelivery),
+                        processGenerationBoundElementMutations: advertisedCapabilities.contains(
+                            PeekabooBridgeHostCapability.processGenerationBoundElementMutations)),
                     replacing: payload.replacingOperationSessionID)
                 self.clearReceiptlessNegotiation(peer: peer)
             } catch let error as PeekabooBridgeOperationReceiptError {
@@ -384,6 +397,14 @@ extension PeekabooBridgeServer {
         usesAttestedOperationReceipts: Bool) -> Set<PeekabooBridgeOperation>
     {
         var compatible = PeekabooBridgeOperation.compatible(operations, with: negotiated)
+        if self.supportedVersions.upperBound >=
+            PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion,
+            !usesAttestedOperationReceipts ||
+            negotiated < PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion
+        {
+            compatible.remove(.setValue)
+            compatible.remove(.performAction)
+        }
         if !usesAttestedOperationReceipts {
             compatible.remove(.observeProcessGeneration)
             compatible.remove(.certificationProducerAttestation)
@@ -422,10 +443,21 @@ extension PeekabooBridgeServer {
         {
             operations.remove(.exactWindowTargetedClick)
         }
-        if self.services.automation as? any ElementActionAutomationServiceProtocol == nil {
+        if self.services.automation as? any ElementActionAutomationServiceProtocol == nil ||
+            (self.supportedVersions.upperBound >=
+                PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion &&
+                !Self.supportsProcessGenerationBoundElementMutationProvider(self.services.automation))
+        {
             operations.remove(.setValue)
             operations.remove(.performAction)
         }
+        operations = Set(operations.filter {
+            $0 != .setValue ||
+                self.supportedVersions.upperBound <
+                PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion ||
+                (self.services.automation as? any ElementActionAutomationServiceProtocol)?
+                .supportsSetValueResultTargetBinding == true
+        })
         if self.services.automation as? any TargetedFocusedElementServiceProtocol == nil {
             operations.remove(.getFocusedElement)
         }
@@ -482,6 +514,14 @@ extension PeekabooBridgeServer {
             operations.remove(.quitApplication)
         }
         return operations
+    }
+
+    static func supportsProcessGenerationBoundElementMutationProvider(
+        _ automation: any UIAutomationServiceProtocol) -> Bool
+    {
+        automation is any UIAutomationActionOutcomeProviding &&
+            (automation as? any ElementActionAutomationServiceProtocol)?
+            .supportsProcessGenerationBoundElementMutations == true
     }
 
     func effectiveAllowedOperations(permissions: PermissionsStatus) -> Set<PeekabooBridgeOperation> {

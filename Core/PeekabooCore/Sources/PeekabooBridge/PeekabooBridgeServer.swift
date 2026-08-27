@@ -177,6 +177,29 @@ public final class PeekabooBridgeServer {
         {
             resolvedHostCapabilities.insert(PeekabooBridgeHostCapability.targetedClickAccessibilityValueDelivery)
         }
+        if supportedVersions.upperBound >= PeekabooBridgeConstants.setValueResultTargetBindingVersion,
+           (services.automation as? any ElementActionAutomationServiceProtocol)?
+               .supportsSetValueResultTargetBinding == true,
+               self.allowedOperations.contains(.setValue),
+               supportedVersions.upperBound < PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion ||
+               Self.supportsProcessGenerationBoundElementMutationProvider(services.automation)
+        {
+            resolvedHostCapabilities.insert(PeekabooBridgeHostCapability.setValueResultTargetBinding)
+        } else {
+            resolvedHostCapabilities.remove(PeekabooBridgeHostCapability.setValueResultTargetBinding)
+        }
+        let elementMutationOperations: Set<PeekabooBridgeOperation> = [.setValue, .performAction]
+        if supportedVersions.upperBound >=
+            PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion,
+            Self.supportsProcessGenerationBoundElementMutationProvider(services.automation),
+            !elementMutationOperations.isDisjoint(with: self.allowedOperations)
+        {
+            resolvedHostCapabilities.insert(
+                PeekabooBridgeHostCapability.processGenerationBoundElementMutations)
+        } else {
+            resolvedHostCapabilities.remove(
+                PeekabooBridgeHostCapability.processGenerationBoundElementMutations)
+        }
         let registeredScreenCaptureKitOwnership = services.supportsScreenCaptureKitProcessOwnership &&
             (try? ScreenCaptureKitOwnerLease.registerCurrentProcessCapability()) != nil
         if hostIdentity?.processStartIdentity != nil {
@@ -968,6 +991,7 @@ public final class PeekabooBridgeServer {
                         "\(minimumVersion.major).\(minimumVersion.minor) capability")
             }
         }
+        try self.validateProcessGenerationBoundElementMutationAccess(request, peer: peer)
         if PeekabooBridgeRequestContext.usesAttestedOperationResultSemantics,
            op == .exactDialogEnterText,
            !self.services.dialogs.supportsBackgroundExactDialogInput
@@ -1067,6 +1091,36 @@ public final class PeekabooBridgeServer {
                 permission: .postEvent)
         }
     }
+
+    private func validateProcessGenerationBoundElementMutationAccess(
+        _ request: PeekabooBridgeRequest,
+        peer _: PeekabooBridgePeer?) throws
+    {
+        guard request.requiresProcessGenerationBoundElementMutations else { return }
+        guard self.supportedVersions.upperBound >=
+            PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion
+        else { return }
+        if request.operation == .setValue,
+           (self.services.automation as? any ElementActionAutomationServiceProtocol)?
+               .supportsSetValueResultTargetBinding != true
+        {
+            throw PeekabooBridgeErrorEnvelope(
+                code: .operationNotSupported,
+                message: "Operation setValue requires verifiable result target binding")
+        }
+        guard PeekabooBridgeRequestContext.usesAttestedOperationResultSemantics,
+              Self.supportsProcessGenerationBoundElementMutationProvider(self.services.automation),
+              let session = PeekabooBridgeRequestContext.negotiatedSessionCapabilities,
+              session.protocolVersion >= PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion,
+              session.processGenerationBoundElementMutations
+        else {
+            throw PeekabooBridgeErrorEnvelope(
+                code: .operationNotSupported,
+                message:
+                "Operation \(request.operation.rawValue) requires an authenticated protocol " +
+                    "1.37 process-generation-bound element mutation session")
+        }
+    }
 }
 
 private func protocolHostCapabilities(
@@ -1101,6 +1155,9 @@ private func protocolHostCapabilities(
     }
     if supportedVersions.upperBound >= PeekabooBridgeConstants.setValueResultTargetBindingVersion {
         capabilities.insert(PeekabooBridgeHostCapability.setValueResultTargetBinding)
+    }
+    if supportedVersions.upperBound >= PeekabooBridgeConstants.processGenerationBoundElementMutationsVersion {
+        capabilities.insert(PeekabooBridgeHostCapability.processGenerationBoundElementMutations)
     }
     if supportedVersions.upperBound >= PeekabooBridgeConstants.certificationProducerAttestationVersion {
         capabilities.insert(PeekabooBridgeHostCapability.certificationProducerAttestation)

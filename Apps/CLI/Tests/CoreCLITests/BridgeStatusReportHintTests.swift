@@ -182,7 +182,7 @@ struct BridgeStatusReportHintTests {
             requiresValidatedHistoricalDaemon: false
         )
         var options = CommandRuntimeOptions()
-        options.requiresElementActions = true
+        options.requiredElementActionOperations = [.setValue]
 
         let missingPermissionHandshake = BridgeTestFixtures.handshake(
             negotiatedVersion: PeekabooBridgeConstants.protocolVersion,
@@ -193,7 +193,12 @@ struct BridgeStatusReportHintTests {
                 accessibility: false,
                 appleScript: false,
                 postEvent: true
-            )
+            ),
+            hostCapabilities: [
+                PeekabooBridgeHostCapability.attestedOperationReceipts,
+                PeekabooBridgeHostCapability.setValueResultTargetBinding,
+                PeekabooBridgeHostCapability.processGenerationBoundElementMutations,
+            ]
         )
         let permissionEvaluation = await RuntimeHostResolver.evaluateRemoteCandidate(
             candidate,

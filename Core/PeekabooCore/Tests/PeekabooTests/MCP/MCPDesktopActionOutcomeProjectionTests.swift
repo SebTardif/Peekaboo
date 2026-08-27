@@ -1,13 +1,13 @@
 import CoreGraphics
 import Foundation
 import MCP
-import PeekabooAutomationKit
 import PeekabooBridgeTestSupport
 import PeekabooFoundation
 import PeekabooFoundationTestSupport
 import TachikomaMCP
 import Testing
 @testable import PeekabooAgentRuntime
+@testable import PeekabooAutomationKit
 
 @Suite(.serialized)
 struct MCPDesktopActionOutcomeProjectionTests {
@@ -157,9 +157,11 @@ struct MCPDesktopActionOutcomeProjectionTests {
     @MainActor
     func `action tool projects every native outcome state without inferring from invalidation`() async throws {
         let automation = StubAutomationService()
+        automation.uiAutomationOutcomeTargetIdentity = try DesktopTargetIdentity(
+            processIdentity: .init(processIdentifier: 42, processStartIdentity: 1001))
         let context = await MCPToolTestHelpers.makeContext(automation: automation)
         await context.uiSnapshots.removeOwner()
-        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
         let snapshotID = await snapshot.id
 
         for outcome in DesktopActionOutcomeFixtures.canonicalOutcomes {
@@ -182,11 +184,250 @@ struct MCPDesktopActionOutcomeProjectionTests {
 
     @Test
     @MainActor
+    func `element action tools project one canonical process generation target`() async throws {
+        let automation = StubAutomationService()
+        let process = ApplicationProcessIdentity(processIdentifier: 42, processStartIdentity: 1001)
+        automation.uiAutomationOutcomeTargetIdentity = try DesktopTargetIdentity(processIdentity: process)
+        automation.uiAutomationOutcomeScript.append(
+            DesktopActionOutcome.confirmedNoChange(),
+            for: .performAction)
+        automation.uiAutomationOutcomeScript.append(
+            DesktopActionOutcome.confirmedNoChange(),
+            for: .setValue)
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        await context.uiSnapshots.removeOwner()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(
+            in: context.uiSnapshots,
+            processIdentity: process)
+        let snapshotID = await snapshot.id
+
+        let responses = try await [
+            ActionTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "B1",
+                "action": "AXPress",
+                "snapshot": snapshotID,
+            ])),
+            SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "T1",
+                "value": "hello",
+                "snapshot": snapshotID,
+            ])),
+        ]
+
+        for response in responses {
+            let meta = try #require(response.meta?.objectValue)
+            let identity = try #require(meta["target_identity"]?.objectValue)
+            let receipt = try #require(meta["target_receipt"]?.objectValue)
+            #expect(!response.isError)
+            #expect(meta["state"] == .string("confirmed_no_change"))
+            #expect(meta["mutation_dispatched"] == .bool(false))
+            #expect(identity["kind"] == .string("process"))
+            #expect(identity["pid"] == .int(Int(process.processIdentifier)))
+            #expect(identity["process_start_identity_decimal"] == .string("1001"))
+            #expect(identity["window_id"] == nil)
+            #expect(receipt["pid"] == .int(Int(process.processIdentifier)))
+            #expect(receipt["process_start_identity_decimal"] == .string("1001"))
+            #expect(receipt["window_id"] == nil)
+        }
+        #expect(automation.lastPerformAction?.target == "B1")
+        #expect(automation.lastSetValue?.target == "T1")
+    }
+
+    @Test
+    @MainActor
+    func `element action tools reject a result from another process generation`() async throws {
+        let automation = StubAutomationService()
+        automation.actionOutcome = .confirmedNoChange()
+        automation.uiAutomationOutcomeTargetIdentity = try DesktopTargetIdentity(
+            processIdentity: .init(processIdentifier: 43, processStartIdentity: 1002))
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        await context.uiSnapshots.removeOwner()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
+        let snapshotID = await snapshot.id
+
+        let responses = try await [
+            ActionTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "B1",
+                "action": "AXPress",
+                "snapshot": snapshotID,
+            ])),
+            SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "T1",
+                "value": "hello",
+                "snapshot": snapshotID,
+            ])),
+        ]
+
+        for response in responses {
+            let meta = try #require(response.meta?.objectValue)
+            #expect(response.isError)
+            #expect(meta["state"] == .string("indeterminate"))
+            #expect(meta["mutation_dispatched"] == .bool(true))
+            #expect(meta["retry_safe"] == .bool(false))
+            #expect(meta["requires_fresh_observation"] == .bool(true))
+            #expect(meta["target_identity"] == nil)
+            let receipt = try #require(meta["target_receipt"]?.objectValue)
+            #expect(receipt["pid"] == .int(42))
+            #expect(receipt["process_start_identity_decimal"] == .string("1001"))
+        }
+        #expect(automation.lastPerformAction?.target == "B1")
+        #expect(automation.lastSetValue?.target == "T1")
+    }
+
+    @Test
+    @MainActor
+    func `element action tools reject confirmed results without target identity`() async throws {
+        for tool in ["action", "set_value"] {
+            let automation = StubAutomationService()
+            automation.actionOutcome = .confirmedNoChange()
+            automation.uiAutomationOutcomeTargetIdentity = nil
+            let context = await MCPToolTestHelpers.makeContext(automation: automation)
+            await context.uiSnapshots.removeOwner()
+            let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
+            let snapshotID = await snapshot.id
+
+            let response = if tool == "action" {
+                try await ActionTool(context: context).execute(arguments: ToolArguments(raw: [
+                    "on": "B1",
+                    "action": "AXPress",
+                    "snapshot": snapshotID,
+                ]))
+            } else {
+                try await SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+                    "on": "T1",
+                    "value": "hello",
+                    "snapshot": snapshotID,
+                ]))
+            }
+
+            let meta = try #require(response.meta?.objectValue)
+            #expect(response.isError)
+            #expect(meta["state"] == .string("indeterminate"))
+            #expect(meta["mutation_dispatched"] == .bool(true))
+            #expect(meta["retry_safe"] == .bool(false))
+            #expect(meta["requires_fresh_observation"] == .bool(true))
+            #expect(meta["target_identity"] == nil)
+            let receipt = try #require(meta["target_receipt"]?.objectValue)
+            #expect(receipt["pid"] == .int(42))
+            #expect(receipt["process_start_identity_decimal"] == .string("1001"))
+        }
+    }
+
+    @Test
+    @MainActor
+    func `element action tools refuse receiptless legacy providers before dispatch`() async throws {
+        let automation = LegacyElementActionAutomationService(accessibilityGranted: true)
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        await context.uiSnapshots.removeOwner()
+        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshotID = await snapshot.id
+
+        let responses = try await [
+            ActionTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "B1",
+                "action": "AXPress",
+                "snapshot": snapshotID,
+            ])),
+            SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "T1",
+                "value": "hello",
+                "snapshot": snapshotID,
+            ])),
+        ]
+
+        for response in responses {
+            let meta = try #require(response.meta?.objectValue)
+            #expect(response.isError)
+            #expect(meta["state"] == .string("refused"))
+            #expect(meta["refusal_reason"] == .string("runtime_incompatible"))
+            #expect(meta["mutation_dispatched"] == .bool(false))
+            #expect(meta["retry_safe"] == .bool(true))
+        }
+        #expect(automation.setValueCallCount == 0)
+        #expect(automation.performActionCallCount == 0)
+    }
+
+    @Test
+    @MainActor
+    func `set value refuses an outcome provider without result target binding before dispatch`() async throws {
+        let automation = StubAutomationService()
+        automation.supportsSetValueResultTargetBinding = false
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        await context.uiSnapshots.removeOwner()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
+        let snapshotID = await snapshot.id
+
+        let response = try await SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+            "on": "T1",
+            "value": "hello",
+            "snapshot": snapshotID,
+        ]))
+
+        #expect(response.isError)
+        try MCPToolTestHelpers.expectCanonicalRefusalMetadata(
+            reason: .runtimeIncompatible,
+            in: response)
+        let meta = try #require(response.meta?.objectValue)
+        #expect(meta["mutation_dispatched"] == .bool(false))
+        #expect(meta["retry_safe"] == .bool(true))
+        #expect(automation.lastSetValue == nil)
+        #expect(await context.uiSnapshots.getSnapshot(id: snapshotID) != nil)
+    }
+
+    @Test
+    @MainActor
+    func `element action tools project missing generation as a zero dispatch snapshot refusal`() async throws {
+        let automation = StubAutomationService()
+        let failure = DesktopActionFailure.preDispatchRefusal(
+            reason: .targetUnavailable,
+            message: "Snapshot target receipt has no capture-time process-generation receipt.",
+            standardErrorCode: .snapshotStale)
+        automation.uiAutomationOutcomeScript.appendFailure(
+            failure,
+            for: .performAction)
+        automation.uiAutomationOutcomeScript.appendFailure(
+            failure,
+            for: .setValue)
+        let context = await MCPToolTestHelpers.makeContext(automation: automation)
+        await context.uiSnapshots.removeOwner()
+        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshotID = await snapshot.id
+
+        let responses = try await [
+            ActionTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "B1",
+                "action": "AXPress",
+                "snapshot": snapshotID,
+            ])),
+            SetValueTool(context: context).execute(arguments: ToolArguments(raw: [
+                "on": "T1",
+                "value": "hello",
+                "snapshot": snapshotID,
+            ])),
+        ]
+
+        for response in responses {
+            let meta = try #require(response.meta?.objectValue)
+            #expect(response.isError)
+            #expect(meta["state"] == .string("refused"))
+            #expect(meta["refusal_reason"] == .string("target_unavailable"))
+            #expect(meta["error_code"] == .string("SNAPSHOT_STALE"))
+            #expect(meta["mutation_dispatched"] == .bool(false))
+            #expect(meta["retry_safe"] == .bool(true))
+            #expect(meta["invalidated_snapshot"] == nil)
+        }
+        #expect(automation.lastPerformAction == nil)
+        #expect(automation.lastSetValue == nil)
+        #expect(await context.uiSnapshots.getSnapshot(id: snapshotID) != nil)
+    }
+
+    @Test
+    @MainActor
     func `returned non dispatched outcome preserves its request snapshot`() async throws {
         let automation = StubAutomationService()
         automation.actionOutcome = .refused(reason: .permissionDenied)
         let context = await MCPToolTestHelpers.makeContext(automation: automation)
-        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
         let snapshotID = await snapshot.id
 
         let response = try await ActionTool(context: context).execute(arguments: ToolArguments(raw: [
@@ -230,13 +471,20 @@ struct MCPDesktopActionOutcomeProjectionTests {
         let outcome = DesktopActionOutcome.dispatchedUnverified(
             delivery: .init(mechanism: .globalEvents, mode: .foreground),
             evidence: .deliveryAccepted)
+        let elementOutcome = DesktopActionOutcome.dispatchedUnverified(
+            delivery: .init(mechanism: .accessibilityAction, mode: .background),
+            evidence: .deliveryAccepted)
         automation.actionOutcome = outcome
+        automation.uiAutomationOutcomeTargetIdentity = try DesktopTargetIdentity(
+            processIdentity: .init(processIdentifier: 42, processStartIdentity: 1001))
+        automation.uiAutomationOutcomeScript.append(elementOutcome, for: .performAction)
+        automation.uiAutomationOutcomeScript.append(elementOutcome, for: .setValue)
         let context = await MCPToolTestHelpers.makeContext(automation: automation)
         await context.uiSnapshots.removeOwner()
-        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
         let snapshotID = await snapshot.id
 
-        let responses = try await [
+        let elementResponses = try await [
             ActionTool(context: context).execute(arguments: ToolArguments(raw: [
                 "on": "B1",
                 "action": "AXPress",
@@ -247,6 +495,8 @@ struct MCPDesktopActionOutcomeProjectionTests {
                 "value": "hello",
                 "snapshot": snapshotID,
             ])),
+        ]
+        let otherResponses = try await [
             ClickTool(context: context).execute(arguments: ToolArguments(raw: [
                 "coords": "10,20",
                 "foreground": true,
@@ -265,7 +515,11 @@ struct MCPDesktopActionOutcomeProjectionTests {
             ])),
         ]
 
-        for response in responses {
+        for response in elementResponses {
+            #expect(response.isError)
+            try MCPToolTestHelpers.expectCanonicalOutcomeMetadata(elementOutcome, in: response)
+        }
+        for response in otherResponses {
             #expect(response.isError)
             try MCPToolTestHelpers.expectCanonicalOutcomeMetadata(outcome, in: response)
         }
@@ -391,6 +645,28 @@ struct MCPDesktopActionOutcomeProjectionTests {
         #expect(meta["dispatched_unit_count"] == .int(1))
         #expect(meta["invalidated_snapshot"] == .string(snapshotID))
         #expect(await context.uiSnapshots.getSnapshot(id: nil) == nil)
+    }
+}
+
+@MainActor
+private final class LegacyElementActionAutomationService: MockAutomationService,
+ElementActionAutomationServiceProtocol {
+    let supportsProcessGenerationBoundElementMutations = true
+    private(set) var setValueCallCount = 0
+    private(set) var performActionCallCount = 0
+
+    func setValue(target: String, value _: UIElementValue, snapshotId _: String?) async throws
+        -> ElementActionResult
+    {
+        self.setValueCallCount += 1
+        return ElementActionResult(target: target, actionName: "AXSetValue", anchorPoint: nil)
+    }
+
+    func performAction(target: String, actionName: String, snapshotId _: String?) async throws
+        -> ElementActionResult
+    {
+        self.performActionCallCount += 1
+        return ElementActionResult(target: target, actionName: actionName, anchorPoint: nil)
     }
 }
 
@@ -1040,7 +1316,7 @@ extension MCPDesktopActionOutcomeProjectionTests {
             message: "Accessibility permission is required")
         let context = await MCPToolTestHelpers.makeContext(automation: automation)
         await context.uiSnapshots.removeOwner()
-        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
         let snapshotID = await snapshot.id
 
         let response = try await ActionTool(context: context).execute(arguments: ToolArguments(raw: [
@@ -1115,7 +1391,7 @@ extension MCPDesktopActionOutcomeProjectionTests {
             for: .setValue)
         let context = await MCPToolTestHelpers.makeContext(automation: automation)
         await context.uiSnapshots.removeOwner()
-        let snapshot = await context.uiSnapshots.createSnapshot()
+        let snapshot = await MCPToolTestHelpers.createElementActionSnapshot(in: context.uiSnapshots)
         let snapshotID = await snapshot.id
 
         let response = try await SetValueTool(context: context).execute(arguments: ToolArguments(raw: [

@@ -1762,10 +1762,17 @@ extension PeekabooBridgeTests {
             requestTimeoutSec: 1)
 
         let unsupported = RemotePeekabooServices(client: client, supportsElementActions: false)
-        let supported = RemotePeekabooServices(client: client, supportsElementActions: true)
+        let actionOnly = RemotePeekabooServices(client: client, supportsElementActions: true)
+        let supported = RemotePeekabooServices(
+            client: client,
+            supportsElementActions: true,
+            supportsSetValueResultTargetBinding: true)
 
         #expect((unsupported.automation as? any ElementActionAutomationServiceProtocol) == nil)
-        #expect((supported.automation as? any ElementActionAutomationServiceProtocol) != nil)
+        #expect((actionOnly.automation as? any ElementActionAutomationServiceProtocol)?
+            .supportsSetValueResultTargetBinding == false)
+        #expect((supported.automation as? any ElementActionAutomationServiceProtocol)?
+            .supportsSetValueResultTargetBinding == true)
     }
 
     @Test
@@ -2259,6 +2266,7 @@ class StubAutomationService: TargetedHotkeyServiceProtocol, TargetedTypeServiceP
     ExactWindowTargetedKeyboardServiceProtocol
 {
     var supportsSetValueResultTargetBinding = true
+    var supportsProcessGenerationBoundElementMutations = true
     var dragError: (any Error)?
     let supportsProcessGenerationPinnedHotkeys = true
     let supportsProcessGenerationPinnedTypeActions = true
