@@ -125,6 +125,12 @@ jobs:
         run: |
           swift build --configuration debug
 
+      - name: Run MCP wire and background policy tests
+        working-directory: Core/PeekabooCore
+        run: |
+          swift test --no-parallel --filter PeekabooMCPServerTests
+          swift test --no-parallel --filter 'MCPToolArgumentValidationTests|MCPToolExecutionPolicyTests|MCPPolicyAwareCatalogTests|MCPBackgroundPolicyExecutionTests'
+
       - name: Run focused Swift tests
         working-directory: Core/PeekabooCore
         run: |
