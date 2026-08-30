@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import Tachikoma
+import UniformTypeIdentifiers
 
 public struct InferredAnthropicModelCapabilities: Sendable {
     public let contextLength: Int
@@ -213,13 +214,13 @@ public final class PeekabooAIService {
     public func analyzeImageDetailed(
         imageData: Data,
         question: String,
-        model: LanguageModel? = nil) async throws -> AnalysisResult
+        model: LanguageModel? = nil,
+        path: String? = nil) async throws -> AnalysisResult
     {
         let selectedModel = try self.resolveVisionModel(model)
 
         // Create a message with the image using Tachikoma's API
-        let base64String = imageData.base64EncodedString()
-        let imageContent = ModelMessage.ContentPart.ImageContent(data: base64String, mimeType: "image/png")
+        let imageContent = Self.analyzeImageContent(imageData: imageData, path: path)
         let messages = [ModelMessage.user(text: question, images: [imageContent])]
 
         let response = try await Tachikoma.generateText(
@@ -247,7 +248,11 @@ public final class PeekabooAIService {
         let url = Self.imageFileURL(for: path)
         let imageData = try Data(contentsOf: url)
 
-        return try await self.analyzeImage(imageData: imageData, question: question, model: model)
+        return try await self.analyzeImageDetailed(
+            imageData: imageData,
+            question: question,
+            model: model,
+            path: path).text
     }
 
     /// Analyze an image file returning structured metadata
@@ -259,11 +264,69 @@ public final class PeekabooAIService {
         // Analyze an image file returning structured metadata
         let url = Self.imageFileURL(for: path)
         let imageData = try Data(contentsOf: url)
-        return try await self.analyzeImageDetailed(imageData: imageData, question: question, model: model)
+        return try await self.analyzeImageDetailed(
+            imageData: imageData,
+            question: question,
+            model: model,
+            path: path)
     }
 
     static func imageFileURL(for path: String) -> URL {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    }
+
+    nonisolated static func imageMIMEType(forPath path: String, imageData: Data? = nil) -> String {
+        if let imageData, let fromImageIO = imageMIMETypeFromImageIO(imageData) {
+            return fromImageIO
+        }
+        return Self.imageMIMETypeFromPathExtension(path) ?? "image/png"
+    }
+
+    nonisolated static func imageMIMEType(forImageData data: Data) -> String {
+        self.imageMIMETypeFromImageIO(data) ?? "image/png"
+    }
+
+    nonisolated static func analyzeImageContent(
+        imageData: Data,
+        path: String? = nil) -> ModelMessage.ContentPart.ImageContent
+    {
+        let mimeType = path.map { Self.imageMIMEType(forPath: $0, imageData: imageData) }
+            ?? Self.imageMIMEType(forImageData: imageData)
+        return ModelMessage.ContentPart.ImageContent(
+            data: imageData.base64EncodedString(),
+            mimeType: mimeType)
+    }
+
+    private nonisolated static func imageMIMETypeFromPathExtension(_ path: String) -> String? {
+        switch URL(fileURLWithPath: path).pathExtension.lowercased() {
+        case "png":
+            "image/png"
+        case "jpg", "jpeg":
+            "image/jpeg"
+        case "gif":
+            "image/gif"
+        case "webp":
+            "image/webp"
+        default:
+            nil
+        }
+    }
+
+    private nonisolated static func imageMIMETypeFromImageIO(_ data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options),
+              let type = CGImageSourceGetType(source) as String?,
+              let mime = UTType(type)?.preferredMIMEType?.lowercased()
+        else {
+            return nil
+        }
+        switch mime {
+        case "image/png", "image/jpeg", "image/gif", "image/webp":
+            return mime
+        default:
+            return nil
+        }
     }
 
     /// Generate text from a prompt
