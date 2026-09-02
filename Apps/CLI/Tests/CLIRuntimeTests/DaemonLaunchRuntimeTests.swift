@@ -45,7 +45,8 @@ struct DaemonLaunchRuntimeTests {
                 [
                     "daemon", "start",
                     "--bridge-socket", socketPath,
-                    "--wait", "5s",
+                    // Exercise executable resolution, not a five-second native startup deadline.
+                    "--wait", "30s",
                 ],
                 environment: environment,
                 executablePathOverride: "peekaboo",
