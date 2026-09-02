@@ -108,7 +108,7 @@ struct VerifyStateWindowReceiptTests {
     @Test
     func `Drift after the permitted expected bounds transition is unknown`() async throws {
         let fixture = VerifyStateFixture()
-        let context = await fixture.context(results: [])
+        let context = await fixture.context(results: [fixture.satisfiedResult])
         let expectedBounds = fixture.window.bounds.offsetBy(dx: 80, dy: 40)
         let driftedBounds = expectedBounds.offsetBy(dx: 1, dy: 0)
         let initial = fixture.systemWindowIdentity(
@@ -120,7 +120,8 @@ struct VerifyStateWindowReceiptTests {
         let drifted = fixture.systemWindowIdentity(
             ownerProcessIdentifier: fixture.application.processIdentifier,
             bounds: driftedBounds)
-        let windows = LockedSystemWindowIdentitySequence([initial, expected, drifted])
+        // Check drift at AX completion in the transition poll, not on a third timer tick.
+        let windows = LockedSystemWindowIdentitySequence([initial, initial, expected, drifted])
         let tool = fixture.tool(
             context: context,
             windowIdentityProvider: { _ in windows.next() })
@@ -128,17 +129,27 @@ struct VerifyStateWindowReceiptTests {
         let response = try await tool.execute(arguments: ToolArguments(raw: [
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
-            "predicates": [[
-                "kind": "window_bounds",
-                "bounds": Self.boundsArguments(expectedBounds),
-                "tolerance": 2,
-            ]],
+            "predicates": [
+                [
+                    "kind": "window_bounds",
+                    "bounds": Self.boundsArguments(expectedBounds),
+                    "tolerance": 2,
+                ],
+                [
+                    "kind": "element_exists",
+                    "selector": ["identifier": "document-content"],
+                    "expected": true,
+                ],
+            ],
             "timeout_ms": 350,
         ]))
 
         #expect(Self.stringMeta("status", response) == "unknown")
         #expect(Self.stringMeta("reason", response)?.contains("verification receipt changed") == true)
         #expect(Self.intMeta("stable_samples", response) == 0)
+        #expect(windows.callCount >= 4)
+        // The second AX read proves that the permitted transition was accepted before drift.
+        #expect(fixture.inspectionContexts.compactMap(\.windowBounds) == [fixture.window.bounds, expectedBounds])
     }
 
     @Test
@@ -249,11 +260,14 @@ struct VerifyStateWindowReceiptTests {
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": true]],
-            "timeout_ms": 250,
+            // Allow scheduling slack; success must still come from the first two polls below.
+            "timeout_ms": 1000,
         ]))
 
         #expect(Self.stringMeta("status", response) == "satisfied")
+        #expect(Self.intMeta("sample_count", response) == 2)
         #expect(Self.intMeta("stable_samples", response) == 2)
+        #expect(windows.callCount == 2)
     }
 
     private static func boundsArguments(_ bounds: CGRect) -> [String: Double] {

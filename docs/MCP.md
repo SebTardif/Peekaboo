@@ -66,6 +66,18 @@ The stdio server reserves stdout exclusively for newline-delimited JSON-RPC mess
 bytes onto that channel. In particular, MCP `clipboard` rejects `outputPath: "-"`; omit `outputPath` for UTF-8 text or
 provide a filesystem path for binary clipboard data. The separate CLI `clipboard get --output -` contract is unchanged.
 
+## Analyzing existing image files
+
+The `analyze` tool accepts existing `.png`, `.jpg`, `.jpeg`, and `.webp` files. Image-file analysis accepts
+at most **10 MiB (10,485,760 bytes)** of raw file data, including files exactly at that limit. Resize or compress
+larger images before retrying. Directories and special files such as FIFOs are rejected before provider dispatch;
+ordinary readable regular files, including symlinks and hardlinks to them, remain supported.
+
+The AI service detects PNG, JPEG, GIF, and WebP MIME types from the bytes first, then uses a supported filename
+extension when detection is unavailable. Unknown data retains the existing PNG fallback; this is MIME selection,
+not image validity checking. Data-only image analysis uses the same byte detection and PNG fallback without
+imposing the file-input size limit. The MCP tool's accepted extensions are unchanged.
+
 ## Install in MCP clients
 
 Most MCP clients can launch Peekaboo through either the npm package or a local binary.

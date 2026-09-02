@@ -1415,6 +1415,10 @@ final class VerifyStateFixture {
         self.result(elements: self.defaultElements)
     }
 
+    var inspectionContexts: [WindowContext] {
+        self.automation.contexts
+    }
+
     private var defaultElements: [DetectedElement] {
         [
             self.element(identifier: "document-content", label: "Document", value: "Ready"),

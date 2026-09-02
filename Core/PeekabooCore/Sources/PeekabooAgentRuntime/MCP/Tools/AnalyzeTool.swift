@@ -18,6 +18,7 @@ public struct AnalyzeTool: MCPTool {
 
         This tool is useful when an image already exists (e.g., previously captured, downloaded, or generated)
         and you need to understand its content, extract text, or answer specific questions about it.
+        Accepts regular image files up to 10 MiB (10,485,760 bytes). Resize or compress larger images before retrying.
 
         Capabilities:
         - Image Understanding: Provide any question about the image (e.g., "What objects are in this picture?",
@@ -69,7 +70,7 @@ public struct AnalyzeTool: MCPTool {
             return ToolResponse.error("Missing required parameter: question")
         }
 
-        // Validate image file extension and determine media type
+        // Validate MCP's supported extensions; the AI service detects the MIME type from the bytes.
         let fileExtension = (imagePath as NSString).pathExtension.lowercased()
         let supportedFormats = ["png", "jpg", "jpeg", "webp"]
         guard supportedFormats.contains(fileExtension) else {

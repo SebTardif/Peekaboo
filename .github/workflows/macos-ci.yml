@@ -143,6 +143,7 @@ jobs:
       - name: Run focused Swift tests
         working-directory: Core/PeekabooCore
         run: |
+          swift test --no-parallel --filter 'PeekabooAIServiceImageFileSizeTests|PeekabooAIServiceImageMIMETests|MCPAnalyzeImageFileTests'
           swift test --no-parallel --filter CredentialFileTests
           swift test --no-parallel --filter ConfigurationManagerConcurrencyTests
           swift test --no-parallel --filter ConfigurationAccessorsOAuthTests
