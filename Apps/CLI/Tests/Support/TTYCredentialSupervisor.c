@@ -44,9 +44,6 @@ int main(int argument_count, char *arguments[]) {
     }
     if (process_identifier == 0) {
         close(release_pipe[1]);
-        if (setpgid(0, 0) != 0) {
-            _exit(126);
-        }
         const int prompt_signals[] = {
             SIGALRM, SIGHUP, SIGINT, SIGPIPE, SIGQUIT, SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU,
         };
@@ -75,7 +72,9 @@ int main(int argument_count, char *arguments[]) {
         background_terminal != NULL && strcmp(background_terminal, "1") == 0
             ? getpgrp()
             : process_identifier;
-    if ((setpgid(process_identifier, process_identifier) != 0 && errno != EACCES) ||
+    // Only the parent assigns the group: concurrent setpgid calls can fail with EPERM on Darwin.
+    // The release pipe keeps the child from execing until group and terminal setup is complete.
+    if (setpgid(process_identifier, process_identifier) != 0 ||
         signal(SIGTTOU, SIG_IGN) == SIG_ERR ||
         tcsetpgrp(STDIN_FILENO, foreground_process_group) != 0 ||
         dprintf(STDOUT_FILENO, "PEEKABOO_CHILD_PID=%d\n", process_identifier) < 0 ||
