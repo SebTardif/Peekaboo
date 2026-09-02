@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+# Match the release runner: fixture copies must preserve executable modes under this mask.
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/peekaboo-dmg-test.XXXXXX)"
@@ -65,7 +67,7 @@ case "${1:-}" in
       shift
     done
     [[ -n "$mount_dir" ]]
-    cp -R "${PEEKABOO_TEST_APP_TEMPLATE:?}" "$mount_dir/Peekaboo.app"
+    cp -pR "${PEEKABOO_TEST_APP_TEMPLATE:?}" "$mount_dir/Peekaboo.app"
     if [[ "${PEEKABOO_TEST_ATTACH_FINDERINFO:-}" == "1" ]]; then
       /usr/bin/SetFile -a E "$mount_dir/Peekaboo.app"
     fi
@@ -119,7 +121,7 @@ for argument in "$@"; do
 done
 [[ -n "$destination" ]]
 mkdir -p "$destination"
-cp -R "${PEEKABOO_TEST_APP_TEMPLATE:?}" "$destination/Peekaboo.app"
+cp -pR "${PEEKABOO_TEST_APP_TEMPLATE:?}" "$destination/Peekaboo.app"
 EOF
 
 cat >"$FAKE_BIN/sips" <<'EOF'
@@ -194,7 +196,7 @@ PEEKABOO_TEST_APP_TEMPLATE="$APP_TEMPLATE" \
 
 MUTATED_TEMPLATE="$TEST_DIR/mutated-template/Peekaboo.app"
 mkdir -p "$(dirname "$MUTATED_TEMPLATE")"
-cp -R "$APP_TEMPLATE" "$MUTATED_TEMPLATE"
+cp -pR "$APP_TEMPLATE" "$MUTATED_TEMPLATE"
 printf 'changed nested bytes\n' >> "$MUTATED_TEMPLATE/Contents/MacOS/Peekaboo"
 if PEEKABOO_TEST_DETACH_IMMEDIATE=1 \
   PEEKABOO_TEST_APP_TEMPLATE="$MUTATED_TEMPLATE" \
