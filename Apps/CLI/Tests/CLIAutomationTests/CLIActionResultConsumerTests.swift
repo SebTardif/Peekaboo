@@ -1262,7 +1262,7 @@ extension CLIActionResultConsumerTests {
             menu: menu
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", "Fixt", "--item", "Open",
                 "--foreground", "--json", "--no-remote",
@@ -1312,7 +1312,7 @@ extension CLIActionResultConsumerTests {
             menu: menu
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", fixture.application.name, "--path", "File > Open",
                 "--foreground", "--no-auto-focus", "--json", "--no-remote",
@@ -1351,7 +1351,7 @@ extension CLIActionResultConsumerTests {
             menu: menu
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", fixture.application.name, "--item", "Open",
                 "--foreground", "--json", "--no-remote",
@@ -1382,7 +1382,7 @@ extension CLIActionResultConsumerTests {
             menu: menu
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", fixture.application.name, "--item", "Open",
                 "--foreground", "--json", "--no-remote",
@@ -1431,20 +1431,28 @@ extension CLIActionResultConsumerTests {
             fixture.application.name: [replacementWindow],
             pinnedIdentifier: [originalWindow],
         ])
-        let menu = OutcomeStubMenuService(menusByApp: [fixture.application.name: fixture.structure])
+        windows.actionOutcome = .confirmedChange(
+            delivery: .init(mechanism: .accessibilityAction, mode: .foreground),
+            unitCount: .one
+        )
+        let menu = OutcomeStubMenuService(menusByApp: [pinnedIdentifier: fixture.structure])
         menu.actionOutcome = .dispatchedUnverified(
             delivery: .init(mechanism: .accessibilityAction, mode: .foreground),
             evidence: .deliveryAccepted,
             unitCount: .one
         )
         menu.actionTargetIdentity = try DesktopTargetIdentity(processIdentity: expectedIdentity)
-        let services = TestServicesFactory.makePeekabooServices(
-            applications: StubApplicationService(applications: [fixture.application]),
-            windows: windows,
-            menu: menu
+        // The service-backed route keeps exact focus inside the fixture, not the native desktop singleton.
+        let services = InputExecutionHostServices(
+            host: .remote,
+            base: TestServicesFactory.makePeekabooServices(
+                applications: StubApplicationService(applications: [fixture.application]),
+                windows: windows,
+                menu: menu
+            )
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", fixture.application.name, "--window-index", "0",
                 "--item", "Open", "--foreground", "--json", "--no-remote",
@@ -1452,15 +1460,17 @@ extension CLIActionResultConsumerTests {
             services: services
         )
 
+        #expect(result.exitStatus == 0, "\(result.combinedOutput)")
         let focused = try #require(windows.focusCalls.first)
         let request = try #require(menu.namedMenuItemRequests.first)
-        #expect(result.exitStatus == 0)
         #expect(windows.focusCalls.count == 1)
+        #expect(try windows.pinnedFocusIdentities == [#require(originalWindow.mutationIdentity)])
         guard case let .windowId(windowID) = focused else {
             Issue.record("Expected exact planned-process window focus")
             return
         }
         #expect(windowID == originalWindow.windowID)
+        #expect(request.appIdentifier == pinnedIdentifier)
         #expect(request.expectedIdentity == expectedIdentity)
         #expect(request.deliveryMode == .foreground)
     }
@@ -1488,7 +1498,7 @@ extension CLIActionResultConsumerTests {
             menu: menu
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", fixture.application.name, "--window-id", "202",
                 "--item", "Open", "--foreground", "--json", "--no-remote",
@@ -1527,7 +1537,7 @@ extension CLIActionResultConsumerTests {
             menu: menu
         )
 
-        let result = try await InProcessCommandRunner.run(
+        let result = try await InProcessCommandRunner.runWithOwnedRuntime(
             [
                 "menu", "click", "--app", fixture.application.name, "--item", "Open",
                 "--foreground", "--json", "--no-remote",

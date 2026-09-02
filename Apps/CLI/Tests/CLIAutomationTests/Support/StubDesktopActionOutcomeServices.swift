@@ -275,6 +275,7 @@ WindowManagementPinnedFocusActionResultProviding {
     )
     var postActionReadbackError: (any Error)?
     var postActionReadbackWindow: ServiceWindowInfo?
+    private(set) var pinnedFocusIdentities: [WindowMutationIdentity] = []
     private var didCompleteAction = false
 
     override func listWindows(target: WindowTarget) async throws -> [ServiceWindowInfo] {
@@ -298,6 +299,7 @@ WindowManagementPinnedFocusActionResultProviding {
         target: WindowTarget,
         expectedIdentity: WindowMutationIdentity
     ) async throws -> UIAutomationActionResult<Void> {
+        self.pinnedFocusIdentities.append(expectedIdentity)
         try await self.focusWindow(target: target)
         guard let bounds = expectedIdentity.capturedBounds else {
             throw DesktopActionFailure.preDispatchRefusal(

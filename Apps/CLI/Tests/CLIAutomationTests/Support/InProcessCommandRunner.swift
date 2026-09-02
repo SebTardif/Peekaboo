@@ -1,3 +1,4 @@
+import Commander
 import Darwin
 import Foundation
 import PeekabooCore
@@ -92,6 +93,50 @@ struct CommandExecutionError: Error, CustomStringConvertible {
 
 enum InProcessCommandRunner {
     private static let gate = InProcessRunGate()
+
+    /// Exercise command routing with an owned mutation journal, without native CLI startup.
+    static func runWithOwnedRuntime(
+        _ arguments: [String],
+        services: any PeekabooServiceProviding
+    ) async throws -> CommandRunResult {
+        try await self.gate.run {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("peekaboo-command-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let result = try await self.redirectOutput {
+                do {
+                    try await CommanderRuntimeExecutor.resolveAndRun(
+                        arguments: ["peekaboo"] + arguments,
+                        runtimeFactory: .init { options in
+                            CommandRuntime(
+                                configuration: options.makeConfiguration(),
+                                services: services,
+                                interactionMutationTracker: InteractionMutationTracker(
+                                    desktopMutationWatermarkStore: DesktopMutationWatermarkStore(
+                                        directoryURL: directory
+                                    )
+                                )
+                            )
+                        }
+                    )
+                    return EXIT_SUCCESS
+                } catch let exit as ExitCode {
+                    return exit.rawValue
+                }
+            }
+            return CommandRunResult(
+                stdout: String(data: result.1, encoding: .utf8) ?? "",
+                stderr: String(data: result.2, encoding: .utf8) ?? "",
+                exitStatus: result.0
+            )
+        }
+    }
 
     static func run(
         _ arguments: [String],
