@@ -1,6 +1,9 @@
 import Foundation
 import PeekabooFoundation
 
+/// Bound git child waits. A stuck lock or NFS hang must not block CLI startup.
+private let gitStalenessWaitTimeoutSeconds: TimeInterval = 5
+
 /// Check if the CLI binary is stale compared to the current git state.
 /// Only runs in debug builds when git config 'peekaboo.check-build-staleness' is true.
 func checkBuildStaleness() {
@@ -134,7 +137,9 @@ private func checkGitCommitStaleness() {
 
     do {
         try gitProcess.run()
-        gitProcess.waitUntilExit()
+        guard waitForProcessExit(gitProcess, timeoutSeconds: gitStalenessWaitTimeoutSeconds) else {
+            return // Git wait timed out, skip check
+        }
 
         guard gitProcess.terminationStatus == 0 else {
             return // Git command failed, skip check
@@ -187,7 +192,9 @@ private func checkFileModificationStaleness() {
 
     do {
         try gitStatusProcess.run()
-        gitStatusProcess.waitUntilExit()
+        guard waitForProcessExit(gitStatusProcess, timeoutSeconds: gitStalenessWaitTimeoutSeconds) else {
+            return // Git wait timed out, skip check
+        }
 
         guard gitStatusProcess.terminationStatus == 0 else {
             return // Git command failed, skip check
@@ -274,7 +281,9 @@ private func getGitRepositoryRoot() -> String? {
 
     do {
         try gitProcess.run()
-        gitProcess.waitUntilExit()
+        guard waitForProcessExit(gitProcess, timeoutSeconds: gitStalenessWaitTimeoutSeconds) else {
+            return nil
+        }
 
         guard gitProcess.terminationStatus == 0 else {
             return nil
