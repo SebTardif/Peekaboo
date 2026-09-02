@@ -41,6 +41,25 @@ In `--json` output, canonical action outcome, effect, retry safety, mutation-dis
 metadata are projected into the standard root CLI envelope. The original MCP metadata remains under `data.meta` for
 tool-specific consumers.
 
+If a status request times out or its transport fails, connection state, tool count, and Chrome discovery are unknown,
+not a confirmed disconnection or absence. Output marks `status_observation=indeterminate` and uses JSON `null` for
+`connected`, `tool_count`, `browser_count`, and `channels`. Any retained exact connection fields identify only the
+last confirmed connection. A failed status observation does not explain or resolve an earlier uncertain action.
+If connect may have dispatched but cannot supply trustworthy target attribution, it remains indeterminate and unsafe
+to retry; its bounded original failure diagnostic accompanies the attribution error without creating a target receipt.
+
+`dom-click --page-id <id> --uid <uid> --foreground` invokes one synthetic `element.click()` through the pinned
+provider's `evaluate_script` route. It avoids CDP/Puppeteer pointer input, but evaluation still grants browser user
+activation: background mode refuses before provider I/O and authorized calls report foreground delivery. It is not
+background-safe and does not guarantee Chrome will remain behind another app.
+
+This is not a trusted pointer click: it does not move the pointer, hit-test, or send a pointer-down/up sequence.
+Disabled controls can do nothing, and handlers requiring trusted input may not react. `double` and `include_snapshot`
+do not apply. A successful script return means only that the invocation returned, not that a handler ran, navigation
+completed, or the intended effect occurred. Observe the intended page before deciding whether to retry.
+The CLI retains its existing numeric page ID and snapshot-local UID compatibility boundary; this action does not add
+durable cross-invocation capabilities. Persistent MCP/Agent callers use the caller-owned references described below.
+
 Browser state is owned by one current-build reusable daemon across CLI invocations. Channel connection requires exactly
 one running official Google-signed Chrome process (Team ID `EQHXZ8M8AV`). Peekaboo pins the signed channel identifier,
 Team ID, and CDHash to its PID generation, safely reads that channel's standard `DevToolsActivePort`, proves its unique

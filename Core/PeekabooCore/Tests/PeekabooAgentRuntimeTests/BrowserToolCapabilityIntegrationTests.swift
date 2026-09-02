@@ -9,6 +9,166 @@ import Testing
 @MainActor
 struct BrowserToolCapabilityIntegrationTests {
     @Test
+    func `foreground DOM click retains exact binding preflight and mutation accounting`() async throws {
+        let client = CapabilityBrowserMCPClient()
+        let coordinator = CapabilityMutationCoordinator()
+        let context = Self.context(
+            client: client,
+            coordinator: coordinator,
+            executionPolicy: .foregroundAllowed)
+        let tool = BrowserTool(context: context)
+        let arguments = try await Self.domClickArguments(context: context, tool: tool)
+        #expect(coordinator.sharedPrepareCount == 2)
+        #expect(coordinator.completionCount == 2)
+        let status = await client.status(channel: nil)
+
+        let response = try await context.execute(tool: tool, arguments: arguments)
+
+        #expect(!response.isError)
+        let calls = try #require(client.sequences.last)
+        #expect(calls.count == 1)
+        let call = try #require(calls.first)
+        #expect(call.toolName == "evaluate_script")
+        #expect(call.arguments["pageId"] as? Int == 7)
+        #expect(call.arguments["args"] as? [String] == ["1_0"])
+        #expect(client.sessionBindings.last?.connectionReceipt == status.connectionReceipt)
+        #expect(client.sessionBindings.last?.providerSessionEpoch == status.providerSessionEpoch)
+        #expect(client.elementPreflights.last == BrowserMCPElementPreflight(
+            providerPageID: 7,
+            providerUIDs: ["1_0"]))
+        let meta = try #require(response.meta?.objectValue)
+        #expect(meta["state"] == .string("dispatched_unverified"))
+        #expect(meta["delivery_mode"] == .string("foreground"))
+        #expect(meta["dispatched_unit_count"] == .int(1))
+        #expect(meta["retry_safe"] == .bool(false))
+        #expect(coordinator.sharedPrepareCount == 3)
+        #expect(coordinator.concurrentPrepareCount == 0)
+        #expect(coordinator.completionCount == 3)
+
+        let replay = try await context.execute(tool: tool, arguments: arguments)
+        #expect(replay.isError)
+        #expect(client.sequences.count == 3)
+    }
+
+    @Test(arguments: [
+        "raw-page",
+        "raw-element",
+        "other-caller",
+        "other-page",
+        "wrong-page",
+        "new-snapshot",
+        "navigation",
+    ])
+    func `DOM click refuses invalid capabilities before atomic provider dispatch`(variant: String) async throws {
+        let client = CapabilityBrowserMCPClient()
+        let context = Self.context(client: client, executionPolicy: .foregroundAllowed)
+        let tool = BrowserTool(context: context)
+        let arguments = try await Self.domClickArguments(context: context, tool: tool)
+        var raw = arguments.rawDictionary
+        switch variant {
+        case "raw-page":
+            raw["page_id"] = 7
+        case "raw-element":
+            raw["uid"] = "1_0"
+        case "other-caller", "other-page":
+            let other = Self.context(client: client, executionPolicy: .foregroundAllowed)
+            let otherArguments = try await Self.domClickArguments(context: other, tool: BrowserTool(context: other))
+            let key = variant == "other-page" ? "page_id" : "uid"
+            raw[key] = otherArguments.getString(key)
+        case "wrong-page":
+            client.executeHandler = { _ in
+                ToolResponse(content: [], structuredContent: .object([
+                    "pages": .array([8, 7].map { id in .object([
+                        "id": .int(id),
+                        "url": .string("https://example.test/"),
+                    ]) }),
+                ]))
+            }
+            raw["page_id"] = try await Self.pageReference(from: context.execute(
+                tool: tool,
+                arguments: ToolArguments(raw: ["action": "list_pages"])))
+            client.executeHandler = nil
+        case "new-snapshot", "navigation":
+            let prepared = try await context.execute(tool: tool, arguments: ToolArguments(raw: [
+                "action": variant == "new-snapshot" ? "snapshot" : "navigate",
+                "page_id": #require(arguments.getString("page_id")),
+                "url": "https://example.test/after",
+            ]))
+            #expect(!prepared.isError)
+        default:
+            Issue.record("Unhandled fixture")
+        }
+        let dispatchCount = client.sequences.count
+        let preflightCount = client.elementPreflights.count
+
+        let response = try await context.execute(tool: tool, arguments: ToolArguments(raw: raw))
+
+        #expect(response.isError)
+        #expect(client.sequences.count == dispatchCount)
+        #expect(client.elementPreflights.count == preflightCount)
+    }
+
+    @Test(arguments: [false, true])
+    func `DOM click refuses receipt or epoch drift at atomic dispatch`(changeEpoch: Bool) async throws {
+        let client = CapabilityBrowserMCPClient()
+        let context = Self.context(client: client, executionPolicy: .foregroundAllowed)
+        let tool = BrowserTool(context: context)
+        let arguments = try await Self.domClickArguments(context: context, tool: tool)
+        let original = await client.status(channel: nil)
+        let changed = BrowserMCPStatus(
+            isConnected: true,
+            toolCount: 52,
+            detectedBrowsers: [],
+            connectionReceipt: changeEpoch ? original.connectionReceipt : BrowserMCPConnectionReceipt(
+                browserURL: "http://127.0.0.1:9223/",
+                webSocketDebuggerURL: "ws://127.0.0.1:9223/devtools/browser/browser-b",
+                devToolsBrowserID: "browser-b"),
+            providerSessionEpoch: changeEpoch ? BrowserMCPProviderSessionEpoch() : original.providerSessionEpoch)
+        // The first status resolves refs; the second runs inside the atomic provider boundary.
+        client.statusResponses = [original, changed]
+        let dispatchCount = client.sequences.count
+        let preflightCount = client.elementPreflights.count
+
+        let response = try await context.execute(tool: tool, arguments: arguments)
+
+        #expect(response.isError)
+        #expect(client.statusResponses.isEmpty)
+        #expect(client.sequences.count == dispatchCount)
+        #expect(client.elementPreflights.count == preflightCount)
+        #expect(client.sessionBindings.last?.connectionReceipt == original.connectionReceipt)
+        #expect(client.sessionBindings.last?.providerSessionEpoch == original.providerSessionEpoch)
+    }
+
+    @Test
+    func `DOM click preserves foreground cancellation uncertainty and invalidates its element`() async throws {
+        let client = CapabilityBrowserMCPClient()
+        let context = Self.context(client: client, executionPolicy: .foregroundAllowed)
+        let tool = BrowserTool(context: context)
+        let arguments = try await Self.domClickArguments(context: context, tool: tool)
+        client.executeHandler = { _ in
+            throw DesktopActionFailure.indeterminate(
+                delivery: .init(mechanism: .browserProtocol, mode: .background),
+                evidence: .completionUnknown,
+                unitCount: .one,
+                message: "Provider cancelled after accepting the script.")
+        }
+
+        let response = try await context.execute(tool: tool, arguments: arguments)
+
+        #expect(response.isError)
+        let meta = try #require(response.meta?.objectValue)
+        #expect(meta["state"] == .string("indeterminate"))
+        #expect(meta["delivery_mode"] == .string("foreground"))
+        #expect(meta["dispatch_state"] == .string("may_have_dispatched"))
+        #expect(meta["dispatched_unit_count"] == .int(1))
+        #expect(meta["retry_safe"] == .bool(false))
+        #expect(meta["requires_fresh_observation"] == .bool(true))
+        let replay = try await context.execute(tool: tool, arguments: arguments)
+        #expect(replay.isError)
+        #expect(client.sequences.count == 3)
+    }
+
+    @Test
     func `command line and MCP uid schemas distinguish raw provider IDs from opaque capabilities`() throws {
         let context = Self.context(client: CapabilityBrowserMCPClient())
         let commandLineTool = BrowserTool(context: context, instructionAudience: .commandLine)
@@ -241,25 +401,60 @@ struct BrowserToolCapabilityIntegrationTests {
         #expect(Self.text(from: response) == domainResult)
     }
 
-    @Test
-    func `background capability evaluation refuses before status or provider execution`() async throws {
+    @Test(arguments: ["call", "dom_click"])
+    func `background capability evaluation refuses before status or provider execution`(action: String) async throws {
         let client = CapabilityBrowserMCPClient()
         let context = Self.context(client: client, executionPolicy: .backgroundOnly)
-        let tool = BrowserTool(context: context)
-        let pageReference = "bp1_" + String(repeating: "a", count: 32)
+        // Exercise the caller's authority ceiling, not the background catalog's closed-property refusal.
+        let toolContext = Self.context(client: client, executionPolicy: .foregroundAllowed)
+        let tool = BrowserTool(context: toolContext)
+        let status = client.connectedStatus()
+        let binding = try BrowserMCPExecutionSessionBinding(
+            connectionReceipt: #require(status.connectionReceipt),
+            providerSessionEpoch: #require(status.providerSessionEpoch))
+        let capabilities = toolContext.browserCapabilities
+        // Mint genuine refs in memory without calling status or entering the provider.
+        let listed = try await capabilities.project(
+            client.response(for: "list_pages"),
+            calls: [BrowserMCPMappedCall(toolName: "list_pages", arguments: [:])],
+            resolved: nil,
+            sessionBinding: binding)
+        let pageReference = try Self.pageReference(from: listed)
+        let snapshotArguments = try await capabilities.resolve(
+            action: .snapshot,
+            arguments: ToolArguments(raw: ["page_id": pageReference]),
+            sessionBinding: binding)
+        let snapshot = try await capabilities.project(
+            client.response(for: "take_snapshot"),
+            calls: [BrowserMCPMappedCall(toolName: "take_snapshot", arguments: ["pageId": 7])],
+            resolved: snapshotArguments,
+            sessionBinding: binding)
+        let elementReference = try Self.elementReference(from: snapshot)
+        let arguments = ToolArguments(raw: action == "call" ? [
+            "action": action,
+            "mcp_tool": "evaluate_script",
+            "page_id": pageReference,
+            "mcp_args_json": #"{"function":"(element) => element.tagName","args":["\#(elementReference)"]}"#,
+        ] : [
+            "action": action,
+            "page_id": pageReference,
+            "uid": elementReference,
+        ])
+        try MCPToolArgumentValidator.validateClosedProperties(tool: tool, arguments: arguments)
+        let resolved = try await capabilities.resolve(
+            action: #require(BrowserAction(rawValue: action)),
+            arguments: arguments,
+            sessionBinding: binding)
+        #expect(resolved.providerPageID == 7)
+        #expect(resolved.providerUIDs == ["1_0"])
 
-        let response = try await context.execute(
-            tool: tool,
-            arguments: ToolArguments(raw: [
-                "action": "call",
-                "mcp_tool": "evaluate_script",
-                "page_id": pageReference,
-                "mcp_args_json": #"{"function":"() => navigator.userActivation.isActive"}"#,
-            ]))
+        let response = try await context.execute(tool: tool, arguments: arguments)
 
         #expect(response.isError)
         #expect(response.meta?.objectValue?["refusal_reason"] == .string("foreground_consent_required"))
         #expect(response.meta?.objectValue?["mutation_dispatched"] == .bool(false))
+        #expect(response.meta?.objectValue?["dispatch_state"] == .string("none"))
+        #expect(response.meta?.objectValue?["retry_safe"] == .bool(true))
         #expect(client.statusCount == 0)
         #expect(client.sequences.isEmpty)
     }
@@ -962,6 +1157,21 @@ extension BrowserToolCapabilityIntegrationTests {
             mappings: ["2_1": "be1_fixture"]))
     }
 
+    private static func domClickArguments(context: MCPToolContext, tool: BrowserTool) async throws -> ToolArguments {
+        let pageReference = try await Self.pageReference(from: context.execute(
+            tool: tool,
+            arguments: ToolArguments(raw: ["action": "list_pages"])))
+        let snapshot = try await context.execute(tool: tool, arguments: ToolArguments(raw: [
+            "action": "snapshot",
+            "page_id": pageReference,
+        ]))
+        return try ToolArguments(raw: [
+            "action": "dom_click",
+            "page_id": pageReference,
+            "uid": Self.elementReference(from: snapshot),
+        ])
+    }
+
     private static func context(
         client: any BrowserMCPClientProviding,
         coordinator: (any MCPToolSnapshotMutationCoordinating)? = nil,
@@ -984,6 +1194,7 @@ extension BrowserToolCapabilityIntegrationTests {
             clipboard: services.clipboard,
             browser: client,
             snapshotMutationCoordinator: coordinator,
+            snapshotOwner: MCPToolSnapshotOwner(),
             executionPolicy: executionPolicy)
     }
 
@@ -1089,9 +1300,10 @@ private final class CapabilityBrowserMCPClient: BrowserMCPClientProviding, Brows
     let providerSessionEpoch = BrowserMCPProviderSessionEpoch()
     private(set) var sequences: [[BrowserMCPMappedCall]] = []
     private(set) var elementPreflights: [BrowserMCPElementPreflight?] = []
+    private(set) var sessionBindings: [BrowserMCPExecutionSessionBinding] = []
     private(set) var statusCount = 0
     var statusResponses: [BrowserMCPStatus] = []
-    var executeHandler: (@MainActor (String) async -> ToolResponse)?
+    var executeHandler: (@MainActor (String) async throws -> ToolResponse)?
 
     init(structuredResponses: Bool = true, providesEpoch: Bool = true) {
         self.structuredResponses = structuredResponses
@@ -1106,7 +1318,7 @@ private final class CapabilityBrowserMCPClient: BrowserMCPClientProviding, Brows
         return self.connectedStatus()
     }
 
-    private func connectedStatus() -> BrowserMCPStatus {
+    fileprivate func connectedStatus() -> BrowserMCPStatus {
         BrowserMCPStatus(
             isConnected: true,
             toolCount: 52,
@@ -1142,7 +1354,7 @@ private final class CapabilityBrowserMCPClient: BrowserMCPClientProviding, Brows
     {
         self.sequences.append(calls)
         if let executeHandler {
-            let response = await executeHandler(calls.last?.toolName ?? "")
+            let response = try await executeHandler(calls.last?.toolName ?? "")
             return DesktopActionResult(payload: response, outcome: self.outcome(for: calls, response: response))
         }
         let response = self.response(for: calls.last?.toolName)
@@ -1155,6 +1367,7 @@ private final class CapabilityBrowserMCPClient: BrowserMCPClientProviding, Brows
         expectedSessionBinding: BrowserMCPExecutionSessionBinding,
         elementPreflight: BrowserMCPElementPreflight?) async throws -> DesktopActionResult<ToolResponse>
     {
+        self.sessionBindings.append(expectedSessionBinding)
         let current = await self.status(channel: channel)
         guard current.connectionReceipt == expectedSessionBinding.connectionReceipt,
               current.providerSessionEpoch == expectedSessionBinding.providerSessionEpoch
@@ -1165,7 +1378,7 @@ private final class CapabilityBrowserMCPClient: BrowserMCPClientProviding, Brows
         return try await self.executeSequenceWithOutcome(calls, channel: channel)
     }
 
-    private func response(for toolName: String?) -> ToolResponse {
+    fileprivate func response(for toolName: String?) -> ToolResponse {
         switch toolName {
         case "list_pages": self.pageResponse()
         case "take_snapshot": self.snapshotResponse()
