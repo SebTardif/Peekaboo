@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import Tachikoma
+import UniformTypeIdentifiers
 
 public struct InferredAnthropicModelCapabilities: Sendable {
     public let contextLength: Int
@@ -215,11 +216,21 @@ public final class PeekabooAIService {
         question: String,
         model: LanguageModel? = nil) async throws -> AnalysisResult
     {
+        try await self.analyzeImageRequest(imageData: imageData, question: question, model: model, path: nil)
+    }
+
+    private func analyzeImageRequest(
+        imageData: Data,
+        question: String,
+        model: LanguageModel?,
+        path: String?) async throws -> AnalysisResult
+    {
         let selectedModel = try self.resolveVisionModel(model)
 
         // Create a message with the image using Tachikoma's API
-        let base64String = imageData.base64EncodedString()
-        let imageContent = ModelMessage.ContentPart.ImageContent(data: base64String, mimeType: "image/png")
+        let imageContent = ModelMessage.ContentPart.ImageContent(
+            data: imageData.base64EncodedString(),
+            mimeType: Self.imageMIMEType(imageData: imageData, path: path))
         let messages = [ModelMessage.user(text: question, images: [imageContent])]
 
         let response = try await Tachikoma.generateText(
@@ -243,11 +254,7 @@ public final class PeekabooAIService {
         question: String,
         model: LanguageModel? = nil) async throws -> String
     {
-        // Load image data
-        let url = Self.imageFileURL(for: path)
-        let imageData = try Data(contentsOf: url)
-
-        return try await self.analyzeImage(imageData: imageData, question: question, model: model)
+        try await self.analyzeImageFileDetailed(at: path, question: question, model: model).text
     }
 
     /// Analyze an image file returning structured metadata
@@ -256,14 +263,32 @@ public final class PeekabooAIService {
         question: String,
         model: LanguageModel? = nil) async throws -> AnalysisResult
     {
-        // Analyze an image file returning structured metadata
         let url = Self.imageFileURL(for: path)
-        let imageData = try Data(contentsOf: url)
-        return try await self.analyzeImageDetailed(imageData: imageData, question: question, model: model)
+        let imageData = try AnalyzeImageFile(url: url).read()
+        return try await self.analyzeImageRequest(
+            imageData: imageData, question: question, model: model, path: url.path)
     }
 
-    static func imageFileURL(for path: String) -> URL {
+    nonisolated static func imageFileURL(for path: String) -> URL {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    }
+
+    private nonisolated static func imageMIMEType(imageData: Data, path: String?) -> String {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        if let source = CGImageSourceCreateWithData(imageData as CFData, options),
+           let type = CGImageSourceGetType(source) as String?,
+           let mime = UTType(type)?.preferredMIMEType?.lowercased(),
+           ["image/png", "image/jpeg", "image/gif", "image/webp"].contains(mime)
+        {
+            return mime
+        }
+
+        return switch path.map({ URL(fileURLWithPath: $0).pathExtension.lowercased() }) {
+        case "jpg", "jpeg": "image/jpeg"
+        case "gif": "image/gif"
+        case "webp": "image/webp"
+        default: "image/png"
+        }
     }
 
     /// Generate text from a prompt
