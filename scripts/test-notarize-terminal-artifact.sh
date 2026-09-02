@@ -53,6 +53,21 @@ cat > "$TEST_DIR/ditto" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'ditto %s\n' "$*" >> "${LOG_FILE:?}"
+if [[ "${1:-}" == -c ]]; then
+  # Match the fake xattr world only when archiving; copies must retain arbitrary attrs.
+  archive_args=()
+  for argument in "$@"; do
+    [[ "$argument" == --sequesterRsrc ]] || archive_args+=("$argument")
+  done
+  /usr/bin/ditto --norsrc --noextattr "${archive_args[@]}"
+  if [[ "${TERMINAL_DITTO_APPLEDOUBLE:-0}" == 1 ]]; then
+    payload="$(dirname "${!#}")/appledouble"
+    mkdir -p "$payload/__MACOSX"
+    printf 'fixture\n' > "$payload/__MACOSX/._fixture"
+    (cd "$payload" && /usr/bin/zip -q "${!#}" __MACOSX/._fixture)
+  fi
+  exit 0
+fi
 exec /usr/bin/ditto "$@"
 EOF
 cat > "$TEST_DIR/xcrun" <<'EOF'
@@ -97,12 +112,54 @@ fi
 [[ "${TERMINAL_CODESIGN_FAIL_VERIFY:-0}" != 1 ]]
 EOF
 cat > "$TEST_DIR/xattr" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec /usr/bin/xattr "$@"
+#!/usr/bin/ruby
+require 'find'
+require 'open3'
+
+exec('/usr/bin/xattr', *ARGV) unless ARGV.length == 2 && ARGV.first == '-r'
+
+def inspect_xattrs(*args)
+  output, errors, result = Open3.capture3('/usr/bin/xattr', *args)
+  STDERR.write(errors)
+  exit(result.exitstatus || 1) unless result.success?
+  output
+end
+
+# Fake-provider fixtures ignore only the host's persistent 11-byte provenance marker;
+# this is not native zero-metadata proof. Never inspect metadata outside this fixture.
+fixture_root = File.realpath(__dir__)
+within_fixture = lambda do |path|
+  resolved = File.realpath(path)
+  abort('fixture xattr: path outside fixture') unless resolved == fixture_root ||
+    resolved.start_with?("#{fixture_root}/")
+  resolved
+end
+target = within_fixture.call(ARGV.last)
+Find.find(target, ignore_error: false) do |entry|
+  resolved = within_fixture.call(entry)
+  inspect_xattrs(resolved).each_line do |line|
+    name = line.chomp
+    if name == 'com.apple.provenance'
+      listing, errors, result = Open3.capture3({ 'LC_ALL' => 'C' }, '/bin/ls', '-ld@', resolved)
+      abort('fixture xattr: size inspection failed') unless result.success? && errors.empty?
+      sizes = listing.lines.map(&:split).select { |fields| fields.first == name }.map { |fields| fields[1] }
+      next if sizes == ['11']
+    end
+    puts "#{entry}: #{name}"
+  end
+end
 EOF
 chmod 755 "$TEST_DIR/ditto" "$TEST_DIR/xcrun" "$TEST_DIR/codesign" "$TEST_DIR/xattr"
 export LOG_FILE
+
+ln -s "$ROOT_DIR/scripts/test-notarize-terminal-artifact.sh" "$TEST_DIR/xattr-outside"
+for xattr_target in "$TEST_DIR/missing" "$ROOT_DIR/scripts/test-notarize-terminal-artifact.sh" \
+  "$TEST_DIR/xattr-outside"; do
+  if "$TEST_DIR/xattr" -r "$xattr_target" >"$TEST_DIR/xattr-error.log" 2>&1; then
+    fail 'fixture xattr masked an inspection failure or accepted an outside path'
+  fi
+done
+rm "$TEST_DIR/xattr-outside"
 
 run_notary() {
   PEEKABOO_TERMINAL_TEST_MODE=1 \
@@ -138,6 +195,8 @@ submit_line="$(grep -n 'xcrun notarytool submit .*--keychain-profile __peekaboo_
 
 profile_reexec_transaction="$TEST_DIR/profile-reexec-transaction"
 if (
+  # Exported deliberately to test the child environment boundary, not called here.
+  # shellcheck disable=SC2329
   hostile_notary_function() { return 97; }
   export -f hostile_notary_function
   export OP_SERVICE_ACCOUNT_TOKEN=unrelated-credential
@@ -153,19 +212,30 @@ fi
 assert_cli_failure() {
   local label="$1"
   local mode="$2"
-  local verify_fail="${3:-0}"
+  local verify_fail="$3"
+  local expected_error="$4"
   local transaction="$TEST_DIR/$label-transaction"
   if TERMINAL_NOTARY_MODE="$mode" TERMINAL_CODESIGN_FAIL_VERIFY="$verify_fail" \
     run_notary --kind cli-tree --artifact "$CLI_TREE" --transaction "$transaction" \
-      --notary-profile __peekaboo_fixture__ >/dev/null 2>&1; then
+      --notary-profile __peekaboo_fixture__ >"$TEST_DIR/$label.log" 2>&1; then
     fail "$label unexpectedly succeeded"
   fi
+  grep -Fq "$expected_error" "$TEST_DIR/$label.log" || fail "$label failed for an unexpected reason"
   [[ ! -e "$transaction" ]] || fail "$label published a partial transaction"
 }
 
-assert_cli_failure rejected rejected
-assert_cli_failure malformed malformed
-assert_cli_failure online-verify accepted 1
+assert_cli_failure rejected rejected 0 'notary submission was not accepted'
+assert_cli_failure malformed malformed 0 'notary response is malformed'
+assert_cli_failure signature-verify accepted 1 'CLI tree pre-submit identity mismatch'
+appledouble_transaction="$TEST_DIR/appledouble-transaction"
+if TERMINAL_DITTO_APPLEDOUBLE=1 run_notary --kind cli-tree --artifact "$CLI_TREE" \
+  --transaction "$appledouble_transaction" --notary-profile __peekaboo_fixture__ \
+  >"$TEST_DIR/appledouble.log" 2>&1; then
+  fail 'AppleDouble submission unexpectedly succeeded'
+fi
+grep -Fq 'notary submission contains AppleDouble payload' "$TEST_DIR/appledouble.log" || \
+  fail 'AppleDouble submission failed for an unexpected reason'
+[[ ! -e "$appledouble_transaction" ]] || fail 'AppleDouble submission published a transaction'
 staple_transaction="$TEST_DIR/staple-transaction"
 if TERMINAL_CODE_IDENTIFIER=boo.peekaboo.playground.debug TERMINAL_STAPLER_FAIL=1 \
   run_notary --kind app --artifact "$APP_ARTIFACT" --transaction "$staple_transaction" \
@@ -183,12 +253,17 @@ fi
 
 xattr_cli="$TEST_DIR/xattr-cli"
 /usr/bin/ditto "$CLI_TREE" "$xattr_cli"
-/usr/bin/xattr -w com.openclaw.peekaboo.fixture value "$xattr_cli/peekaboo"
+/usr/bin/xattr -w com.openclaw.peekaboo.fixture fixturedata "$xattr_cli/peekaboo"
+"$TEST_DIR/xattr" -r "$xattr_cli" > "$TEST_DIR/xattr-names"
+grep -Fq ': com.openclaw.peekaboo.fixture' "$TEST_DIR/xattr-names" || \
+  fail 'fixture xattr masked an arbitrary attribute'
 xattr_transaction="$TEST_DIR/xattr-transaction"
 if run_notary --kind cli-tree --artifact "$xattr_cli" --transaction "$xattr_transaction" \
-  --notary-profile __peekaboo_fixture__ >/dev/null 2>&1; then
+  --notary-profile __peekaboo_fixture__ >"$TEST_DIR/xattr-notary.log" 2>&1; then
   fail 'xattr-bearing artifact unexpectedly succeeded'
 fi
+grep -Fq 'artifact contains unbound extended attributes' "$TEST_DIR/xattr-notary.log" || \
+  fail 'xattr-bearing artifact failed for an unexpected reason'
 [[ ! -e "$xattr_transaction" ]]
 
 app_transaction="$TEST_DIR/app-transaction"
@@ -227,4 +302,4 @@ if TERMINAL_NOTARY_XCRUN_BIN="$TEST_DIR/xcrun" \
   fail 'production accepted a test tool override'
 fi
 
-printf 'test-notarize-terminal-artifact: ok\n'
+printf 'test-notarize-terminal-artifact: ok (fake signing/notary and metadata tools; no native zero-metadata proof)\n'

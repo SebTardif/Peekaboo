@@ -62,6 +62,21 @@ for input in "$source_input" "$source_input/src" "$source_input/src/controller.s
   /usr/bin/xattr -w com.openclaw.peekaboo.copy-input benign "$input"
 done
 cp -RX "$source_input" "$candidate/qualification-source"
+fixture_metadata="$(/usr/bin/ruby "$ROOT_DIR/scripts/support/test-fixture-metadata.rb" inspect \
+  "$TEST_DIR" "$candidate")" || fail 'copied fixture inputs contain unexpected or unreadable metadata'
+printf 'test-terminal-manifest-portability: PASS cp -X/-RX removed injected input attributes\n'
+if [[ "$fixture_metadata" == persistent-provenance ]]; then
+  if terminal_artifact_assert_no_xattrs "$candidate" 2>"$TEST_DIR/guard-errors"; then
+    fail 'production guard accepted provenance-bearing copied inputs'
+  else
+    [[ $? -eq 1 && ! -s "$TEST_DIR/guard-errors" ]] || fail 'production guard failed unexpectedly'
+  fi
+  printf 'test-terminal-manifest-portability: PASS strict production guard rejects persistent provenance\n'
+  printf 'test-terminal-manifest-portability: SKIP 5 integration cases: candidate validation, relocation, '
+  printf 'byte/symlink/xattr mutations; copied inputs contain only com.apple.provenance (11 bytes); '
+  printf 'no native metadata-free portability proof\n'
+  exit 0
+fi
 terminal_artifact_assert_no_xattrs "$candidate" || fail 'copied fixture inputs contain extended attributes'
 # Establish the final modes only after copying; receipts and archives must stay immutable.
 find "$candidate/qualification-source" -type d -exec chmod 555 {} +
