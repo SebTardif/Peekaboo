@@ -41,6 +41,9 @@ extension ConfigCommand.EditCommand: AsyncRuntimeCommand {}
 extension ConfigCommand.EditCommand: CommanderBindableCommand {
     mutating func applyCommanderValues(_ values: CommanderBindableValues) throws {
         self.editor = values.singleOption("editor")
+        if let timeout: CLIDuration = try values.decodeOption("timeout", as: CLIDuration.self) {
+            self.timeout = timeout
+        }
         self.printPath = values.flag("print-path")
     }
 }

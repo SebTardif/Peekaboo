@@ -1,6 +1,11 @@
+import Commander
+import Darwin
+import Foundation
+import PeekabooCore
 import Testing
 @testable import PeekabooCLI
 
+@Suite(.tags(.safe), .serialized)
 struct ConfigEditorLaunchTests {
     @Test
     func `EditCommand terminates env options before an option-like editor`() {
@@ -20,5 +25,81 @@ struct ConfigEditorLaunchTests {
         )
 
         #expect(arguments == ["--", "/usr/bin/nano", "/tmp/config.json"])
+    }
+
+    @Test
+    func `EditCommand bounds a non-exiting editor`() async throws {
+        try await self.withTempConfigDir { dir in
+            let fileManager = FileManager.default
+            let editor = dir.appendingPathComponent("hanging-editor")
+            let pidFile = dir.appendingPathComponent("editor.pid")
+            let script = """
+            #!/bin/sh
+            printf '%s\\n' "$$" > "\(pidFile.path)"
+            trap '' TERM
+            exec /bin/sleep 8
+            """
+            try script.write(to: editor, atomically: true, encoding: .utf8)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: editor.path)
+
+            var command = ConfigCommand.EditCommand()
+            command.editor = editor.path
+            command.timeout = .seconds(1)
+
+            let startedAt = Date()
+            let exitCode = await #expect(throws: ExitCode.self) {
+                try await command.run(using: self.makeRuntime())
+            }
+            #expect(exitCode == ExitCode.failure)
+            #expect(Date().timeIntervalSince(startedAt) < 3)
+
+            let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let pid = try #require(Int32(pidText))
+            errno = 0
+            #expect(kill(pid, 0) == -1)
+            #expect(errno == ESRCH)
+        }
+    }
+
+    private func makeRuntime() -> CommandRuntime {
+        CommandRuntime(
+            configuration: .init(verbose: false, jsonOutput: false, logLevel: nil),
+            services: PeekabooServices()
+        )
+    }
+
+    private func withTempConfigDir(_ body: (URL) async throws -> Void) async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("peekaboo-cli-config-edit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let environmentKeys = [
+            "PEEKABOO_CONFIG_DIR",
+            "PEEKABOO_CONFIG_NONINTERACTIVE",
+            "PEEKABOO_CONFIG_DISABLE_MIGRATION",
+        ]
+        let previous = Dictionary(uniqueKeysWithValues: environmentKeys.map { key in
+            (key, getenv(key).map { String(cString: $0) })
+        })
+
+        setenv("PEEKABOO_CONFIG_DIR", tempDir.path, 1)
+        setenv("PEEKABOO_CONFIG_NONINTERACTIVE", "1", 1)
+        setenv("PEEKABOO_CONFIG_DISABLE_MIGRATION", "1", 1)
+        PeekabooCore.ConfigurationManager.shared.resetForTesting()
+
+        defer {
+            for key in environmentKeys {
+                if case let value?? = previous[key] {
+                    setenv(key, value, 1)
+                } else {
+                    unsetenv(key)
+                }
+            }
+            PeekabooCore.ConfigurationManager.shared.resetForTesting()
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        try await body(tempDir)
     }
 }

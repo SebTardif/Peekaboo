@@ -261,6 +261,11 @@ extension ConfigCommand {
 
         @Option(name: .long, help: "Editor to use (defaults to $EDITOR or nano)")
         var editor: String?
+        @Option(
+            name: .customLong("timeout"),
+            help: "Editor wait timeout (bare values are milliseconds; default 1h)"
+        )
+        var timeout: CLIDuration = .seconds(3600)
         @Flag(name: .customLong("print-path"), help: "Print the configuration path and exit without opening an editor")
         var printPath: Bool = false
         @RuntimeStorage var runtime: CommandRuntime?
@@ -301,7 +306,7 @@ extension ConfigCommand {
 
             do {
                 try process.run()
-                process.waitUntilExit()
+                try waitForProcessExit(process, timeoutSeconds: self.timeout.seconds)
 
                 guard process.terminationStatus == 0 else {
                     if self.jsonOutput {
@@ -336,6 +341,22 @@ extension ConfigCommand {
                         print("[warn] Configuration may be invalid. Please check your changes.")
                     }
                 }
+            } catch ProcessWaitError.timedOut {
+                let seconds = Int(self.timeout.seconds.rounded(.up))
+                if self.jsonOutput {
+                    let errorOutput = ErrorOutput(
+                        error: true,
+                        code: "EDITOR_TIMEOUT",
+                        message: "Editor timed out after \(seconds)s",
+                        details: editorCommand
+                    )
+                    outputJSON(errorOutput, logger: self.logger)
+                } else {
+                    print("[error] Editor timed out after \(seconds)s")
+                }
+                throw ExitCode.failure
+            } catch let error as ExitCode {
+                throw error
             } catch {
                 if self.jsonOutput {
                     let errorOutput = ErrorOutput(

@@ -14,7 +14,7 @@ read_when:
 | --- | --- | --- |
 | `init` | Create a default `config.json` (respects `--force`) and print provider readiness (env / credentials / OAuth) in human mode. | `--force` overwrites an existing file; `--timeout` bounds live checks (default `30s`; bare values are milliseconds). |
 | `show` | Print either the raw file or the fully merged “effective” view (config + env + credentials); human `--effective` also live-validates providers. | `--effective` switches to the merged view; `--timeout` bounds validation with the shared duration grammar; JSON mode emits a standard `{ success, data }` object with no appended text. |
-| `edit` | Opens the config in `$EDITOR` (or the `--editor` you pass) and validates the result after you quit. | `--editor` overrides the detected editor. |
+| `edit` | Opens the config in `$EDITOR` (or the `--editor` you pass) and validates the result after you quit. | `--editor` overrides the detected editor; `--timeout` bounds the editor wait (default `1h`; bare values are milliseconds). |
 | `validate` | Parses the config without writing anything and surfaces syntax/errors. | None. |
 | `status` | Display provider credential readiness. | `--timeout` (default `30s`; bare values are milliseconds). |
 | `login` | Run an OAuth flow (no API key stored) for supported providers. | `login openai` (ChatGPT/Codex), `login anthropic` (Claude Pro/Max). |
