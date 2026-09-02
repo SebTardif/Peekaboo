@@ -279,7 +279,7 @@ extension ImageTool {
             throw OperationError.captureFailed(reason: "Image processing requires exactly one capture")
         }
         let data: Data = if readFromRawPath, let rawPath {
-            try Data(contentsOf: URL(fileURLWithPath: rawPath))
+            try DesktopObservationResult.readArtifact(at: rawPath, label: "raw screenshot")
         } else if !capture.imageData.isEmpty {
             capture.imageData
         } else {
@@ -349,7 +349,8 @@ extension ImageTool {
         for capture in captureSet.captures {
             let savedPath = capture.savedPath ?? captureSet.observation.files.rawScreenshotPath
             let imageData = if capture.imageData.isEmpty, let savedPath {
-                (try? Data(contentsOf: URL(fileURLWithPath: savedPath))) ?? capture.imageData
+                (try? DesktopObservationResult.readArtifact(at: savedPath, label: "raw screenshot"))
+                    ?? capture.imageData
             } else {
                 capture.imageData
             }
@@ -415,7 +416,8 @@ extension ImageTool {
 
         if format == .data, let capture = captureResults.first, captureResults.count == 1 {
             let data = if capture.imageData.isEmpty, let path = savedFiles.first?.path {
-                (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? capture.imageData
+                (try? DesktopObservationResult.readArtifact(at: path, label: "raw screenshot"))
+                    ?? capture.imageData
             } else {
                 capture.imageData
             }
