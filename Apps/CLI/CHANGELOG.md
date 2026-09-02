@@ -5,7 +5,7 @@ All notable changes to Peekaboo CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.3.0] - 2026-09-01
+## [4.3.0] - 2026-09-02
 
 ### Highlights
 
@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Everyday commands start faster and recover more clearly.** Deferred Agent startup, Bridge-bound capture, and actionable browser, help, locked-session, and window-close guidance reduce surprises.
 
 ### Added
+- Add explicit foreground-only `browser dom-click` and MCP `dom_click` with receipt-bound page and document validation; dispatch one synthetic DOM activation without claiming trusted pointer input or a verified final page effect. #660.
 - Report per-window `combined_eligible`, `pixels_only`, or `unknown` observation eligibility, including screenshot-only recovery.
 - Add `type --at` for atomic exact-window background focus-only Accessibility input plus typing from one fresh screenshot snapshot.
 - Add `click --modifiers ... --foreground` with exact snapshot preflight and truthful cursor/focus restoration reporting.
@@ -29,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reuse validated classic PNG bytes when capture performs no transform instead of encoding the same image twice.
 
 ### Fixed
+- Exclude repeatedly permission-denied foreign prohibited helpers from mutation inventory without dropping readable targets or weakening accessory, unknown-metadata and process-generation checks. Thanks @jandubois for #677; fixed in #678.
+- Bound image-file reads to 10 MiB on one validated descriptor and preserve byte-detected JPEG/WebP MIME for shared AI and MCP analysis, without changing data-only APIs. Thanks @SebTardif for #666 and #667.
+- Validate realtime API base URLs before changing connection state, retaining the narrow Tachikoma maintenance update. Thanks @SebTardif for #675.
+- Report failed unscoped browser status observations as unknown and retain bounded original diagnostics alongside target-attribution failures without making indeterminate actions safe to retry. #660.
+- Give runtime fixtures explicit store and listener ownership, require real hosted configuration-restoration test execution, and keep ambient snapshot invalidation cases behind explicit opt-in. #662, #680.
 - Bound application inventory from initial PID discovery through final generation validation, keep setup and validation reads off MainActor without queuing blocked native work, and reuse bound click metadata for result labels and diagnostics without post-action application or snapshot lookup.
 - Keep daemon health responsive while browser discovery is blocked, report cached browser diagnostics as unconfirmed, and preserve daemon transport failures instead of reporting successful absence or cleanup.
 - Reject late element-detection results and expired queued AX work against one absolute deadline, even when timeout delivery is delayed.
