@@ -28,6 +28,12 @@ struct ConfigEditorLaunchTests {
     }
 
     @Test
+    func `EditCommand leaves the editor wait unbounded unless timeout is set`() {
+        let command = ConfigCommand.EditCommand()
+        #expect(command.timeout == nil)
+    }
+
+    @Test
     func `EditCommand bounds a non-exiting editor`() async throws {
         try await self.withTempConfigDir { dir in
             let fileManager = FileManager.default

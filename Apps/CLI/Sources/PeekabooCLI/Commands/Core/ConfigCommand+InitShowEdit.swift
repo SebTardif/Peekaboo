@@ -263,9 +263,9 @@ extension ConfigCommand {
         var editor: String?
         @Option(
             name: .customLong("timeout"),
-            help: "Editor wait timeout (bare values are milliseconds; default 1h)"
+            help: "Optional editor wait timeout (bare values are milliseconds). Omit to wait until the editor exits."
         )
-        var timeout: CLIDuration = .seconds(3600)
+        var timeout: CLIDuration?
         @Flag(name: .customLong("print-path"), help: "Print the configuration path and exit without opening an editor")
         var printPath: Bool = false
         @RuntimeStorage var runtime: CommandRuntime?
@@ -306,7 +306,11 @@ extension ConfigCommand {
 
             do {
                 try process.run()
-                try waitForProcessExit(process, timeoutSeconds: self.timeout.seconds)
+                if let timeout = self.timeout {
+                    try waitForProcessExit(process, timeoutSeconds: timeout.seconds)
+                } else {
+                    process.waitUntilExit()
+                }
 
                 guard process.terminationStatus == 0 else {
                     if self.jsonOutput {
@@ -342,7 +346,7 @@ extension ConfigCommand {
                     }
                 }
             } catch ProcessWaitError.timedOut {
-                let seconds = Int(self.timeout.seconds.rounded(.up))
+                let seconds = Int((self.timeout?.seconds ?? 0).rounded(.up))
                 if self.jsonOutput {
                     let errorOutput = ErrorOutput(
                         error: true,
