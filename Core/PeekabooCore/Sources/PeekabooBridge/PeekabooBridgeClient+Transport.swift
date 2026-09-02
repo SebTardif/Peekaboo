@@ -380,7 +380,7 @@ extension PeekabooBridgeClient {
                 nil
             }
             blockingResponse = try await withTaskCancellationHandler {
-                try await Task.detached(priority: .userInitiated) {
+                try await PeekabooBridgeBlockingIO.run {
                     try Self.sendBlocking(
                         .init(
                             socketPath: socketPath,
@@ -391,7 +391,7 @@ extension PeekabooBridgeClient {
                             authenticatesInitialListener: authenticatesInitialListener,
                             hostAuthentication: hostAuthentication),
                         cancellation: cancellation)
-                }.value
+                }
             } onCancel: {
                 cancellation.cancel()
             }

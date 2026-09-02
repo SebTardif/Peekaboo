@@ -6,6 +6,8 @@ PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SWIFT_PROJECT_PATH="$PROJECT_ROOT/Apps/CLI"
 # shellcheck source=scripts/source-provenance.sh
 source "$PROJECT_ROOT/scripts/source-provenance.sh"
+# shellcheck source=scripts/resolve-swift-binary-path.sh
+source "$PROJECT_ROOT/scripts/resolve-swift-binary-path.sh"
 FINAL_BINARY_NAME="peekaboo"
 FINAL_BINARY_PATH="$PROJECT_ROOT/$FINAL_BINARY_NAME"
 SIGN_IDENTITY="${MAC_RELEASE_CODESIGN_IDENTITY:-${SIGN_IDENTITY:-}}"
@@ -18,13 +20,13 @@ ARM64_BINARY_TEMP="$PROJECT_ROOT/${FINAL_BINARY_NAME}-arm64"
 X86_64_BINARY_TEMP="$PROJECT_ROOT/${FINAL_BINARY_NAME}-x86_64"
 
 # Swift compiler flags for size optimization.
-# Keep WMO off by default; Swift 6.3.2 can hang or crash the release build here.
+# SwiftPM controls WMO; Swift 6.3.2 can hang or crash release builds here.
 # Override SWIFT_OPTIMIZATION_FLAGS when explicitly testing a different compiler.
 SWIFT_OPTIMIZATION_FLAGS="${SWIFT_OPTIMIZATION_FLAGS:--Xswiftc -Osize -Xlinker -dead_strip}"
 SWIFT_RESOLUTION_ARGS=()
 case "${PEEKABOO_USE_RESOLVED_VERSIONS:-0}" in
     1|true|yes|on)
-        SWIFT_RESOLUTION_ARGS=(--only-use-versions-from-resolved-file --skip-update)
+        SWIFT_RESOLUTION_ARGS=(--only-use-versions-from-resolved-file)
         ;;
     0|false|no|off|'') ;;
     *)
@@ -140,6 +142,7 @@ generate_info_plist() {
 }
 
 echo "🧹 Cleaning previous build artifacts..."
+python3 "$PROJECT_ROOT/scripts/setup-swift-workspace.py" setup
 (cd "$SWIFT_PROJECT_PATH" && swift package reset) || echo "'swift package reset' encountered an issue, attempting rm -rf..."
 rm -rf "$SWIFT_PROJECT_PATH/.build"
 rm -f "$ARM64_BINARY_TEMP" "$X86_64_BINARY_TEMP" "$FINAL_BINARY_PATH.tmp"
@@ -167,7 +170,8 @@ generate_info_plist
 echo "🏗️ Building for arm64 (Apple Silicon)..."
 (
     cd "$SWIFT_PROJECT_PATH"
-    swift build "${SWIFT_RESOLUTION_ARGS[@]}" --arch arm64 -c release $SWIFT_OPTIMIZATION_FLAGS 2>&1 | pipe_build_output
+    python3 "$PROJECT_ROOT/scripts/setup-swift-workspace.py" run --release -- \
+        swift build "${SWIFT_RESOLUTION_ARGS[@]}" --arch arm64 -c release $SWIFT_OPTIMIZATION_FLAGS 2>&1 | pipe_build_output
 )
 ARM64_BUILD_BINARY=$(bash "$PROJECT_ROOT/scripts/resolve-swift-binary-path.sh" \
     "$SWIFT_PROJECT_PATH" arm64 release "$FINAL_BINARY_NAME")
@@ -177,7 +181,8 @@ echo "✅ arm64 build complete: $ARM64_BINARY_TEMP"
 echo "🏗️ Building for x86_64 (Intel)..."
 (
     cd "$SWIFT_PROJECT_PATH"
-    swift build "${SWIFT_RESOLUTION_ARGS[@]}" --arch x86_64 -c release $SWIFT_OPTIMIZATION_FLAGS 2>&1 | pipe_build_output
+    python3 "$PROJECT_ROOT/scripts/setup-swift-workspace.py" run --release -- \
+        swift build "${SWIFT_RESOLUTION_ARGS[@]}" "${SWIFT_X86_64_TARGET_ARGS[@]}" -c release $SWIFT_OPTIMIZATION_FLAGS 2>&1 | pipe_build_output
 )
 X86_64_BUILD_BINARY=$(bash "$PROJECT_ROOT/scripts/resolve-swift-binary-path.sh" \
     "$SWIFT_PROJECT_PATH" x86_64 release "$FINAL_BINARY_NAME")

@@ -121,19 +121,35 @@ struct WatchCaptureSessionTests {
             decoder: decoder,
             decodeTimeout: .milliseconds(30))
 
-        let releaseTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
+        let completed = VideoDecoderTestSignal()
+        let callerDrained = VideoDecoderTestSignal()
+        let frameTask = Task { @MainActor in
+            defer {
+                completed.signal()
+                callerDrained.signal()
+            }
+            return try await source.nextFrame()
+        }
+        defer {
+            frameTask.cancel()
             decoder.release()
         }
-        let started = ContinuousClock.now
-        let frame = try await source.nextFrame()
-        let elapsed = started.duration(to: .now)
 
-        #expect(frame?.cgImage == nil)
-        #expect(elapsed < .milliseconds(150))
-        #expect(decoder.cancelCount == 1)
-        #expect(source.captureDiagnostics.decodeFailures == 1)
-        await releaseTask.value
+        #expect(await decoder.entered.waitWithWatchdog(), "Decoder did not enter its owned gate")
+        let completedWhileHeld = await completed.waitWithWatchdog()
+        #expect(completedWhileHeld, "Caller joined held decode work instead of returning on timeout")
+        #expect(decoder.isHeld)
+        if completedWhileHeld {
+            let frame = try await frameTask.value
+            #expect(frame?.cgImage == nil)
+            #expect(decoder.cancelCount == 1)
+            #expect(source.captureDiagnostics.decodeFailures == 1)
+        }
+
+        decoder.release()
+        #expect(await decoder.finished.waitWithWatchdog(), "Released decoder did not finish cleanup")
+        #expect(await callerDrained.waitWithWatchdog(), "Released frame caller did not finish cleanup")
+        #expect(decoder.observedTaskCancellation)
     }
 
     @Test
@@ -472,7 +488,11 @@ struct WatchCaptureSessionTests {
         #expect(warning == nil)
         #expect(FileManager.default.fileExists(atPath: currentSession.path))
     }
+}
 
+// MARK: - Live capture lifecycle and frame providers
+
+extension WatchCaptureSessionTests {
     @Test
     @MainActor
     func `Live capture visualizer follows capture focus`() async throws {
@@ -716,6 +736,7 @@ struct WatchCaptureSessionTests {
         let image = try #require(WatchCaptureArtifactWriter.makeCGImage(from: Self.makePNG(
             size: CGSize(width: 20, height: 20))))
         let source = NoncooperativeCaptureFrameSource(image: image)
+        let clock = ControlledWatchCaptureClock()
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("watch-noncooperative-deadline-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: output) }
@@ -739,7 +760,8 @@ struct WatchCaptureSessionTests {
                     result: Self.makePNG(size: CGSize(width: 20, height: 20)),
                     size: CGSize(width: 20, height: 20)),
                 screenService: StubScreenService(),
-                frameSource: source),
+                frameSource: source,
+                clock: clock),
             configuration: WatchCaptureConfiguration(
                 scope: CaptureScope(kind: .frontmost),
                 options: options,
@@ -748,45 +770,91 @@ struct WatchCaptureSessionTests {
                 sourceKind: .live,
                 keepAllFrames: true))
 
-        let started = ContinuousClock.now
-        let task = Task { @MainActor in try await session.run() }
-        await source.waitUntilBlocked()
-        let releaseTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
+        let completed = VideoDecoderTestSignal()
+        let callerDrained = VideoDecoderTestSignal()
+        let task = Task { @MainActor in
+            defer {
+                completed.signal()
+                callerDrained.signal()
+            }
+            return try await session.run()
+        }
+        defer {
+            task.cancel()
             source.release()
         }
-        let result = try await task.value
-        let elapsed = started.duration(to: .now)
 
-        #expect(result.frames.count == 1)
-        #expect(elapsed >= .milliseconds(100))
-        #expect(elapsed < .milliseconds(300))
-        #expect(session.retiringCaptureTaskCount == 1)
-        await #expect(throws: PeekabooError.self) {
-            _ = try await session.captureFrameOrStop(deadlineNs: UInt64.max)
+        let entered = await source.entered.waitWithWatchdog()
+        #expect(entered, "Second frame did not enter its owned hold")
+        #expect(source.callCount == 2)
+        #expect(source.isHeld)
+        #expect(session.frames.count == 1)
+        #expect(session.samplingEndedAtMonotonicNanoseconds == nil)
+
+        // Prior observer cancellation is synchronous; frame sources bypass cadence sleeps.
+        if entered, await clock.waitUntilSleeping(until: 150_000_000) {
+            clock.advance(to: 150_000_000)
+        } else {
+            Issue.record("Second-frame deadline observer did not register")
+        }
+        let completedWhileHeld = await completed.waitWithWatchdog()
+        #expect(completedWhileHeld, "Session joined held frame work instead of returning at its deadline")
+        #expect(source.isHeld)
+        #expect(!source.didFinishHeldFrame)
+        if entered, completedWhileHeld {
+            do {
+                let result = try await task.value
+                #expect(result.frames.count == 1)
+                #expect(result.stats.captureAttempts == 2)
+                #expect(result.stats.framesSampled == 1)
+                #expect(result.stats.captureFailures == 0)
+                #expect(result.stats.samplingDurationMs == 150)
+                #expect(session.samplingEndedAtMonotonicNanoseconds == 150_000_000)
+                #expect(!session.hasStopRequest())
+                #expect(session.retiringCaptureTaskCount == 1)
+                await #expect(throws: PeekabooError.self) {
+                    _ = try await session.captureFrameOrStop(deadlineNs: UInt64.max)
+                }
+                #expect(source.callCount == 2)
+
+                let independentOutput = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("watch-independent-retirement-\(UUID().uuidString)", isDirectory: true)
+                defer { try? FileManager.default.removeItem(at: independentOutput) }
+                let independentSession = WatchCaptureSession(
+                    dependencies: WatchCaptureDependencies(
+                        screenCapture: StubScreenCaptureService(
+                            result: Self.makePNG(size: CGSize(width: 20, height: 20)),
+                            size: CGSize(width: 20, height: 20)),
+                        screenService: StubScreenService()),
+                    configuration: WatchCaptureConfiguration(
+                        scope: CaptureScope(kind: .frontmost),
+                        options: Self.defaultWatchOptions(),
+                        outputRoot: independentOutput,
+                        autoclean: WatchAutocleanConfig(minutes: 1, managed: false)))
+                let independentResult = try await independentSession.run()
+                #expect(independentResult.frames.count == 1)
+                #expect(independentSession.retiringCaptureTaskCount == 0)
+                #expect(source.isHeld)
+            } catch {
+                Issue.record(error)
+            }
         }
 
-        let independentOutput = FileManager.default.temporaryDirectory
-            .appendingPathComponent("watch-independent-retirement-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: independentOutput) }
-        let independentSession = WatchCaptureSession(
-            dependencies: WatchCaptureDependencies(
-                screenCapture: StubScreenCaptureService(
-                    result: Self.makePNG(size: CGSize(width: 20, height: 20)),
-                    size: CGSize(width: 20, height: 20)),
-                screenService: StubScreenService()),
-            configuration: WatchCaptureConfiguration(
-                scope: CaptureScope(kind: .frontmost),
-                options: Self.defaultWatchOptions(),
-                outputRoot: independentOutput,
-                autoclean: WatchAutocleanConfig(minutes: 1, managed: false)))
-        let independentResult = try await independentSession.run()
-        #expect(independentResult.frames.count == 1)
-        #expect(independentSession.retiringCaptureTaskCount == 0)
-
-        await releaseTask.value
+        task.cancel()
+        source.release()
+        let drained = await callerDrained.waitWithWatchdog()
+        #expect(drained, "Released session caller did not finish cleanup")
+        if drained {
+            _ = await task.result
+        }
+        if entered {
+            #expect(await source.finished.waitWithWatchdog(), "Released frame source did not finish cleanup")
+            #expect(source.observedTaskCancellation)
+        }
         await Self.waitForCaptureTaskRetirement(session)
         #expect(session.retiringCaptureTaskCount == 0)
+        #expect(session.frames.count == 1)
+        #expect(clock.sleepingCount == 0)
     }
 
     @MainActor
@@ -1138,54 +1206,15 @@ struct WatchCaptureSessionTests {
 
 // MARK: - Stubs
 
-private final class DeadlineEdgeWatchCaptureClock: WatchCaptureMonotonicClock, @unchecked Sendable {
-    private let lock = NSLock()
-    private var now: UInt64 = 0
-
-    func nowNanoseconds() -> UInt64 {
-        self.lock.withLock { self.now }
-    }
-
-    func advance(to nanoseconds: UInt64) {
-        self.lock.withLock {
-            self.now = nanoseconds
-        }
-    }
-
-    func sleep(nanoseconds _: UInt64) async throws {
-        // Keep the deadline observer pending so the test deterministically exercises late-result admission.
-        try await Task.sleep(nanoseconds: 60_000_000_000)
-    }
-}
-
-@MainActor
-private final class DeadlineEdgeCaptureFrameSource: CaptureFrameSource {
-    private let image: CGImage
-    private let clock: DeadlineEdgeWatchCaptureClock
-    private let completionNs: UInt64
-
-    init(image: CGImage, clock: DeadlineEdgeWatchCaptureClock, completionNs: UInt64) {
-        self.image = image
-        self.clock = clock
-        self.completionNs = completionNs
-    }
-
-    func nextFrame() async throws -> (cgImage: CGImage?, metadata: CaptureMetadata)? {
-        self.clock.advance(to: self.completionNs)
-        return (
-            self.image,
-            CaptureMetadata(
-                size: CGSize(width: self.image.width, height: self.image.height),
-                mode: .screen,
-                timestamp: Date()))
-    }
-}
-
 private final class NoncooperativeVideoFrameDecoder: @unchecked Sendable, VideoFrameDecoding {
     private let lock = NSLock()
     private let image: CGImage
     private var releaseContinuation: CheckedContinuation<Void, Never>?
     private var cancellationCount = 0
+    private var released = false
+    private var taskWasCancelled = false
+    let entered = VideoDecoderTestSignal()
+    let finished = VideoDecoderTestSignal()
 
     init(image: CGImage) {
         self.image = image
@@ -1193,10 +1222,19 @@ private final class NoncooperativeVideoFrameDecoder: @unchecked Sendable, VideoF
 
     func image(at time: CMTime) async throws -> (image: CGImage, actualTime: CMTime) {
         await withCheckedContinuation { continuation in
-            self.lock.lock()
-            self.releaseContinuation = continuation
-            self.lock.unlock()
+            let alreadyReleased = self.lock.withLock {
+                if !self.released {
+                    self.releaseContinuation = continuation
+                }
+                return self.released
+            }
+            self.entered.signal()
+            if alreadyReleased {
+                continuation.resume()
+            }
         }
+        self.lock.withLock { self.taskWasCancelled = Task.isCancelled }
+        self.finished.signal()
         return (self.image, time)
     }
 
@@ -1212,8 +1250,17 @@ private final class NoncooperativeVideoFrameDecoder: @unchecked Sendable, VideoF
         return self.cancellationCount
     }
 
+    var isHeld: Bool {
+        self.lock.withLock { self.releaseContinuation != nil && !self.released }
+    }
+
+    var observedTaskCancellation: Bool {
+        self.lock.withLock { self.taskWasCancelled }
+    }
+
     func release() {
         self.lock.lock()
+        self.released = true
         let continuation = self.releaseContinuation
         self.releaseContinuation = nil
         self.lock.unlock()
@@ -1221,10 +1268,40 @@ private final class NoncooperativeVideoFrameDecoder: @unchecked Sendable, VideoF
     }
 }
 
+/// A one-observer signal; the watchdog bounds fixture failure/cleanup, never the production deadline.
+private struct VideoDecoderTestSignal: Sendable {
+    private let events = AsyncStream<Bool>.makeStream()
+
+    func signal() {
+        self.events.continuation.yield(true)
+        self.events.continuation.finish()
+    }
+
+    func waitWithWatchdog() async -> Bool {
+        let watchdog = Task.detached {
+            do {
+                try await Task.sleep(for: .seconds(5))
+                self.events.continuation.yield(false)
+            } catch {}
+        }
+        var iterator = self.events.stream.makeAsyncIterator()
+        let signaled = await iterator.next() ?? false
+        watchdog.cancel()
+        await watchdog.value
+        self.events.continuation.finish()
+        return signaled
+    }
+}
+
 @MainActor
 private final class NoncooperativeCaptureFrameSource: CaptureFrameSource {
     private let image: CGImage
-    private var callCount = 0
+    private(set) var callCount = 0
+    private(set) var didFinishHeldFrame = false
+    private(set) var observedTaskCancellation = false
+    let entered = VideoDecoderTestSignal()
+    let finished = VideoDecoderTestSignal()
+    private var released = false
     private var blocked = false
     private var blockedContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
@@ -1242,8 +1319,16 @@ private final class NoncooperativeCaptureFrameSource: CaptureFrameSource {
         self.blockedContinuation?.resume()
         self.blockedContinuation = nil
         await withCheckedContinuation { continuation in
-            self.releaseContinuation = continuation
+            if self.released {
+                continuation.resume()
+            } else {
+                self.releaseContinuation = continuation
+            }
+            self.entered.signal()
         }
+        self.observedTaskCancellation = Task.isCancelled
+        self.didFinishHeldFrame = true
+        self.finished.signal()
         return (self.image, self.metadata)
     }
 
@@ -1254,7 +1339,12 @@ private final class NoncooperativeCaptureFrameSource: CaptureFrameSource {
         }
     }
 
+    var isHeld: Bool {
+        self.releaseContinuation != nil && !self.released
+    }
+
     func release() {
+        self.released = true
         self.releaseContinuation?.resume()
         self.releaseContinuation = nil
     }

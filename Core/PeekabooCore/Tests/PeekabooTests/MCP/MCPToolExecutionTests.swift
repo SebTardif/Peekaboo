@@ -569,13 +569,20 @@ struct MCPToolExecutionTests {
         #expect(detectedContext?.windowID == 42)
     }
 
-    @Test
-    func `See tool PID target with window index uses shared observation parser`() async throws {
-        let graph = try await MainActor.run {
-            try Self.makeWindowedTestGraph()
-        }
+    @Test(arguments: [1, 2], [false, true])
+    @MainActor
+    func `See tool PID target with window index uses shared observation parser`(
+        windowIndex: Int,
+        mismatchedProcessGeneration: Bool) async throws
+    {
+        let graph = try Self.makeWindowedTestGraph()
         let app = try #require(graph.applications.first)
+        let processIdentity = try #require(app.processIdentity)
         let windows = try #require(graph.nodes.first?.windows)
+        let expectedWindowID = windowIndex == 1 ? 41 : 42
+        let selectedWindow = try #require(windows.first { $0.windowID == expectedWindowID })
+        let windowIdentity = try #require(selectedWindow.mutationIdentity)
+        #expect(windowIdentity.processIdentity == processIdentity)
         let detectionResult = ElementDetectionResult(
             snapshotId: "snapshot-pid-window",
             screenshotPath: "/tmp/peekaboo-see-pid-window-test.png",
@@ -587,29 +594,63 @@ struct MCPToolExecutionTests {
                     bounds: CGRect(x: 10, y: 10, width: 80, height: 30)),
             ]),
             metadata: DetectionMetadata(detectionTime: 0.01, elementCount: 1, method: "mock"))
-        let automation = await MainActor.run {
-            MockAutomationService(accessibilityGranted: true, detectionResult: detectionResult)
-        }
-        let applications = await MainActor.run {
-            MockApplicationService(graph: graph)
-        }
-        let screenCapture = await MainActor.run {
-            MockScreenCaptureService(
-                screenRecordingGranted: true,
-                windowMetadata: Self.captureMetadata(application: app, windows: windows))
-        }
-        let context = await MCPToolTestHelpers.makeLegacyContext(
+        let automation = MockAutomationService(accessibilityGranted: true, detectionResult: detectionResult)
+        let applications = MockApplicationService(graph: graph)
+        let screenCapture = MockScreenCaptureService(
+            screenRecordingGranted: true,
+            windowMetadata: Self.captureMetadata(application: app, windows: windows))
+        let screens = MockScreenService(screens: [])
+        let snapshots = InMemorySnapshotManager()
+        let liveProcessStartIdentity = processIdentity.processStartIdentity + (mismatchedProcessGeneration ? 1 : 0)
+        let observation = DesktopObservationService(
+            screenCapture: screenCapture,
+            automation: automation,
+            applications: applications,
+            screens: screens,
+            snapshotManager: snapshots,
+            // A host process can reuse this synthetic PID; the lane must use the fixture's generation.
+            processStartIdentityProvider: { pid in
+                pid == processIdentity.processIdentifier ? liveProcessStartIdentity : nil
+            },
+            windowMutationIdentityProvider: { windowID in
+                windows.first { $0.windowID == Int(windowID) }?.mutationIdentity
+            })
+        let context = await MCPToolTestHelpers.makeContext(
             automation: automation,
             screenCapture: screenCapture,
-            applications: applications)
+            applications: applications,
+            screens: screens,
+            snapshots: snapshots,
+            desktopObservation: observation)
         let tool = SeeTool(context: context)
 
         let response = try await tool.execute(arguments: ToolArguments(raw: [
-            "app_target": "PID:\(app.processIdentifier):2",
+            "app_target": "PID:\(app.processIdentifier):\(windowIndex)",
         ]))
 
-        #expect(response.isError == false)
-        #expect(await MainActor.run { screenCapture.lastWindowID } == 42)
+        let responseText = response.content.compactMap { content -> String? in
+            guard case let .text(text, _, _) = content else { return nil }
+            return text
+        }.joined(separator: "\n")
+        if mismatchedProcessGeneration {
+            #expect(response.isError, "See PID/window-index response: \(responseText)")
+            #expect(responseText == "Failed to capture UI state: Desktop observation target changed during capture: " +
+                "the resolved PID no longer matched its process-generation lane")
+            #expect(screenCapture.lastWindowID == nil)
+            #expect(screenCapture.captureAttemptCount == 0)
+            #expect(automation.lastWindowContext == nil)
+            #expect(try await snapshots.listSnapshots().isEmpty)
+            #expect(await context.uiSnapshots.getSnapshot(id: nil) == nil)
+        } else {
+            #expect(response.isError == false, "See PID/window-index response: \(responseText)")
+            #expect(screenCapture.lastWindowID == CGWindowID(expectedWindowID))
+            #expect(screenCapture.captureAttemptCount == 1)
+            #expect(screenCapture.lastAppIdentifier == nil)
+            let detectedContext = try #require(automation.lastWindowContext)
+            #expect(detectedContext.applicationProcessId == processIdentity.processIdentifier)
+            #expect(detectedContext.windowID == expectedWindowID)
+            #expect(detectedContext.windowMutationIdentity == windowIdentity)
+        }
     }
 
     @MainActor
@@ -1352,162 +1393,6 @@ ScriptedUIAutomationActionOutcomeProviding {
             actionName: actionName,
             snapshotId: snapshotId))
         return ElementActionResult(target: target, actionName: actionName, anchorPoint: CGPoint(x: 10, y: 20))
-    }
-}
-
-@MainActor
-final class MockScreenCaptureService: ScreenCaptureServiceProtocol {
-    private let screenRecordingGranted: Bool
-    private let imageData: Data
-    private let metadata: CaptureMetadata?
-    private let windowMetadata: [CGWindowID: CaptureMetadata]
-    private(set) var captureAttemptCount = 0
-    private(set) var lastWindowID: CGWindowID?
-    private(set) var lastAppIdentifier: String?
-    private(set) var lastArea: CGRect?
-    private(set) var lastScale: CaptureScalePreference?
-
-    init(screenRecordingGranted: Bool) {
-        self.screenRecordingGranted = screenRecordingGranted
-        self.imageData = Self.validPNGData
-        self.metadata = nil
-        self.windowMetadata = [:]
-    }
-
-    init(screenRecordingGranted: Bool, metadata: CaptureMetadata) {
-        self.screenRecordingGranted = screenRecordingGranted
-        self.imageData = Self.validPNGData
-        self.metadata = metadata
-        self.windowMetadata = [:]
-    }
-
-    init(screenRecordingGranted: Bool, imageData: Data, metadata: CaptureMetadata? = nil) {
-        self.screenRecordingGranted = screenRecordingGranted
-        self.imageData = imageData
-        self.metadata = metadata
-        self.windowMetadata = [:]
-    }
-
-    init(screenRecordingGranted: Bool, windowMetadata: [CGWindowID: CaptureMetadata]) {
-        self.screenRecordingGranted = screenRecordingGranted
-        self.imageData = Self.validPNGData
-        self.metadata = nil
-        self.windowMetadata = windowMetadata
-    }
-
-    func captureScreen(
-        displayIndex _: Int?,
-        visualizerMode _: CaptureVisualizerMode,
-        scale: CaptureScalePreference) async throws -> CaptureResult
-    {
-        self.captureAttemptCount += 1
-        self.lastScale = scale
-        return self.makeResult(mode: .screen)
-    }
-
-    func captureWindow(
-        appIdentifier: String,
-        windowIndex: Int?,
-        visualizerMode _: CaptureVisualizerMode,
-        scale: CaptureScalePreference) async throws -> CaptureResult
-    {
-        self.captureAttemptCount += 1
-        self.lastAppIdentifier = appIdentifier
-        self.lastScale = scale
-        return self.makeResult(
-            mode: .window,
-            window: ServiceWindowInfo(
-                windowID: windowIndex ?? 0,
-                title: appIdentifier,
-                bounds: .zero,
-                index: windowIndex ?? 0))
-    }
-
-    func captureWindow(
-        windowID: CGWindowID,
-        visualizerMode _: CaptureVisualizerMode,
-        scale: CaptureScalePreference) async throws -> CaptureResult
-    {
-        self.captureAttemptCount += 1
-        self.lastWindowID = windowID
-        self.lastScale = scale
-        if let metadata = self.windowMetadata[windowID] {
-            return CaptureResult(imageData: self.imageData, metadata: metadata)
-        }
-        return self.makeResult(
-            mode: .window,
-            window: ServiceWindowInfo(
-                windowID: Int(windowID),
-                title: "Window \(windowID)",
-                bounds: .zero,
-                index: Int(windowID)))
-    }
-
-    func captureFrontmost(
-        visualizerMode _: CaptureVisualizerMode,
-        scale: CaptureScalePreference) async throws -> CaptureResult
-    {
-        self.captureAttemptCount += 1
-        self.lastScale = scale
-        return self.makeResult(mode: .frontmost)
-    }
-
-    func captureArea(
-        _ rect: CGRect,
-        visualizerMode _: CaptureVisualizerMode,
-        scale: CaptureScalePreference) async throws -> CaptureResult
-    {
-        self.captureAttemptCount += 1
-        self.lastArea = rect
-        self.lastScale = scale
-        return self.makeResult(mode: .area)
-    }
-
-    func hasScreenRecordingPermission() async -> Bool {
-        self.screenRecordingGranted
-    }
-
-    private func makeResult(mode: CaptureMode, window: ServiceWindowInfo? = nil) -> CaptureResult {
-        CaptureResult(
-            imageData: self.imageData,
-            metadata: self.metadata ?? CaptureMetadata(size: .zero, mode: mode, windowInfo: window))
-    }
-
-    private static let validPNGData = Data([
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-        0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41,
-        0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
-        0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
-        0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
-        0x44, 0xAE, 0x42, 0x60, 0x82,
-    ])
-}
-
-@MainActor
-final class MockScreenService: ScreenServiceProtocol {
-    private let screens: [ScreenInfo]
-
-    init(screens: [ScreenInfo]) {
-        self.screens = screens
-    }
-
-    func listScreens() -> [ScreenInfo] {
-        self.screens
-    }
-
-    func screenContainingWindow(bounds: CGRect) -> ScreenInfo? {
-        self.screens.first { $0.frame.intersects(bounds) }
-    }
-
-    func screen(at index: Int) -> ScreenInfo? {
-        self.screens.first { $0.index == index }
-    }
-
-    var primaryScreen: ScreenInfo? {
-        self.screens.first { $0.isPrimary } ?? self.screens.first
     }
 }
 

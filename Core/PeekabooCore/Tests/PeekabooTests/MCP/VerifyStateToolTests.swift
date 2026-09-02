@@ -517,8 +517,10 @@ struct VerifyStateToolTests {
         #expect(applications.listWindowsCallCount == 2)
     }
 
-    @Test
-    func `PID reuse between polls never contributes a stable satisfied sample`() async throws {
+    @Test(arguments: [false, true])
+    func `PID reuse between polls never contributes a stable satisfied sample`(
+        enumerationReportsReplacement: Bool) async throws
+    {
         let fixture = VerifyStateFixture()
         let initial = ServiceApplicationInfo(
             processIdentifier: fixture.application.processIdentifier,
@@ -526,27 +528,55 @@ struct VerifyStateToolTests {
             bundleIdentifier: fixture.application.bundleIdentifier,
             name: fixture.application.name,
             windowCount: 1)
+        let replacement = ServiceApplicationInfo(
+            processIdentifier: initial.processIdentifier,
+            processStartIdentity: 22,
+            bundleIdentifier: initial.bundleIdentifier,
+            name: initial.name,
+            windowCount: 1)
+        let identities = LockedProcessIdentityMap([initial.processIdentifier: 11])
         let applications = VerifyStateApplicationService(
             applications: [initial],
-            windows: [fixture.window])
+            windows: [fixture.window],
+            applicationLists: [[initial], [enumerationReportsReplacement ? replacement : initial]],
+            onListApplications: { callCount in
+                // Reuse belongs to the second poll, independent of identity probe count.
+                if callCount == 2 {
+                    identities.set(22, for: initial.processIdentifier)
+                }
+            })
         let context = await MCPToolTestHelpers.makeContext(
             automation: fixture.automation,
             applications: applications)
-        let identities = LockedIdentitySequence([11, 11, 11, 22])
+        let windows = LockedSystemWindowIdentitySequence([
+            fixture.systemWindowIdentity(
+                ownerProcessIdentifier: initial.processIdentifier,
+                bounds: fixture.window.bounds),
+        ])
         let tool = fixture.tool(
             context: context,
-            processStartIdentityProvider: { _ in identities.next() })
+            processStartIdentityProvider: identities.identity(for:),
+            windowIdentityProvider: { _ in windows.next() })
 
         let response = try await tool.execute(arguments: ToolArguments(raw: [
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": true]],
-            "timeout_ms": 150,
+            "timeout_ms": 500,
         ]))
 
         #expect(Self.stringMeta("status", response) == "unknown")
         #expect(Self.stringMeta("reason", response)?.contains("changed process identity") == true)
         #expect(Self.intMeta("stable_samples", response) == 0)
+        #expect(Self.intMeta("required_stable_samples", response) == 2)
+        #expect(try #require(Self.intMeta("sample_count", response)) >= 2)
+        #expect(applications.listApplicationsCallCount >= 2)
+        #expect(identities.identity(for: initial.processIdentifier) == 22)
+        // The same numeric window would satisfy the predicate if the new process slipped through.
+        #expect(windows.callCount == 1)
+        #expect(applications.listWindowsCallCount == 0)
+        #expect(fixture.automation.contexts.isEmpty)
+        Self.expectUnknownWindowPredicate(response, expected: true)
     }
 
     @Test
@@ -592,51 +622,94 @@ struct VerifyStateToolTests {
             bundleIdentifier: fixture.application.bundleIdentifier,
             name: fixture.application.name,
             windowCount: 1)
+        let identities = LockedProcessIdentityMap([initial.processIdentifier: 11])
         let applications = VerifyStateApplicationService(
             applications: [initial],
             windows: [fixture.window],
-            applicationLists: [[initial], []])
+            applicationLists: [[initial], []],
+            onListApplications: { callCount in
+                if callCount == 2 {
+                    identities.set(22, for: initial.processIdentifier)
+                }
+            })
         let context = await MCPToolTestHelpers.makeContext(
             automation: fixture.automation,
             applications: applications)
-        let identities = LockedIdentitySequence([11, 11, 11, 22])
+        let windows = LockedSystemWindowIdentitySequence([
+            fixture.systemWindowIdentity(
+                ownerProcessIdentifier: initial.processIdentifier,
+                bounds: fixture.window.bounds),
+        ])
         let tool = fixture.tool(
             context: context,
-            processStartIdentityProvider: { _ in identities.next() })
+            processStartIdentityProvider: identities.identity(for:),
+            windowIdentityProvider: { _ in windows.next() })
 
         let response = try await tool.execute(arguments: ToolArguments(raw: [
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": false]],
-            "timeout_ms": 150,
+            "timeout_ms": 500,
             "stable_samples": 1,
         ]))
 
         #expect(Self.stringMeta("status", response) == "unknown")
         #expect(Self.stringMeta("reason", response)?.contains("before absence") == true)
         #expect(Self.intMeta("stable_samples", response) == 0)
+        #expect(try #require(Self.intMeta("sample_count", response)) >= 2)
+        #expect(applications.listApplicationsCallCount >= 2)
+        #expect(identities.identity(for: initial.processIdentifier) == 22)
+        #expect(windows.callCount == 1)
+        #expect(applications.listWindowsCallCount == 0)
+        #expect(fixture.automation.contexts.isEmpty)
+        Self.expectUnknownWindowPredicate(response, expected: false)
     }
 
     @Test
     func `Exact window ID reused by the target process remains unknown`() async throws {
         let fixture = VerifyStateFixture()
-        let context = await fixture.context(results: [])
-        let owners = LockedWindowOwnerSequence([9001, 4242])
+        let windows = LockedSystemWindowIdentitySequence([
+            fixture.systemWindowIdentity(ownerProcessIdentifier: 9001, bounds: fixture.window.bounds),
+            fixture.systemWindowIdentity(
+                ownerProcessIdentifier: fixture.application.processIdentifier,
+                bounds: fixture.window.bounds),
+        ])
+        let applications = VerifyStateApplicationService(
+            applications: [fixture.application],
+            windows: [fixture.window],
+            onListApplications: { callCount in
+                if callCount == 2 {
+                    #expect(windows.callCount == 1)
+                }
+            })
+        let context = await MCPToolTestHelpers.makeContext(
+            automation: fixture.automation,
+            applications: applications)
         let tool = fixture.tool(
             context: context,
-            windowOwnerProcessIdentifierProvider: { _ in owners.next() })
+            windowIdentityProvider: { _ in windows.next() })
 
         let response = try await tool.execute(arguments: ToolArguments(raw: [
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": true]],
-            "timeout_ms": 150,
+            // The reuse observation needs a second 100 ms poll, including executor/actor hops.
+            "timeout_ms": 500,
             "stable_samples": 1,
         ]))
 
         #expect(Self.stringMeta("status", response) == "unknown")
         #expect(Self.stringMeta("reason", response)?.contains("changed owner") == true)
+        #expect(Self.stringMeta("reason", response)?.contains("PID 9001, not target PID 4242") == true)
         #expect(Self.intMeta("stable_samples", response) == 0)
+        #expect(Self.intMeta("required_stable_samples", response) == 1)
+        #expect(try #require(Self.intMeta("sample_count", response)) >= 2)
+        #expect(applications.listApplicationsCallCount >= 2)
+        // Prove the target-owned replacement was read, not just the initial foreign owner.
+        #expect(windows.callCount >= 2)
+        #expect(applications.listWindowsCallCount == 0)
+        #expect(fixture.automation.contexts.isEmpty)
+        Self.expectUnknownWindowPredicate(response, expected: true)
     }
 }
 
@@ -690,28 +763,52 @@ extension VerifyStateToolTests {
             bundleIdentifier: fixture.application.bundleIdentifier,
             name: fixture.application.name,
             windowCount: 1)
+        let identities = LockedProcessIdentityMap([initial.processIdentifier: 11])
+        let windows = LockedSystemWindowIdentitySequence([
+            fixture.systemWindowIdentity(
+                ownerProcessIdentifier: initial.processIdentifier,
+                bounds: fixture.window.bounds),
+        ])
         let applications = VerifyStateApplicationService(
             applications: [initial, relaunched],
             windows: [fixture.window],
-            applicationLists: [[initial], [relaunched]])
+            applicationLists: [[initial], [relaunched]],
+            onListApplications: { callCount in
+                if callCount == 2 {
+                    #expect(windows.callCount == 1)
+                    identities.set(22, for: relaunched.processIdentifier)
+                }
+            })
         let context = await MCPToolTestHelpers.makeContext(
             automation: fixture.automation,
             applications: applications)
-        let identities = LockedProcessIdentityMap([4242: 11, 4343: 22])
         let tool = fixture.tool(
             context: context,
-            processStartIdentityProvider: identities.identity(for:))
+            processStartIdentityProvider: identities.identity(for:),
+            windowIdentityProvider: { _ in windows.next() })
 
         let response = try await tool.execute(arguments: ToolArguments(raw: [
             "app": #require(fixture.application.bundleIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": true]],
-            "timeout_ms": 150,
+            // Leave bounded room after the 100 ms poll interval to record the rejected swap.
+            "timeout_ms": 500,
         ]))
 
         #expect(Self.stringMeta("status", response) == "unknown")
         #expect(Self.stringMeta("reason", response)?.contains("pinned PID 4242") == true)
+        #expect(Self.stringMeta("reason", response)?.contains("to PID 4343") == true)
         #expect(Self.intMeta("stable_samples", response) == 0)
+        #expect(Self.intMeta("required_stable_samples", response) == 2)
+        #expect(try #require(Self.intMeta("sample_count", response)) >= 2)
+        #expect(applications.listApplicationsCallCount >= 2)
+        #expect(identities.identity(for: initial.processIdentifier) == 11)
+        #expect(identities.identity(for: relaunched.processIdentifier) == 22)
+        // Selector drift must be rejected before observing any replacement window.
+        #expect(windows.callCount == 1)
+        #expect(applications.listWindowsCallCount == 0)
+        #expect(fixture.automation.contexts.isEmpty)
+        Self.expectUnknownWindowPredicate(response, expected: true)
     }
 
     @Test
@@ -1209,6 +1306,22 @@ extension VerifyStateToolTests {
         #expect(conflictingWindows.isError)
     }
 
+    private static func expectUnknownWindowPredicate(_ response: ToolResponse, expected: Bool) {
+        guard case let .object(metadata) = response.meta,
+              case let .array(predicates)? = metadata["predicates"],
+              case let .object(predicate)? = predicates.first
+        else {
+            Issue.record("Expected a structured window predicate result")
+            return
+        }
+        #expect(predicates.count == 1)
+        #expect(predicate["kind"] == .string("window_exists"))
+        #expect(predicate["expected"] == .bool(expected))
+        #expect(predicate["status"] == .string("unknown"))
+        #expect(predicate["observed"] == nil)
+        #expect(metadata["window_id"] == nil)
+    }
+
     private static func stringMeta(_ key: String, _ response: ToolResponse) -> String? {
         guard case let .object(metadata) = response.meta,
               case let .string(value)? = metadata[key]
@@ -1381,188 +1494,6 @@ final class VerifyStateFixture {
 }
 
 @MainActor
-private final class VerifyStateApplicationService: ApplicationServiceProtocol {
-    let applications: [ServiceApplicationInfo]
-    let windows: [ServiceWindowInfo]
-    let applicationStatus: UnifiedToolOutput<ServiceApplicationListData>.Summary.Status
-    let applicationWarnings: [String]
-    let applicationLists: [[ServiceApplicationInfo]]?
-    let windowStatus: UnifiedToolOutput<ServiceWindowListData>.Summary.Status
-    let warnings: [String]
-    let delay: Duration?
-    private var listApplicationsCallCount = 0
-    private(set) var listWindowsCallCount = 0
-
-    init(
-        applications: [ServiceApplicationInfo],
-        windows: [ServiceWindowInfo],
-        applicationStatus: UnifiedToolOutput<ServiceApplicationListData>.Summary.Status = .success,
-        applicationWarnings: [String] = [],
-        applicationLists: [[ServiceApplicationInfo]]? = nil,
-        windowStatus: UnifiedToolOutput<ServiceWindowListData>.Summary.Status = .success,
-        warnings: [String] = [],
-        delay: Duration? = nil)
-    {
-        self.applications = applications
-        self.windows = windows
-        self.applicationStatus = applicationStatus
-        self.applicationWarnings = applicationWarnings
-        self.applicationLists = applicationLists
-        self.windowStatus = windowStatus
-        self.warnings = warnings
-        self.delay = delay
-    }
-
-    func listApplications() async throws -> UnifiedToolOutput<ServiceApplicationListData> {
-        let resolvedApplications = if let applicationLists, !applicationLists.isEmpty {
-            applicationLists[min(self.listApplicationsCallCount, applicationLists.count - 1)]
-        } else {
-            self.applications
-        }
-        self.listApplicationsCallCount += 1
-        return UnifiedToolOutput(
-            data: ServiceApplicationListData(applications: resolvedApplications),
-            summary: .init(brief: "applications", status: self.applicationStatus),
-            metadata: .init(duration: 0, warnings: self.applicationWarnings))
-    }
-
-    func findApplication(identifier: String) async throws -> ServiceApplicationInfo {
-        guard let application = self.applications.first(where: {
-            $0.name == identifier || $0.bundleIdentifier == identifier || identifier == "PID:\($0.processIdentifier)"
-        }) else {
-            throw PeekabooError.appNotFound(identifier)
-        }
-        return application
-    }
-
-    func listWindows(for appIdentifier: String, timeout _: Float?) async throws
-        -> UnifiedToolOutput<ServiceWindowListData>
-    {
-        self.listWindowsCallCount += 1
-        if let delay {
-            await nonCooperativeDelay(delay)
-        }
-        let application = try await self.findApplication(identifier: appIdentifier)
-        return UnifiedToolOutput(
-            data: ServiceWindowListData(windows: self.windows, targetApplication: application),
-            summary: .init(brief: "windows", status: self.windowStatus),
-            metadata: .init(duration: 0, warnings: self.warnings))
-    }
-
-    func getFrontmostApplication() async throws -> ServiceApplicationInfo {
-        try #require(self.applications.first)
-    }
-
-    func isApplicationRunning(identifier: String) async -> Bool {
-        await (try? self.findApplication(identifier: identifier)) != nil
-    }
-
-    func launchApplication(identifier _: String) async throws -> ServiceApplicationInfo {
-        throw UnusedCall()
-    }
-
-    func activateApplication(identifier _: String) async throws {
-        throw UnusedCall()
-    }
-
-    func quitApplication(identifier _: String, force _: Bool) async throws -> Bool {
-        throw UnusedCall()
-    }
-
-    func hideApplication(identifier _: String) async throws {
-        throw UnusedCall()
-    }
-
-    func unhideApplication(identifier _: String) async throws {
-        throw UnusedCall()
-    }
-
-    func hideOtherApplications(identifier _: String) async throws {
-        throw UnusedCall()
-    }
-
-    func showAllApplications() async throws {
-        throw UnusedCall()
-    }
-}
-
-@MainActor
-final class VerifyStateScreenCaptureService: ScreenCaptureServiceProtocol {
-    private(set) var windowIDs: [CGWindowID] = []
-    private(set) var visualizerModes: [CaptureVisualizerMode] = []
-    let applicationInfo: ServiceApplicationInfo?
-    let windowInfo: ServiceWindowInfo?
-    let delay: Duration?
-
-    init(
-        applicationInfo: ServiceApplicationInfo? = nil,
-        windowInfo: ServiceWindowInfo? = nil,
-        delay: Duration? = nil)
-    {
-        self.applicationInfo = applicationInfo
-        self.windowInfo = windowInfo
-        self.delay = delay
-    }
-
-    func captureWindow(
-        windowID: CGWindowID,
-        visualizerMode: CaptureVisualizerMode,
-        scale _: CaptureScalePreference) async throws -> CaptureResult
-    {
-        self.windowIDs.append(windowID)
-        self.visualizerModes.append(visualizerMode)
-        if let delay {
-            await nonCooperativeDelay(delay)
-        }
-        return CaptureResult(
-            imageData: Data([0x89, 0x50, 0x4E, 0x47]),
-            metadata: CaptureMetadata(
-                size: CGSize(width: 1, height: 1),
-                mode: .window,
-                applicationInfo: self.applicationInfo,
-                windowInfo: self.windowInfo))
-    }
-
-    func hasScreenRecordingPermission() async -> Bool {
-        true
-    }
-
-    func captureScreen(
-        displayIndex _: Int?,
-        visualizerMode _: CaptureVisualizerMode,
-        scale _: CaptureScalePreference) async throws -> CaptureResult
-    {
-        throw UnusedCall()
-    }
-
-    func captureWindow(
-        appIdentifier _: String,
-        windowIndex _: Int?,
-        visualizerMode _: CaptureVisualizerMode,
-        scale _: CaptureScalePreference) async throws -> CaptureResult
-    {
-        throw UnusedCall()
-    }
-
-    func captureFrontmost(
-        visualizerMode _: CaptureVisualizerMode,
-        scale _: CaptureScalePreference) async throws -> CaptureResult
-    {
-        throw UnusedCall()
-    }
-
-    func captureArea(
-        _: CGRect,
-        visualizerMode _: CaptureVisualizerMode,
-        scale _: CaptureScalePreference) async throws -> CaptureResult
-    {
-        throw UnusedCall()
-    }
-}
-
-private struct UnusedCall: Error {}
-
-@MainActor
 private final class VerifyStateHeartbeatProbe {
     var count = 0
 }
@@ -1614,6 +1545,10 @@ final class LockedSystemWindowIdentitySequence: @unchecked Sendable {
         self.values = values
     }
 
+    var callCount: Int {
+        self.lock.withLock { self.index }
+    }
+
     func next() -> SystemWindowIdentity? {
         self.lock.withLock {
             guard !self.values.isEmpty else { return nil }
@@ -1641,15 +1576,6 @@ private final class LockedProcessIdentityMap: @unchecked Sendable {
     }
 }
 
-private func nonCooperativeDelay(_ duration: Duration) async {
-    await withCheckedContinuation { continuation in
-        Task.detached {
-            try? await Task.sleep(for: duration)
-            continuation.resume()
-        }
-    }
-}
-
 private func blockCurrentThread(seconds: TimeInterval) {
     let deadline = ProcessInfo.processInfo.systemUptime + seconds
     while ProcessInfo.processInfo.systemUptime < deadline {}
@@ -1672,7 +1598,7 @@ private final class VerifyStateAutomationService: MockAutomationService {
             self.contexts.append(windowContext)
         }
         if let delay {
-            await nonCooperativeDelay(delay)
+            await verifyStateNonCooperativeDelay(delay)
         }
         if let blockingDelaySeconds {
             blockCurrentThread(seconds: blockingDelaySeconds)

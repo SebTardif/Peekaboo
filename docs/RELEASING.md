@@ -39,6 +39,7 @@ login-keychain or Dropbox fallbacks, and the private locator is never tracked in
 ## 1. Prepare
 
 - Confirm `main` is clean, current, and all submodules are at the intended commits.
+- Run `python3 scripts/setup-swift-workspace.py setup --release` in the publication checkout after submodule initialization; repeat after relocation. See [workspace ownership and recovery](building.md#commander-dependency-resolution). Build helpers generate and verify the same ignored, source-only Commander mapping around compilation; do not copy another checkout's absolute-path configuration into staging or sealed artifacts. Existing canonical locks, clean-source checks, materialized source snapshots, and strict-resolution flags remain authoritative.
 - Update `package.json`, both `version.json` files, `Apps/CLI/Sources/Resources/Info.plist`,
   `Apps/CLI/TestHost/Info.plist`, `PeekabooMCPVersion.current`, the README release-status copy, and
   `MARKETING_VERSION` in the Mac, Inspector, and Playground Xcode projects.
@@ -48,7 +49,9 @@ login-keychain or Dropbox fallbacks, and the private locator is never tracked in
 - The tracked release notes are publication authority: full preflight requires them to match the root changelog section,
   and the GitHub draft body is created from those exact bytes.
 - Update submodule repositories first only when their code or release metadata changed, then commit the gitlink here.
-- Use the supported Xcode 26.x release toolchain; do not substitute an older SDK for publication builds.
+- Use Xcode 27 for the 4.3.0 publication build and record its exact build, Swift compiler, and SDK versions. The selected
+  beta build must pass the same complete release gates; hosted Xcode 26.x tests provide additional compatibility coverage,
+  not proof of the Xcode 27 publication build. Do not change the machine's global toolchain selection during release.
 
 ## 2. Validate the preparation patch
 
@@ -74,8 +77,42 @@ The dry run validates metadata consistency, docs/links, generated v4 help, retir
 accepts the candidate's `Unreleased` changelog headings; full preflight requires exact `YYYY-MM-DD` headings and a
 clean, current publication commit on `main`.
 
-Run `pnpm run test:automation` and live provider tests when the release changes those surfaces. Before committing,
+Run `pnpm run test:automation` and live provider tests when the release changes those surfaces, using an isolated
+fixture desktop and explicitly scoped provider credentials rather than the operator's saved app state. Before committing,
 run the repository autoreview workflow until no accepted actionable findings remain.
+
+For the complete safe gate on a fresh hosted runner plus non-live package coverage beyond the normal macOS CI filters,
+run the supplemental hosted workflow against the exact publication commit:
+
+```bash
+gh workflow run release-validation.yml --ref main -f target_ref=<full-40-character-publication-SHA>
+```
+
+Manual dispatch checks out only the selected workflow ref's resolved `github.sha`; `target_ref` is an expected-source
+assertion and must match that SHA exactly after hex normalization. If `main` moves before the dispatch resolves it,
+the mismatch fails before checkout or tests. To validate another reviewed revision, select its trusted branch or tag
+with `--ref` and supply the matching full SHA. An arbitrary historical or fork SHA cannot be tested under the `main`
+workflow context. PR runs independently check out only the event's PR head; a manual input cannot override it.
+
+This read-only, secretless macOS lane runs unfiltered suites for PeekabooCore, AutomationKit, Protocols, Visualizer,
+UICore, Inspector, Playground, and all five pinned submodules. It keeps per-package logs, exit status, built-in skips,
+submodule revisions, and actual toolchain metadata. A separate `full-safe` matrix job uses Node 24, the exact repository
+pnpm pin, and a frozen dependency install. Before that install, it installs ripgrep for the shell contracts and `uv`
+for the real fixture DMG integration, retaining their actual versions in `full-safe/ripgrep-version.txt` and
+`full-safe/uv-version.txt`. It then invokes the unchanged `pnpm run test:safe` command once. It covers the
+artifact/script contracts, synthetic background-certification checks, public SwiftPM consumer build, Foundation suite,
+and full safe CLI configuration with the repository's existing compile exclusions and ambient-state opt-out. It retains
+the command definition, combined stage/test output, command and log-writer exits, failures/skips index, and actual
+source/toolchain. The command's existing fail-fast chain stops at its first failed stage; later stages are not covered,
+and missing exit evidence or an interrupted run is never a pass. Each matrix job has its own checkout and package state.
+
+Its workflow-specific PR trigger validates changes to the lane;
+publication requires a separate exact-source dispatch. The normal macOS CI still owns the complete Mac app suite and
+its genuinely hosted-only credential tests. Never spoof hosted-runner identity on a personal Mac. Hosted Xcode 26.x
+compatibility coverage does not replace the Xcode 27 release preflight or signed isolated desktop and provider integration
+proof. Built-in automation/provider skips and synthetic certification checks are not live proof; report exclusions and
+unavailable live environments explicitly. Do not rerun the full safe gate against the operator's saved state: a temporary
+HOME is not a secretless OS account.
 
 ### Terminal-only artifact set
 
@@ -159,8 +196,9 @@ notarization before publication.
 Remove generated `Apps/Playground/Package.resolved` and standalone Playground Xcode-workspace locks before building;
 the helper refuses them so a local resolver cannot silently replace the graph recorded in fixture provenance.
 The build and final manifests also record and revalidate the canonicalized `DEVELOPER_DIR`, complete
-`xcodebuild -version`, macOS SDK version, and `swiftc --version`. This receipt does not make an unsupported toolchain
-supported; an Xcode 27 beta build remains visibly distinct from the documented Xcode 26.x publication baseline.
+`xcodebuild -version`, macOS SDK version, and `swiftc --version`. The 4.3.0 publication toolchain is Xcode 27; retain its
+exact beta/build identity in proof rather than conflating it with hosted Xcode 26.x compatibility results. A toolchain
+receipt does not replace successful universal builds, tests, runtime-library validation, signing, or notarization.
 The published `terminal-artifacts.json` is portable schema 7 with `root:"."`; every path is relative to its own
 directory. It retains its validator, canonical tree generator, commit-materialized controller/monitor/lock snapshot,
 rich universal Foundation-signed controller and monitor records, and pinned Node runtime. Copying the sealed directory to another absolute
@@ -190,13 +228,20 @@ Load release credentials through the maintainer 1Password workflow, then run int
 ```
 
 The script runs release preparation, builds the universal CLI and npm package, signs/notarizes/staples the macOS app
-and branded DMG, generates checksums and Sparkle metadata, and uploads a draft GitHub release. Install `uv`
+and branded DMG, generates checksums and Sparkle metadata, and uploads a draft GitHub release. The complete preparation
+child uses `terminal-artifact-env.sh` to remove protected credential/startup variables and force
+`PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`, excluding the managed codesign shim. Provision the required tools
+on that path. Signing-keychain paths remain available for the preflight's signed CLI build; only its `pnpm test` child
+removes those paths and `CODESIGN_IDENTITY`, using the same sanitizer even when preparation is invoked directly.
+The parent retains its credentials and signing environment on success or failure. This is an environment boundary,
+not OS-account isolation: run safe tests in a fresh VM before introducing task credentials. Workspace mapping and lock
+ownership remain with the existing compilation helpers; do not wrap the whole preflight in the workspace runner.
+Publication eligibility still requires the same complete successful gate. Install `uv`
 with Homebrew before running it; the pinned `dmgbuild` environment writes Finder layout metadata directly. The npm
-step requires either an authenticated npm session or `NPM_TOKEN`; the
-maintainer release command provides `NPM_TOKEN` automatically through the manifest's credential pass. A 404 response
-to a registry PUT means npm authentication is missing or invalid, not that the package is missing. When the script
-pauses at the npm confirmation, leave the process waiting, inspect the draft assets and notes, then answer `y` to
-publish npm. The signing identity must be:
+step requires `NPM_TOKEN`; the maintainer release command provides it through the manifest's credential pass. A 404
+response to a registry PUT means npm authentication is missing or invalid, not that the package is missing. When the
+script pauses at the npm confirmation, inspect the prepared artifacts, release plan, notes, and proof, then answer `y`
+to authorize publication. This confirmation occurs before GitHub draft creation. The signing identity must be:
 
 ```text
 Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)

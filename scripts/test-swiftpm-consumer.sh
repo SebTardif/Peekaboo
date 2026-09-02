@@ -33,7 +33,7 @@ if (JSON.stringify(actual) !== JSON.stringify([...expected].sort())) {
   process.exit(1);
 }
 
-const expectedAXVersion = "0.1.8";
+const expectedAXVersion = "0.1.9";
 const sourceDependencies = manifest.dependencies.flatMap(dependency => dependency.sourceControl ?? []);
 const axorcist = sourceDependencies.find(dependency => dependency.identity === "axorcist");
 const actualAXVersion = axorcist?.requirement?.exact?.[0];
@@ -126,6 +126,19 @@ let failure = DesktopActionFailure.refused(
     reason: .targetUnavailable,
     message: "Consumer contract probe")
 precondition(!pendingReservationDisposition(for: failure))
+
+// Compile the six-label factory shipped in v4.2.2 without constructing services.
+func releasedRawEvidenceFactory() -> DesktopTargetIdentity.Evidence {
+    DesktopTargetEvidenceAdapter.evidence(
+        processIdentifier: 4242,
+        processStartIdentity: nil,
+        windowID: 7,
+        windowIdentity: nil,
+        windowBounds: nil,
+        focusedElement: nil)
+}
+
+_ = releasedRawEvidenceFactory
 
 @MainActor
 func makeEmbeddedRuntime() -> PeekabooEmbeddedBridgeRuntime {

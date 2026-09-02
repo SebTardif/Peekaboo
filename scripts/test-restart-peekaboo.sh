@@ -2,13 +2,44 @@
 
 set -euo pipefail
 
+TEST_DIR=""
+LOCK_HOLDER=""
+FIXTURE_COMPLETE=0
+
+cleanup() {
+  local exit_code=$?
+
+  trap - EXIT
+  if [[ -n "${LOCK_HOLDER}" ]]; then
+    kill "${LOCK_HOLDER}" 2>/dev/null || true
+    wait "${LOCK_HOLDER}" 2>/dev/null || true
+  fi
+  if [[ -n "${TEST_DIR}" ]] && ! rm -rf "${TEST_DIR}"; then
+    printf 'test-restart-peekaboo: cleanup failed\n' >&2
+    ((exit_code != 0)) || exit_code=1
+  fi
+  # Bash 3.2 can enter EXIT with status 0 after nounset aborts an if-tested function.
+  if ((FIXTURE_COMPLETE != 1)); then
+    printf 'test-restart-peekaboo: fixture did not complete\n' >&2
+    ((exit_code != 0)) || exit_code=1
+  fi
+  if ((exit_code == 0)); then
+    printf 'test-restart-peekaboo: ok\n'
+  fi
+  exit "${exit_code}"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d /tmp/peekaboo-restart-test.XXXXXX)"
-TEST_DIR="$(cd "${TEST_DIR}" && pwd -P)"
+canonical_test_dir="$(cd "${TEST_DIR}" && pwd -P)"
+TEST_DIR="${canonical_test_dir}"
 TEMPLATE_BIN="${TEST_DIR}/template-bin"
 TEMPLATE_SOURCE="${TEST_DIR}/template-source"
-LOCK_HOLDER=""
-trap '[[ -z "${LOCK_HOLDER:-}" ]] || kill "${LOCK_HOLDER}" 2>/dev/null || true; rm -rf "$TEST_DIR"' EXIT
 
 fail() {
   printf 'test-restart-peekaboo: %s\n' "$*" >&2
@@ -120,29 +151,37 @@ new_case() {
   local name="$1"
   local case_dir="${TEST_DIR}/${name}"
 
+  printf 'test-restart-peekaboo: case=%s\n' "${name}" >&2
   mkdir -p "${case_dir}"
   cp -R "${TEMPLATE_BIN}" "${case_dir}/bin"
   cp -R "${TEMPLATE_SOURCE}" "${case_dir}/source"
   printf '%s\n' "${case_dir}"
 }
 
-run_restart() {
-  local case_dir="$1"
-  local -a cli_args env_args
+run_build_signing_case() {
+  local name="$1"
+  local output="${build_signing_dir}/${name}.log"
+  local exit_code
   shift
 
-  env_args=()
-  cli_args=()
-  while (($# > 0)) && [[ "$1" != "--" ]]; do
-    env_args+=("$1")
-    shift
-  done
-  if (($# > 0)); then
-    shift
-    cli_args=("$@")
+  printf 'test-restart-peekaboo: build-signing=%s\n' "${name}"
+  # Only the external child is conditional; caller assertions retain errexit.
+  if "$@" >"${output}" 2>&1; then
+    return 0
+  else
+    exit_code=$?
+    cat "${output}" >&2
+    printf 'test-restart-peekaboo: build-signing=%s exit=%s\n' "${name}" "${exit_code}" >&2
+    return "${exit_code}"
   fi
+}
 
-  env \
+run_restart() {
+  local case_dir="$1"
+  shift
+
+  # Keep the command array nonempty; empty arrays are unbound under Bash 3.2 nounset.
+  local -a command_args=(env
     HOME="${case_dir}/home" \
     DERIVED_DATA_PATH="${case_dir}/DerivedData" \
     DIST_DIR="${case_dir}/dist" \
@@ -171,9 +210,16 @@ run_restart() {
     PEEKABOO_APP_SIGN_IDENTITY='Developer ID Application: Test (TESTTEAM)' \
     PEEKABOO_APP_EXPECTED_TEAM_ID='TESTTEAM' \
     PEEKABOO_APP_SIGN_REQUIREMENT='anchor apple generic and certificate leaf[subject.OU] = "TESTTEAM"' \
-    PEEKABOO_APP_ENTITLEMENTS="${ROOT_DIR}/Apps/Mac/Peekaboo/Peekaboo.entitlements" \
-    "${env_args[@]}" \
-    "${ROOT_DIR}/scripts/restart-peekaboo.sh" --deployment "${cli_args[@]}" >"${case_dir}/stdout"
+    PEEKABOO_APP_ENTITLEMENTS="${ROOT_DIR}/Apps/Mac/Peekaboo/Peekaboo.entitlements"
+  )
+  while (($# > 0)) && [[ "$1" != "--" ]]; do
+    command_args+=("$1")
+    shift
+  done
+  if (($# > 0)); then
+    shift
+  fi
+  "${command_args[@]}" "${ROOT_DIR}/scripts/restart-peekaboo.sh" --deployment "$@" >"${case_dir}/stdout"
 }
 
 run_dev_restart() {
@@ -217,6 +263,131 @@ run_dev_workflow() {
     PEEKABOO_DEV_SLEEP_BIN="${case_dir}/bin/sleep" \
     "${ROOT_DIR}/scripts/restart-peekaboo.sh" >"${case_dir}/stdout"
 }
+
+test_fixture_helpers() {
+  local probe_dir="${TEST_DIR}/fixture-helpers"
+  local probe exit_code expected_exit
+
+  mkdir -p "${probe_dir}/scripts" "${probe_dir}/home" "${probe_dir}/tmp"
+  cat >"${probe_dir}/scripts/restart-peekaboo.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\0' "${FORWARD_VALUE-unset}" "${FORWARD_EMPTY-unset}" "$@"
+exit "${FORWARD_EXIT:-0}"
+EOF
+  chmod +x "${probe_dir}/scripts/restart-peekaboo.sh"
+  {
+    printf 'set -euo pipefail\n'
+    declare -f cleanup run_restart fail
+    cat <<'EOF'
+ROOT_DIR="$1"
+TEST_DIR="${ROOT_DIR}/work"
+LOCK_HOLDER=""
+FIXTURE_COMPLETE=0
+trap cleanup EXIT
+trap 'exit 143' TERM
+mkdir -p "${TEST_DIR}/case with spaces"
+case_dir="${TEST_DIR}/case with spaces"
+case "$2" in
+  arguments)
+    for env_count in 0 1 2; do
+      for cli_count in 0 1 4; do
+        set -- "${case_dir}"
+        value=unset
+        empty=unset
+        if ((env_count >= 1)); then
+          value='two words'
+          set -- "$@" "FORWARD_VALUE=${value}"
+        fi
+        if ((env_count == 2)); then
+          empty=''
+          set -- "$@" 'FORWARD_EMPTY='
+        fi
+        printf '%s\0' "${value}" "${empty}" --deployment >"${TEST_DIR}/expected"
+        case "${cli_count}" in
+          1)
+            set -- "$@" -- ''
+            printf '%s\0' '' >>"${TEST_DIR}/expected"
+            ;;
+          4)
+            set -- "$@" -- -- 'two words' '' 'VALUE=literal'
+            printf '%s\0' -- 'two words' '' 'VALUE=literal' >>"${TEST_DIR}/expected"
+            ;;
+        esac
+        run_restart "$@"
+        cmp "${TEST_DIR}/expected" "${case_dir}/stdout" || fail 'argument forwarding changed bytes'
+      done
+    done
+    run_restart "${case_dir}" --
+    printf '%s\0' unset unset --deployment >"${TEST_DIR}/expected"
+    cmp "${TEST_DIR}/expected" "${case_dir}/stdout" || fail 'empty delimiter changed argv'
+    run_restart "${case_dir}" FORWARD_VALUE=first FORWARD_VALUE= -- ''
+    printf '%s\0' '' unset --deployment '' >"${TEST_DIR}/expected"
+    cmp "${TEST_DIR}/expected" "${case_dir}/stdout" || fail 'empty override changed argv'
+    ;;
+  incomplete) exit 0 ;;
+  nounset)
+    abort_fixture() { printf '%s\n' "${UNSET_FIXTURE_VALUE}"; }
+    if abort_fixture; then fail 'nounset unexpectedly continued'; fi
+    fail 'nounset unexpectedly returned'
+    ;;
+  setup-failure)
+    setup_fixture() { (exit 23); printf 'setup incorrectly continued\n'; }
+    setup_fixture
+    ;;
+  restart-failure) run_restart "${case_dir}" FORWARD_EXIT=37 ;;
+  expected-refusal)
+    if run_restart "${case_dir}" FORWARD_EXIT=37; then
+      fail 'expected child refusal'
+    else
+      [[ "$?" -eq 37 ]] || fail 'child refusal status changed'
+    fi
+    ;;
+  assertion-failure) fail 'intentional assertion' ;;
+  completed-failure) FIXTURE_COMPLETE=1; exit 41 ;;
+  cleanup-failure) rm() { return 73; } ;;
+  cleanup-failure-with-status) rm() { return 73; }; exit 37 ;;
+  term) kill -TERM "$$" ;;
+  *) fail 'unknown helper probe' ;;
+esac
+FIXTURE_COMPLETE=1
+EOF
+  } >"${probe_dir}/probe.sh"
+
+  for probe in arguments incomplete nounset setup-failure restart-failure expected-refusal \
+    assertion-failure completed-failure cleanup-failure cleanup-failure-with-status term; do
+    case "${probe}" in
+      arguments|expected-refusal) expected_exit=0 ;;
+      setup-failure) expected_exit=23 ;;
+      restart-failure|cleanup-failure-with-status) expected_exit=37 ;;
+      completed-failure) expected_exit=41 ;;
+      term) expected_exit=143 ;;
+      *) expected_exit=1 ;;
+    esac
+    exit_code=0
+    # An external shell keeps errexit active inside the probe despite this expected-status check.
+    env -i HOME="${probe_dir}/home" TMPDIR="${probe_dir}/tmp" PATH="${PATH}" \
+      "${BASH}" "${probe_dir}/probe.sh" "${probe_dir}" "${probe}" \
+      >"${probe_dir}/${probe}.stdout" 2>"${probe_dir}/${probe}.stderr" || exit_code=$?
+    [[ "${exit_code}" -eq "${expected_exit}" ]] || \
+      fail "${probe} exited ${exit_code}, expected ${expected_exit}"
+    if ((expected_exit == 0)); then
+      assert_text "${probe_dir}/${probe}.stdout" 'test-restart-peekaboo: ok'
+      [[ ! -s "${probe_dir}/${probe}.stderr" ]] || fail "${probe} printed unexpected diagnostics"
+    else
+      if grep -Fq 'test-restart-peekaboo: ok' "${probe_dir}/${probe}.stdout"; then
+        fail "${probe} falsely reported completion"
+      fi
+    fi
+    if [[ "${probe}" == cleanup-failure* ]]; then
+      [[ -d "${probe_dir}/work" ]] || fail 'cleanup failure was not exercised'
+      rm -rf "${probe_dir}/work"
+    fi
+    [[ ! -e "${probe_dir}/work" ]] || fail "${probe} did not clean up"
+  done
+}
+
+test_fixture_helpers
 
 mkdir -p "${TEMPLATE_BIN}" "${TEMPLATE_SOURCE}/Apps"
 printf 'import Foundation\n' >"${TEMPLATE_SOURCE}/Apps/Good.swift"
@@ -812,14 +983,40 @@ mkdir -p "${DERIVED_DATA_PATH}"
 printf '%s\n' "$@" >"${PEEKABOO_TEST_XCODEBUILD_ARGS}"
 EOF
 chmod +x "${build_signing_dir}/bin/xcodebuild"
-env \
+# Signing argv belongs to this fixture; workspace ownership has its own real-owner tests.
+cat >"${build_signing_dir}/bin/python3" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+fixture_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [[ "$#" -lt 4 || "${1:-}" != "${fixture_dir}/source/scripts/setup-swift-workspace.py" ||
+  "${2:-}" != run || "${3:-}" != -- || "${4:-}" != xcodebuild ]]; then
+  printf 'test-restart-peekaboo: unexpected workspace invocation\n' >&2
+  exit 64
+fi
+shift 4
+exec "${fixture_dir}/bin/xcodebuild" "$@"
+EOF
+chmod +x "${build_signing_dir}/bin/python3"
+
+if run_build_signing_case workspace-command-refusal env \
+  DERIVED_DATA_PATH="${build_signing_dir}/DerivedData" \
+  PEEKABOO_TEST_XCODEBUILD_ARGS="${build_signing_dir}/rejected-args" \
+  "${build_signing_dir}/bin/python3" \
+  "${build_signing_source}/scripts/setup-swift-workspace.py" run -- unexpected-command; then
+  fail 'workspace fixture accepted an unexpected command'
+else
+  [[ "$?" -eq 64 ]] || fail 'workspace fixture did not return its invocation refusal'
+fi
+[[ ! -e "${build_signing_dir}/rejected-args" ]] || fail 'rejected workspace command reached fake xcodebuild'
+
+run_build_signing_case developer-id env \
   PATH="${build_signing_dir}/bin:/usr/bin:/bin" \
   PEEKABOO_TEST_XCODEBUILD_ARGS="${build_signing_dir}/developer-id-args" \
   CONFIGURATION=Release \
   DERIVED_DATA_PATH="${build_signing_dir}/DerivedData" \
   DEBUG_CODE_SIGN_IDENTITY='Developer ID Application: Test (TESTTEAM)' \
   DEBUG_DEVELOPMENT_TEAM=TESTTEAM \
-  "${build_signing_source}/scripts/build-mac-debug.sh" >/dev/null
+  "${build_signing_source}/scripts/build-mac-debug.sh"
 grep -Fxq 'CODE_SIGN_STYLE=Manual' "${build_signing_dir}/developer-id-args" || \
   fail 'Developer ID build did not request manual signing'
 grep -Fxq "PEEKABOO_SOURCE_COMMIT=${build_signing_commit}" \
@@ -829,7 +1026,7 @@ if grep -Fxq 'CODE_SIGN_STYLE=Automatic' "${build_signing_dir}/developer-id-args
   fail 'Developer ID build still requested automatic signing'
 fi
 
-env \
+run_build_signing_case unsigned env \
   PATH="${build_signing_dir}/bin:/usr/bin:/bin" \
   PEEKABOO_TEST_XCODEBUILD_ARGS="${build_signing_dir}/unsigned-args" \
   PEEKABOO_BUILD_UNSIGNED=1 \
@@ -837,7 +1034,7 @@ env \
   DERIVED_DATA_PATH="${build_signing_dir}/DerivedData" \
   DEBUG_CODE_SIGN_IDENTITY='Developer ID Application: Test (TESTTEAM)' \
   DEBUG_DEVELOPMENT_TEAM=TESTTEAM \
-  "${build_signing_source}/scripts/build-mac-debug.sh" >/dev/null
+  "${build_signing_source}/scripts/build-mac-debug.sh"
 grep -Fxq 'CODE_SIGNING_ALLOWED=NO' "${build_signing_dir}/unsigned-args" || \
   fail 'explicit unsigned build did not disable Xcode signing'
 grep -Fxq 'CODE_SIGNING_REQUIRED=NO' "${build_signing_dir}/unsigned-args" || \
@@ -846,31 +1043,31 @@ if grep -Eq '^(CODE_SIGN_STYLE|DEVELOPMENT_TEAM)=' "${build_signing_dir}/unsigne
   fail 'explicit unsigned build still requested Xcode identity or provisioning'
 fi
 
-env \
+run_build_signing_case development env \
   PATH="${build_signing_dir}/bin:/usr/bin:/bin" \
   PEEKABOO_TEST_XCODEBUILD_ARGS="${build_signing_dir}/development-args" \
   CONFIGURATION=Debug \
   DERIVED_DATA_PATH="${build_signing_dir}/DerivedData" \
   DEBUG_CODE_SIGN_IDENTITY='Apple Development' \
   DEBUG_DEVELOPMENT_TEAM=TESTTEAM \
-  "${build_signing_source}/scripts/build-mac-debug.sh" >/dev/null
+  "${build_signing_source}/scripts/build-mac-debug.sh"
 grep -Fxq 'CODE_SIGN_STYLE=Automatic' "${build_signing_dir}/development-args" || \
   fail 'Apple Development build did not retain automatic signing'
 
 touch "${build_signing_source}/untracked-build-input"
-env \
+run_build_signing_case dirty-source env \
   PATH="${build_signing_dir}/bin:/usr/bin:/bin" \
   PEEKABOO_TEST_XCODEBUILD_ARGS="${build_signing_dir}/dirty-args" \
   CONFIGURATION=Debug \
   DERIVED_DATA_PATH="${build_signing_dir}/DerivedData" \
   DEBUG_CODE_SIGN_IDENTITY='Apple Development' \
   DEBUG_DEVELOPMENT_TEAM=TESTTEAM \
-  "${build_signing_source}/scripts/build-mac-debug.sh" >/dev/null
+  "${build_signing_source}/scripts/build-mac-debug.sh"
 grep -Fxq 'PEEKABOO_SOURCE_COMMIT=unknown' "${build_signing_dir}/dirty-args" || \
   fail 'Dirty debug app build did not remain explicitly unstamped'
 
 rm -f "${build_signing_dir}/strict-dirty-args"
-if env \
+if run_build_signing_case strict-dirty-source env \
   PATH="${build_signing_dir}/bin:/usr/bin:/bin" \
   PEEKABOO_TEST_XCODEBUILD_ARGS="${build_signing_dir}/strict-dirty-args" \
   PEEKABOO_REQUIRE_SOURCE_PROVENANCE=1 \
@@ -878,7 +1075,7 @@ if env \
   DERIVED_DATA_PATH="${build_signing_dir}/DerivedData" \
   DEBUG_CODE_SIGN_IDENTITY='Apple Development' \
   DEBUG_DEVELOPMENT_TEAM=TESTTEAM \
-  "${build_signing_source}/scripts/build-mac-debug.sh" >/dev/null 2>&1; then
+  "${build_signing_source}/scripts/build-mac-debug.sh"; then
   fail 'Strict dirty debug app build unexpectedly succeeded'
 fi
 [[ ! -e "${build_signing_dir}/strict-dirty-args" ]] || \
@@ -915,9 +1112,14 @@ assert_text "${dev_unsafe_dir}/home/sentinel" keep
 [[ ! -f "${dev_unsafe_dir}/events" ]] || fail 'unsafe contributor target started build or kill work'
 invalid_target_dir="$(new_case invalid-target)"
 mkdir -p "${invalid_target_dir}/Explicit"
-if run_restart "${invalid_target_dir}" PEEKABOO_APP_BUNDLE="${invalid_target_dir}/Explicit/Other.app"; then
+if run_restart "${invalid_target_dir}" PEEKABOO_APP_BUNDLE="${invalid_target_dir}/Explicit/Other.app" \
+  2>"${invalid_target_dir}/stderr"; then
   fail 'an explicit target with another app name must be rejected'
+else
+  [[ "$?" -eq 1 ]] || fail 'invalid target did not return the intended refusal status'
 fi
+assert_text "${invalid_target_dir}/stderr" \
+  "ERROR: Install target must end in Peekaboo.app: ${invalid_target_dir}/Explicit/Other.app"
 [[ ! -f "${invalid_target_dir}/events" ]] || fail 'invalid target rejection started a build'
 
 # The CLI supplying readiness evidence must itself carry the expected signed CLI identity.
@@ -1544,4 +1746,4 @@ if [[ -f "${adhoc_dir}/open-log" ]] || grep -q '^stop$' "${adhoc_dir}/events"; t
   fail 'ad-hoc refusal stopped or launched the app'
 fi
 
-printf 'test-restart-peekaboo: ok\n'
+FIXTURE_COMPLETE=1
