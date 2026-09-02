@@ -1018,13 +1018,13 @@ extension BrowserToolCapabilityIntegrationTests {
         let content: [String] = response.content.flatMap { item -> [String] in
             switch item {
             case let .text(text, _, metadata):
-                return [text] + Self.strings(in: metadata.map { .object($0.fields) })
+                [text] + Self.strings(in: metadata.map { .object($0.fields) })
             case let .image(_, _, _, metadata),
                  let .audio(_, _, _, metadata),
                  let .resource(_, _, metadata):
-                return Self.strings(in: metadata.map { .object($0.fields) })
+                Self.strings(in: metadata.map { .object($0.fields) })
             case .resourceLink:
-                return []
+                []
             }
         }
         return (content + Self.strings(in: response.meta) + Self.strings(in: response.structuredContent))

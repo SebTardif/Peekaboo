@@ -228,14 +228,14 @@ struct ApplicationInventoryTimeoutTests {
             frontmostProcessIdentifierProvider: { nil },
             processStartIdentityProvider: { pid -> UInt64? in
                 switch pid {
-                case stablePID: return 75
-                case missingPID: return nil
+                case stablePID: 75
+                case missingPID: nil
                 case driftingPID:
-                    return driftingReads.withValue {
+                    driftingReads.withValue {
                         $0 += 1
                         return $0 == 1 ? 76 : 77
                     }
-                default: return nil
+                default: nil
                 }
             },
             runningApplicationProcessIdentifiersProvider: { [stablePID, missingPID, driftingPID] })

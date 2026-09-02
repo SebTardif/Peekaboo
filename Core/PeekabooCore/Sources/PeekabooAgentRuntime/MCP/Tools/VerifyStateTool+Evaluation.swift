@@ -38,20 +38,20 @@ extension VerifyStateTool {
         let results = request.predicates.map { predicate -> VerifyStatePredicateResult in
             switch predicate {
             case let .windowExists(expected):
-                return self.booleanResult(
+                self.booleanResult(
                     kind: predicate.kind,
                     expected: expected,
                     actual: false,
                     detail: reason)
             case let .elementExists(selector, expected):
-                return self.booleanResult(
+                self.booleanResult(
                     kind: predicate.kind,
                     expected: expected,
                     actual: false,
                     detail: "\(selector.description): \(reason)",
                     observed: "count=0")
             case .windowBounds, .elementValue, .elementEnabled, .elementSelected:
-                return VerifyStatePredicateResult(
+                VerifyStatePredicateResult(
                     kind: predicate.kind,
                     status: .unsatisfied,
                     detail: reason,

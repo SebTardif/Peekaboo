@@ -15,7 +15,7 @@ struct CustomProviderInvalidURLTests {
     private static let invalidBaseURL = "https://["
 
     @Test
-    func `testCustomProvider reports invalid OpenAI URL instead of crashing`() async throws {
+    func `customProvider reports invalid OpenAI URL instead of crashing`() async throws {
         try self.requireUnparseableEndpoint(path: "models")
         try await withIsolatedConfigurationEnvironment { _ in
             try self.seedBrokenProvider(id: "broken-openai", type: .openai)
@@ -29,7 +29,7 @@ struct CustomProviderInvalidURLTests {
     }
 
     @Test
-    func `testCustomProvider reports invalid Anthropic URL instead of crashing`() async throws {
+    func `customProvider reports invalid Anthropic URL instead of crashing`() async throws {
         try self.requireUnparseableEndpoint(path: "messages")
         try await withIsolatedConfigurationEnvironment { _ in
             try self.seedBrokenProvider(id: "broken-anthropic", type: .anthropic)
@@ -51,7 +51,7 @@ struct CustomProviderInvalidURLTests {
     }
 
     @Test
-    func `testCustomProvider accepts Anthropic HTTP 200`() async throws {
+    func `customProvider accepts Anthropic HTTP 200`() async throws {
         let result = try await self.testAnthropicProvider(
             statusCode: 200,
             body: #"{"content":[]}"#,
@@ -62,7 +62,7 @@ struct CustomProviderInvalidURLTests {
     }
 
     @Test
-    func `testCustomProvider rejects Anthropic HTTP 201`() async throws {
+    func `customProvider rejects Anthropic HTTP 201`() async throws {
         let result = try await self.testAnthropicProvider(
             statusCode: 201,
             body: #"{"error":"unexpected-created"}"#,
