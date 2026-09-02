@@ -52,9 +52,7 @@ struct BrowserHandoffCLITests {
     @Test
     @MainActor
     func `browser handoff requires connect foreground one exact socket and one absolute destination`() throws {
-        let directory = try Self.privateDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let handoff = directory.appendingPathComponent("handoff.json").path
+        let handoff = "/private/tmp/peekaboo-handoff.json"
         let socket = "/private/tmp/peekaboo-handoff.sock"
 
         let valid = try Self.browserCommand(
@@ -63,7 +61,6 @@ struct BrowserHandoffCLITests {
             socketValues: [socket],
             flags: ["foreground"]
         )
-        #expect(throws: Never.self) { try valid.validateBeforeRuntime() }
         #expect(valid.runtimeOptions.requiresBrowserHandoffBridge)
         #expect(throws: ValidationError.self) {
             try valid.validateHandoffEnvironment(["PEEKABOO_NO_REMOTE": "1"])
@@ -127,7 +124,7 @@ struct BrowserHandoffCLITests {
         #expect(throws: ValidationError.self) {
             _ = try Self.browserCommand(
                 action: "connect",
-                handoffValues: [handoff, directory.appendingPathComponent("other.json").path],
+                handoffValues: [handoff, "/private/tmp/other.json"],
                 socketValues: [socket],
                 flags: ["foreground"]
             )
@@ -140,6 +137,20 @@ struct BrowserHandoffCLITests {
                 flags: ["foreground"]
             )
         }
+    }
+
+    @Test(Self.cleanMetadataFixture)
+    @MainActor
+    func `browser handoff validates an available private destination`() throws {
+        let directory = try Self.privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let command = try Self.browserCommand(
+            action: "connect",
+            handoffValues: [directory.appendingPathComponent("handoff.json").path],
+            socketValues: ["/private/tmp/peekaboo-handoff.sock"],
+            flags: ["foreground"]
+        )
+        #expect(throws: Never.self) { try command.validateBeforeRuntime() }
     }
 
     @Test
@@ -172,7 +183,7 @@ struct BrowserHandoffCLITests {
         #expect(provider.takeConnectionHandoffReceiptBundleData() == nil)
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `handoff publication failure disconnects the reserved browser target`() async throws {
         let receipt = try await Self.canonicalHandoffData()
@@ -202,7 +213,7 @@ struct BrowserHandoffCLITests {
         #expect(provider.takeConnectionHandoffReceiptBundleData() == nil)
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `store atomically publishes and stably reloads canonical mode 0600 bytes`() async throws {
         let fixture = try await Self.canonicalHandoffData()
@@ -226,16 +237,12 @@ struct BrowserHandoffCLITests {
 
     @Test
     @MainActor
-    func `store rejects intermediate symlinks and parent chain substitution after preflight`() async throws {
-        let fixture = try await Self.canonicalHandoffData()
-
+    func `store rejects intermediate symlinks before inspecting parent metadata`() throws {
         do {
-            let container = try Self.privateDirectory()
+            let container = try Self.metadataProbeDirectory()
             defer { try? FileManager.default.removeItem(at: container) }
-            let realParent = container.appendingPathComponent("real", isDirectory: true)
-            try Self.createPrivateDirectory(at: realParent)
             let linkedParent = container.appendingPathComponent("linked", isDirectory: true)
-            try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realParent)
+            try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: container)
             let store = try BrowserHandoffReceiptStore(
                 fileURL: linkedParent.appendingPathComponent("handoff.json")
             )
@@ -244,6 +251,12 @@ struct BrowserHandoffCLITests {
                 "parent path components must be existing non-symbolic-link directories"
             )) { try store.validateCanSave() }
         }
+    }
+
+    @Test(Self.cleanMetadataFixture)
+    @MainActor
+    func `store rejects parent chain substitution after preflight`() async throws {
+        let fixture = try await Self.canonicalHandoffData()
 
         do {
             let container = try Self.privateDirectory()
@@ -288,7 +301,7 @@ struct BrowserHandoffCLITests {
         }
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `browser command retains its validated parent binding until publication`() throws {
         let container = try Self.privateDirectory()
@@ -315,7 +328,7 @@ struct BrowserHandoffCLITests {
         }
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `store preserves final substitution and removes publication after ancestor swap`() async throws {
         let fixture = try await Self.canonicalHandoffData()
@@ -366,7 +379,7 @@ struct BrowserHandoffCLITests {
         }
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `handoff path diagnostics reject unsafe paths`() async throws {
         let fixture = try await Self.canonicalHandoffData()
@@ -426,7 +439,7 @@ struct BrowserHandoffCLITests {
         }
     }
 
-    @Test(arguments: BrowserHandoffPathSubject.allCases, [
+    @Test(Self.cleanMetadataFixture, arguments: BrowserHandoffPathSubject.allCases, [
         BrowserHandoffPathInspection.extendedACL, .extendedAttributes,
     ])
     @MainActor
@@ -506,6 +519,106 @@ struct BrowserHandoffCLITests {
         }
     }
 
+    @Test
+    func `fixture availability accepts only absent metadata or the exact known marker`() throws {
+        let cases: [(String?, Int?, Bool?)] = [
+            (nil, nil, false),
+            ("com.apple.provenance", 11, true),
+            ("com.apple.provenance", nil, nil),
+            ("com.apple.provenance", 0, nil),
+            ("com.apple.provenance", 10, nil),
+            ("com.apple.provenance", 12, nil),
+            ("dev.peekaboo.browser-handoff-test", 11, nil),
+            ("com.apple.provenance\0dev.peekaboo.browser-handoff-test", 11, nil),
+            (nil, 11, nil),
+        ]
+        for (name, size, expected) in cases {
+            let names = name.map { Array($0.utf8CString) } ?? []
+            if let expected {
+                #expect(try Self.classifyFixtureMetadata(names: names, size: size) == expected)
+            } else {
+                #expect(throws: FixtureMetadataError.unexpectedMetadata) {
+                    try Self.classifyFixtureMetadata(names: names, size: size)
+                }
+            }
+        }
+        #expect(throws: FixtureMetadataError.inspectionFailed) {
+            try Self.fixtureHasProvenance(-1)
+        }
+    }
+
+    @Test(arguments: BrowserHandoffPathSubject.allCases)
+    func `fixture availability fails on added attributes ACLs and unreadable entries`(
+        subject: BrowserHandoffPathSubject
+    ) throws {
+        let directory = try Self.metadataProbeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = subject == .parent ? directory : directory.appendingPathComponent("probe.json")
+        _ = try Self.addExtendedAttribute(to: url)
+        #expect(throws: FixtureMetadataError.unexpectedMetadata) {
+            try Self.fixtureHasProvenance(at: url, subject: subject)
+        }
+        try Self.addReadableACL(to: url)
+        #expect(throws: BrowserHandoffReceiptStoreError.extendedACL(subject)) {
+            try Self.fixtureHasProvenance(at: url, subject: subject)
+        }
+        #expect(throws: FixtureMetadataError.inspectionFailed) {
+            try Self.fixtureHasProvenance(at: directory.appendingPathComponent("missing"), subject: subject)
+        }
+    }
+
+    @Test(arguments: BrowserHandoffPathSubject.allCases)
+    @MainActor
+    func `production accepts absent attributes but rejects actual fixture provenance`(
+        subject: BrowserHandoffPathSubject
+    ) async throws {
+        let directory = try Self.metadataProbeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let receipt = directory.appendingPathComponent("probe.json")
+        let url = subject == .parent ? directory : receipt
+        let hasProvenance = try Self.fixtureHasProvenance(at: url, subject: subject)
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        try #require(descriptor >= 0)
+        defer { close(descriptor) }
+        if hasProvenance {
+            #expect(throws: BrowserHandoffReceiptStoreError.extendedAttributes(subject)) {
+                try BrowserHandoffReceiptStore.requireNoExtendedAttributes(descriptor, subject: subject)
+            }
+        } else {
+            #expect(throws: Never.self) {
+                try BrowserHandoffReceiptStore.requireNoExtendedAttributes(descriptor, subject: subject)
+            }
+        }
+        if subject == .parent, hasProvenance {
+            let expected = BrowserHandoffReceiptStoreError.extendedAttributes(.parent)
+            var runtimeConstructed = false
+            let factory = CommanderRuntimeExecutor.RuntimeFactory { _ in
+                runtimeConstructed = true
+                throw StopBeforeRuntimeConstruction()
+            }
+            await #expect(throws: expected) {
+                try await CommanderRuntimeExecutor.resolveAndRun(
+                    arguments: [
+                        "peekaboo", "browser", "connect", "--foreground",
+                        "--handoff-file", directory.appendingPathComponent("unused.json").path,
+                        "--bridge-socket", "/private/tmp/peekaboo-handoff.sock",
+                    ],
+                    runtimeFactory: factory
+                )
+            }
+            await #expect(throws: BrowserHandoffCLIInputError.invalidReceipt(expected.localizedDescription)) {
+                try await CommanderRuntimeExecutor.resolveAndRun(
+                    arguments: [
+                        "peekaboo", "mcp", "serve", "--browser-handoff", receipt.path,
+                        "--bridge-socket", "/private/tmp/peekaboo-handoff.sock",
+                    ],
+                    runtimeFactory: factory
+                )
+            }
+            #expect(!runtimeConstructed)
+        }
+    }
+
     @Test(arguments: BrowserHandoffPathSubject.allCases)
     func `handoff path diagnostics keep distinct hints and envelope`(subject: BrowserHandoffPathSubject) {
         let attributes = BrowserHandoffReceiptStoreError.extendedAttributes(subject)
@@ -541,9 +654,9 @@ struct BrowserHandoffCLITests {
         #expect(unrelated.envelopeHint?.contains("OS provenance") == false)
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
-    func `store rejects path substitution noncanonical bytes and oversized input`() async throws {
+    func `store rejects path substitution and supports a maximum length filename`() async throws {
         let fixture = try await Self.canonicalHandoffData()
         let directory = try Self.privateDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -560,6 +673,20 @@ struct BrowserHandoffCLITests {
             }
         }
 
+        let longNameDirectory = try Self.privateDirectory()
+        defer { try? FileManager.default.removeItem(at: longNameDirectory) }
+        let longNameStore = try BrowserHandoffReceiptStore(
+            fileURL: longNameDirectory.appendingPathComponent(String(repeating: "a", count: 255))
+        )
+        try longNameStore.validateCanSave()
+        try longNameStore.save(fixture)
+        #expect(try longNameStore.load() == fixture)
+    }
+
+    @Test
+    @MainActor
+    func `store rejects noncanonical bytes oversized input and relative paths`() async throws {
+        let fixture = try await Self.canonicalHandoffData()
         var noncanonical = fixture
         noncanonical.append(UInt8(ascii: "\n"))
         #expect(throws: BrowserHandoffReceiptStoreError.invalidReceipt("receipt bundle bytes are not canonical")) {
@@ -579,20 +706,11 @@ struct BrowserHandoffCLITests {
         )) {
             _ = try BrowserHandoffReceiptStore(resolvingAbsolutePath: "relative.json")
         }
-
-        let longNameDirectory = try Self.privateDirectory()
-        defer { try? FileManager.default.removeItem(at: longNameDirectory) }
-        let longNameStore = try BrowserHandoffReceiptStore(
-            fileURL: longNameDirectory.appendingPathComponent(String(repeating: "a", count: 255))
-        )
-        try longNameStore.validateCanSave()
-        try longNameStore.save(fixture)
-        #expect(try longNameStore.load() == fixture)
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
-    func `MCP input loads canonical bytes and rejects duplicate conflicting or local routing`() async throws {
+    func `MCP input loads canonical bytes`() async throws {
         let fixture = try await Self.canonicalHandoffData()
         let directory = try Self.privateDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -626,13 +744,24 @@ struct BrowserHandoffCLITests {
         #expect(!captureEnvironmentOptions.remoteIsolationRequested)
         let runtime = CommandRuntime(options: options, services: PeekabooServices())
         #expect(runtime.browserHandoffReceiptBundleData == fixture)
+    }
 
+    @Test
+    @MainActor
+    func `MCP input rejects duplicate conflicting or local routing`() throws {
+        let handoff = "/private/tmp/peekaboo-handoff.json"
+        let socket = "/private/tmp/peekaboo-handoff.sock"
+        let valid = ParsedValues(
+            positional: [],
+            options: ["browserHandoff": [handoff], "bridge-socket": [socket]],
+            flags: []
+        )
         let invalidCases: [(ParsedValues, [String: String], BrowserHandoffCLIInputError)] = [
             (
                 ParsedValues(
                     positional: [],
                     options: [
-                        "browserHandoff": [store.fileURL.path, store.fileURL.path],
+                        "browserHandoff": [handoff, handoff],
                         "bridge-socket": [socket],
                     ],
                     flags: []
@@ -643,7 +772,7 @@ struct BrowserHandoffCLITests {
             (
                 ParsedValues(
                     positional: [],
-                    options: ["browserHandoff": [store.fileURL.path]],
+                    options: ["browserHandoff": [handoff]],
                     flags: []
                 ),
                 [:],
@@ -652,7 +781,7 @@ struct BrowserHandoffCLITests {
             (
                 ParsedValues(
                     positional: [],
-                    options: ["browserHandoff": [store.fileURL.path], "bridge-socket": [socket]],
+                    options: ["browserHandoff": [handoff], "bridge-socket": [socket]],
                     flags: ["no-remote"]
                 ),
                 [:],
@@ -676,7 +805,7 @@ struct BrowserHandoffCLITests {
         }
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `unsafe MCP receipt refuses before runtime factory construction`() async throws {
         let directory = try Self.privateDirectory()
@@ -703,7 +832,7 @@ struct BrowserHandoffCLITests {
         #expect(!runtimeConstructed)
     }
 
-    @Test
+    @Test(Self.cleanMetadataFixture)
     @MainActor
     func `valid MCP receipt reaches runtime factory before any server construction`() async throws {
         let fixture = try await Self.canonicalHandoffData()
@@ -782,6 +911,88 @@ struct BrowserHandoffCLITests {
 }
 
 extension BrowserHandoffCLITests {
+    private nonisolated static var cleanMetadataFixture: ConditionTrait {
+        .enabled("""
+        Native zero-metadata fixture unavailable: fresh owned entries carry only com.apple.provenance \
+        (11 bytes); no native positive handoff proof
+        """) { @MainActor in
+            let directory = try Self.metadataProbeDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let parentHasProvenance = try Self.fixtureHasProvenance(at: directory, subject: .parent)
+            let receiptHasProvenance = try Self.fixtureHasProvenance(
+                at: directory.appendingPathComponent("probe.json"), subject: .receipt
+            )
+            return !parentHasProvenance && !receiptHasProvenance
+        }
+    }
+
+    private static func metadataProbeDirectory() throws -> URL {
+        let directory = try Self.privateDirectory(verifyMetadata: false)
+        do {
+            let file = directory.appendingPathComponent("probe.json")
+            try Data("fixture".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            _ = try Self.fixtureHasProvenance(at: directory, subject: .parent)
+            _ = try Self.fixtureHasProvenance(at: file, subject: .receipt)
+            return directory
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    private static func fixtureHasProvenance(
+        at url: URL, subject: BrowserHandoffPathSubject
+    ) throws -> Bool {
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else { throw FixtureMetadataError.inspectionFailed }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              info.st_uid == geteuid(),
+              info.st_mode & S_IFMT == (subject == .parent ? S_IFDIR : S_IFREG),
+              info.st_mode & 0o777 == (subject == .parent ? 0o700 : 0o600)
+        else { throw FixtureMetadataError.inspectionFailed }
+        try BrowserHandoffReceiptStore.requireNoExtendedACL(descriptor, subject: subject)
+        return try Self.fixtureHasProvenance(descriptor)
+    }
+
+    private static func fixtureHasProvenance(_ descriptor: Int32) throws -> Bool {
+        let count = flistxattr(descriptor, nil, 0, XATTR_SHOWCOMPRESSION)
+        guard count >= 0, count <= 64 * 1024 else { throw FixtureMetadataError.inspectionFailed }
+        var names = [CChar](repeating: 0, count: count)
+        let readCount = names.withUnsafeMutableBufferPointer {
+            flistxattr(descriptor, $0.baseAddress, $0.count, XATTR_SHOWCOMPRESSION)
+        }
+        guard readCount == count else { throw FixtureMetadataError.inspectionFailed }
+        var size: Int?
+        if names == Array("com.apple.provenance".utf8CString) {
+            // Inspect the marker's size and readability, never expose its value or remove it.
+            var marker = [UInt8](repeating: 0, count: 11)
+            let readSize = marker.withUnsafeMutableBytes {
+                fgetxattr(descriptor, "com.apple.provenance", $0.baseAddress, $0.count, 0, 0)
+            }
+            guard readSize >= 0 else { throw FixtureMetadataError.inspectionFailed }
+            size = readSize
+        }
+        return try Self.classifyFixtureMetadata(names: names, size: size)
+    }
+
+    private static func classifyFixtureMetadata(names: [CChar], size: Int?) throws -> Bool {
+        if names.isEmpty, size == nil {
+            return false
+        }
+        if names == Array("com.apple.provenance".utf8CString), size == 11 {
+            return true
+        }
+        throw FixtureMetadataError.unexpectedMetadata
+    }
+
+    private enum FixtureMetadataError: Error, Equatable {
+        case inspectionFailed
+        case unexpectedMetadata
+    }
+
     @MainActor
     private static func browserCommand(
         action: String,
@@ -802,14 +1013,14 @@ extension BrowserHandoffCLITests {
         )
     }
 
-    private static func privateDirectory() throws -> URL {
+    private static func privateDirectory(verifyMetadata: Bool = true) throws -> URL {
         let baseDirectory = try Self.canonicalExistingDirectory(FileManager.default.temporaryDirectory)
         let directory = baseDirectory.appendingPathComponent(
             "peekaboo-browser-handoff-\(UUID().uuidString)",
             isDirectory: true
         )
         do {
-            try Self.createPrivateDirectory(at: directory)
+            try Self.createPrivateDirectory(at: directory, verifyMetadata: verifyMetadata)
         } catch {
             try? FileManager.default.removeItem(at: directory)
             throw error
@@ -829,15 +1040,17 @@ extension BrowserHandoffCLITests {
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    private static func createPrivateDirectory(at directory: URL) throws {
+    private static func createPrivateDirectory(at directory: URL, verifyMetadata: Bool = true) throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700]
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        // Ambient ACLs or attributes are a failing fixture precondition, never the intended negative case.
-        try BrowserHandoffReceiptStore(fileURL: directory.appendingPathComponent("baseline.json")).validateCanSave()
+        // Positive native cases retain the strict baseline; only the availability probe bypasses it.
+        if verifyMetadata {
+            try BrowserHandoffReceiptStore(fileURL: directory.appendingPathComponent("baseline.json")).validateCanSave()
+        }
     }
 
     private static func cleanReceiptStore(_ data: Data, at file: URL) throws -> BrowserHandoffReceiptStore {
