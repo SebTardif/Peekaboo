@@ -68,7 +68,7 @@ terminal_artifact_zip_app_exact() {
   [[ ! -e "$zip_path" && ! -L "$zip_path" ]] || return 1
   [[ ! -e "$retained_tree" && ! -L "$retained_tree" ]] || return 1
   terminal_artifact_tree_manifest "$app" "$retained_tree" || return 1
-  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path" || return 1
+  "${TERMINAL_ARTIFACT_ROOT:?}/scripts/create-app-zip.sh" "$app" "$zip_path" || return 1
   if terminal_artifact_zip_has_appledouble "$zip_path"; then
     printf 'Zip contains AppleDouble payload: %s\n' "$zip_path" >&2
     return 1

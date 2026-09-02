@@ -227,6 +227,12 @@ Load release credentials through the maintainer 1Password workflow, then run int
   --proof-file /path/to/reviewed-release-proof.md
 ```
 
+App ZIP creation uses `scripts/create-app-zip.sh` for both the notary submission and the final Sparkle archive. It omits
+resource forks, extended attributes, and quarantine metadata instead of emitting `__MACOSX`/AppleDouble entries, without
+modifying the source app's file bytes, modes, symlinks, signatures, or stapled ticket. The terminal artifact packager uses
+the same producer while retaining its stricter source-xattr guard and exact-tree roundtrip check. Final release ZIP
+validation still requires the exact app root and verifies the extracted app's signatures and notarization ticket.
+
 The script runs release preparation, builds the universal CLI and npm package, signs/notarizes/staples the macOS app
 and branded DMG, generates checksums and Sparkle metadata, and uploads a draft GitHub release. The complete preparation
 child uses `terminal-artifact-env.sh` to remove protected credential/startup variables and force

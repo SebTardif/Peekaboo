@@ -508,7 +508,7 @@ verify_nested_developer_id_signatures "$APP_BUNDLE"
 if [[ "$NOTARIZE" == true ]]; then
   log "Submitting to Apple notarization"
   NOTARY_ZIP="$NOTARY_DIR/$APP_NAME-notary.zip"
-  ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$NOTARY_ZIP"
+  "$ROOT/scripts/create-app-zip.sh" "$APP_BUNDLE" "$NOTARY_ZIP"
 
   if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
     xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "$NOTARYTOOL_PROFILE" --no-s3-acceleration --wait
@@ -550,7 +550,7 @@ fi
 
 log "Creating Sparkle zip"
 rm -f "$ZIP_PATH"
-ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+"$ROOT/scripts/create-app-zip.sh" "$APP_BUNDLE" "$ZIP_PATH"
 ZIP_LENGTH="$(stat -f%z "$ZIP_PATH")"
 ZIP_SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
 
