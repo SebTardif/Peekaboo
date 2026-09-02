@@ -260,11 +260,14 @@ struct VerifyStateWindowReceiptTests {
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": true]],
-            "timeout_ms": 250,
+            // Allow scheduling slack; success must still come from the first two polls below.
+            "timeout_ms": 1000,
         ]))
 
         #expect(Self.stringMeta("status", response) == "satisfied")
+        #expect(Self.intMeta("sample_count", response) == 2)
         #expect(Self.intMeta("stable_samples", response) == 2)
+        #expect(windows.callCount == 2)
     }
 
     private static func boundsArguments(_ bounds: CGRect) -> [String: Double] {
