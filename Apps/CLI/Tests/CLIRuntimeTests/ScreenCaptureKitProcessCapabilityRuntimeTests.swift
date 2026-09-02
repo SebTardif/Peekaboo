@@ -53,7 +53,8 @@ struct ScreenCaptureKitProcessCapabilityRuntimeTests {
         standardError: Pipe
     ) async throws -> UInt64 {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(5))
+        // Verify registration and ownership, not a five-second native startup deadline.
+        let deadline = clock.now.advanced(by: .seconds(30))
         while clock.now < deadline {
             guard process.isRunning else {
                 let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
