@@ -34,9 +34,9 @@ for candidate in \
       helper_executable="$(/usr/bin/dirname "$candidate")/../mac-release"
       [[ "$(/usr/bin/git -C "$helper_repo" rev-parse HEAD)" == "$MAC_RELEASE_EXPECTED_HELPER_COMMIT" &&
          -z "$(/usr/bin/git -C "$helper_repo" status --porcelain --untracked-files=no)" &&
-         "$(/usr/bin/shasum -a 256 "$candidate" | /usr/bin/awk '{print $1}')" ==
+         "$(/usr/bin/shasum -a 256 "$candidate" | /usr/bin/awk '{print $1}')" == \
            "${MAC_RELEASE_EXPECTED_HELPER_LIBRARY_SHA256:?}" &&
-         "$(/usr/bin/shasum -a 256 "$helper_executable" | /usr/bin/awk '{print $1}')" ==
+         "$(/usr/bin/shasum -a 256 "$helper_executable" | /usr/bin/awk '{print $1}')" == \
            "${MAC_RELEASE_EXPECTED_HELPER_EXECUTABLE_SHA256:?}" ]] ||
         fail "Release helper library differs from the frozen release plan"
     fi

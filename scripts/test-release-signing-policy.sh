@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Parse the real app release entrypoint without running its credential or packaging setup.
+/bin/bash --noprofile --norc -p -n "$ROOT_DIR/scripts/release-macos-app.sh"
 FOUNDATION_IDENTITY='Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)'
 FOUNDATION_TEAM='FWJYW4S8P8'
 
