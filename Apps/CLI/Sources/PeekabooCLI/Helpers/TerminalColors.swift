@@ -53,13 +53,14 @@ enum TerminalTitleProcessWaitError: Error {
     case timedOut
 }
 
-/// Wait for the VibeTunnel title process with a hard deadline.
+/// Wait for a launched `Process` with a hard deadline.
 ///
-/// Foundation's `waitUntilExit()` can block forever if a wedged `vt` is first on PATH.
-nonisolated func waitForTerminalTitleProcessExit(
+/// Foundation's `waitUntilExit()` can block forever if the child wedges.
+/// Returns `true` when the process exited, `false` after a timeout (TERM then SIGKILL).
+nonisolated func waitForProcessExit(
     _ process: Process,
-    timeoutSeconds: TimeInterval = 2
-) throws {
+    timeoutSeconds: TimeInterval
+) -> Bool {
     final class LeaveOnce: @unchecked Sendable {
         private let lock = NSLock()
         private let group = DispatchGroup()
@@ -93,7 +94,7 @@ nonisolated func waitForTerminalTitleProcessExit(
 
     let waitResult = once.wait(timeoutSeconds: timeoutSeconds)
     guard waitResult == .timedOut else {
-        return
+        return true
     }
 
     // Child can exit after the group wait times out and before cleanup.
@@ -110,5 +111,17 @@ nonisolated func waitForTerminalTitleProcessExit(
         }
     }
 
-    throw TerminalTitleProcessWaitError.timedOut
+    return false
+}
+
+/// Wait for the VibeTunnel title process with a hard deadline.
+///
+/// Foundation's `waitUntilExit()` can block forever if a wedged `vt` is first on PATH.
+nonisolated func waitForTerminalTitleProcessExit(
+    _ process: Process,
+    timeoutSeconds: TimeInterval = 2
+) throws {
+    guard waitForProcessExit(process, timeoutSeconds: timeoutSeconds) else {
+        throw TerminalTitleProcessWaitError.timedOut
+    }
 }
