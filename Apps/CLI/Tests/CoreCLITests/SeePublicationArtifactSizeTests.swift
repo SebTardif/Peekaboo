@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import PeekabooAutomation
 import PeekabooCore
@@ -24,9 +25,7 @@ struct SeePublicationArtifactSizeTests {
             Issue.record("Expected size-mismatch refusal before load")
             return
         }
-        #expect(message.contains("does not match verified content"))
-        #expect(message.contains("64"))
-        #expect(message.contains("\(verifiedData.count)"))
+        #expect(message.contains("exceeds the capture size limit"))
     }
 
     @Test
@@ -45,8 +44,7 @@ struct SeePublicationArtifactSizeTests {
             Issue.record("Expected sparse-file size refusal before load")
             return
         }
-        #expect(message.contains("does not match verified content"))
-        #expect(message.contains("\(ClipboardPayloadBuilder.defaultSizeLimit + 1)"))
+        #expect(message.contains("exceeds the capture size limit"))
     }
 
     @Test
@@ -68,8 +66,7 @@ struct SeePublicationArtifactSizeTests {
             Issue.record("Expected observation size-mismatch refusal")
             return
         }
-        #expect(message.contains("does not match verified content"))
-        #expect(message.contains("32"))
+        #expect(message.contains("exceeds the capture size limit"))
     }
 
     @Test
@@ -89,7 +86,6 @@ struct SeePublicationArtifactSizeTests {
             return
         }
         #expect(message.contains("exceeds the capture size limit"))
-        #expect(message.contains("\(ClipboardPayloadBuilder.defaultSizeLimit + 1)"))
     }
 
     @Test
@@ -104,6 +100,45 @@ struct SeePublicationArtifactSizeTests {
             label: "annotated screenshot"
         )
         #expect(data == payload)
+    }
+
+    @Test
+    func `valid annotation larger than both raw capture and ten MiB remains readable`() throws {
+        func makeBitmap() throws -> NSBitmapImageRep {
+            try #require(NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: 2048,
+                pixelsHigh: 2048,
+                bitsPerSample: 8,
+                samplesPerPixel: 3,
+                hasAlpha: false,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 24
+            ))
+        }
+        let source = try makeBitmap()
+        let sourceBytes = try #require(source.bitmapData)
+        sourceBytes.initialize(repeating: 0, count: source.bytesPerRow * source.pixelsHigh)
+        let raw = try #require(source.representation(using: .png, properties: [:]))
+        let bitmap = try makeBitmap()
+        let bytes = try #require(bitmap.bitmapData)
+        let count = bitmap.bytesPerRow * bitmap.pixelsHigh
+        var random: UInt32 = 0x1234_5678
+        for index in 0..<count {
+            random ^= random << 13
+            random ^= random >> 17
+            random ^= random << 5
+            bytes[index] = UInt8(truncatingIfNeeded: random)
+        }
+        let annotated = try #require(bitmap.representation(using: .png, properties: [:]))
+        #expect(annotated.count > max(ClipboardPayloadBuilder.defaultSizeLimit, raw.count))
+        let fixture = try Fixture(data: annotated)
+        defer { fixture.cleanup() }
+        #expect(try SeePublicationArtifact.readBounded(
+            at: fixture.url.path, label: "annotated screenshot"
+        ) == annotated)
     }
 
     @Test

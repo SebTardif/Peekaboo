@@ -89,6 +89,10 @@ For agent and automation runs, pass `--path` to a known temporary file when usin
 
 Passive background observations retry one resolve-and-capture transaction when the target's exact receipt changes during capture, then fail closed if it changes again. Foreground capture, explicit web-focus fallback, and menu-opening observations never retry because they can mutate visible desktop state.
 
+Before publication, saved images are read through one retained descriptor with a byte limit and checked against
+their verified content. Changed or oversized artifacts fail closed. Independently encoded annotations use the
+256 MiB capture-image limit; their size is not restricted to that of the raw screenshot.
+
 Pixel-only `see --no-elements` captures without `--path` write a generated file beneath `PEEKABOO_DEFAULT_SAVE_PATH`, `defaults.savePath`, or the built-in `~/Desktop` default, in that order. Generated names retain a readable timestamp and include a unique token so concurrent callers do not share a path. This also applies with `--json`; `data.files[].path` reports the saved file. Ordinary element-producing `--json` observations without `--path` instead retain the raw image only in managed snapshot storage and return empty `screenshot_raw` and `screenshot_annotated` fields.
 
 ## Exact-window ROI capture

@@ -621,10 +621,6 @@ RuntimeBackedCommand {
                     try Task.checkCancellation()
                     annotatedData = try SeePublicationArtifact.readBounded(
                         at: annotatedPath,
-                        maxBytes: max(
-                            ClipboardPayloadBuilder.defaultSizeLimit,
-                            captureResult.screenshotData?.count ?? 0
-                        ),
                         label: "annotated screenshot"
                     )
                 }

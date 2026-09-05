@@ -29,7 +29,7 @@ public enum CaptureArtifactIntegrityValidator {
         let sha256: String
     }
 
-    static let maximumPNGBytes = 256 * 1024 * 1024
+    public static let maximumPNGBytes = 256 * 1024 * 1024
     public static let maximumVideoBytes = 4 * 1024 * 1024 * 1024
     private static let maximumMetadataBytes = 16 * 1024 * 1024
 

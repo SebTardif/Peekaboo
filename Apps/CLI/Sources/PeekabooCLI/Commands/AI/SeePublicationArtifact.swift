@@ -8,49 +8,39 @@ enum SeePublicationArtifact {
         expectedByteCount: Int,
         label: String
     ) throws -> Data {
-        let size = try self.regularFileSize(at: path, label: label)
-        guard size == expectedByteCount else {
+        let file = try self.open(at: path, maxBytes: expectedByteCount, label: label)
+        guard file.byteCount == expectedByteCount else {
             throw CaptureError.captureFailure(
-                "Verified \(label) size \(size) does not match verified content " +
+                "Verified \(label) size \(file.byteCount) does not match verified content " +
                     "(\(expectedByteCount) bytes) before publication"
             )
         }
-        return try self.contents(at: path, label: label)
+        return try self.contents(of: file, label: label)
     }
 
     static func readBounded(
         at path: String,
-        maxBytes: Int = ClipboardPayloadBuilder.defaultSizeLimit,
+        maxBytes: Int = CaptureArtifactIntegrityValidator.maximumPNGBytes,
         label: String
     ) throws -> Data {
-        let size = try self.regularFileSize(at: path, label: label)
-        guard size <= maxBytes else {
-            throw CaptureError.captureFailure(
-                "Verified \(label) exceeds the capture size limit " +
-                    "(\(size) bytes, limit \(maxBytes)) before publication"
-            )
-        }
-        return try self.contents(at: path, label: label)
+        try self.contents(of: self.open(at: path, maxBytes: maxBytes, label: label), label: label)
     }
 
-    private static func regularFileSize(at path: String, label: String) throws -> Int {
-        let url = URL(fileURLWithPath: path)
+    private static func open(at path: String, maxBytes: Int, label: String) throws -> BoundedArtifactFile {
         do {
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else {
-                throw CaptureError.captureFailure("Verified \(label) could not be read before publication")
-            }
-            return size
-        } catch let error as CaptureError {
-            throw error
+            return try BoundedArtifactFile(path: path, maximumBytes: maxBytes)
+        } catch BoundedArtifactFileError.tooLarge {
+            throw CaptureError.captureFailure("Verified \(label) exceeds the capture size limit before publication")
         } catch {
             throw CaptureError.captureFailure("Verified \(label) could not be read before publication")
         }
     }
 
-    private static func contents(at path: String, label: String) throws -> Data {
+    private static func contents(of file: BoundedArtifactFile, label: String) throws -> Data {
         do {
-            return try Data(contentsOf: URL(fileURLWithPath: path))
+            return try file.read()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw CaptureError.captureFailure("Verified \(label) could not be read before publication")
         }
