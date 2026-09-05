@@ -365,24 +365,12 @@ extension DesktopObservationResult {
         label: String,
         maxBytes: Int = DesktopObservationResult.maximumArtifactBytes) throws -> Data
     {
-        let url = URL(fileURLWithPath: path)
-        let fileSize: Int
         do {
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else {
-                throw DesktopObservationContentVerificationError.unreadableArtifact(label)
-            }
-            fileSize = size
-        } catch let error as DesktopObservationContentVerificationError {
-            throw error
-        } catch {
-            throw DesktopObservationContentVerificationError.unreadableArtifact(label)
-        }
-        guard fileSize <= maxBytes else {
+            return try BoundedArtifactFile(path: path, maximumBytes: maxBytes).read()
+        } catch BoundedArtifactFileError.tooLarge {
             throw DesktopObservationContentVerificationError.artifactTooLarge(label)
-        }
-        do {
-            return try Data(contentsOf: url)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw DesktopObservationContentVerificationError.unreadableArtifact(label)
         }
