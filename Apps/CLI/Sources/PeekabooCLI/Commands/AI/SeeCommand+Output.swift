@@ -34,17 +34,16 @@ extension SeeCommand {
         }
     }
 
-    private static func requireCurrentArtifact(path: String, verifiedData: Data?, label: String) throws {
+    static func requireCurrentArtifact(path: String, verifiedData: Data?, label: String) throws {
         guard !path.isEmpty else { return }
         guard let verifiedData else {
             throw CaptureError.captureFailure("\(label.capitalized) has no verified content before publication")
         }
-        let current: Data
-        do {
-            current = try Data(contentsOf: URL(fileURLWithPath: path))
-        } catch {
-            throw CaptureError.captureFailure("Verified \(label) could not be read before publication")
-        }
+        let current = try SeePublicationArtifact.readMatchingVerifiedBytes(
+            at: path,
+            expectedByteCount: verifiedData.count,
+            label: label
+        )
         try DesktopObservationContentDigest.verify(
             current,
             expectedSHA256: DesktopObservationContentDigest.sha256(verifiedData)

@@ -286,12 +286,11 @@ extension SeeCommand {
 
     static func requireCurrentCaptureArtifacts(_ captures: [ImageCapturedFile]) throws {
         for capture in captures {
-            let current: Data
-            do {
-                current = try Data(contentsOf: URL(fileURLWithPath: capture.file.path))
-            } catch {
-                throw CaptureError.captureFailure("Verified screenshot could not be read before publication")
-            }
+            let current = try SeePublicationArtifact.readMatchingVerifiedBytes(
+                at: capture.file.path,
+                expectedByteCount: capture.imageData.count,
+                label: "screenshot"
+            )
             try DesktopObservationContentDigest.verify(
                 current,
                 expectedSHA256: DesktopObservationContentDigest.sha256(capture.imageData)

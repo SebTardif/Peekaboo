@@ -619,7 +619,14 @@ RuntimeBackedCommand {
                         annotatedScreenshotPath: annotatedPath
                     )
                     try Task.checkCancellation()
-                    annotatedData = try Data(contentsOf: URL(fileURLWithPath: annotatedPath))
+                    annotatedData = try SeePublicationArtifact.readBounded(
+                        at: annotatedPath,
+                        maxBytes: max(
+                            ClipboardPayloadBuilder.defaultSizeLimit,
+                            captureResult.screenshotData?.count ?? 0
+                        ),
+                        label: "annotated screenshot"
+                    )
                 }
                 logger.operationComplete(
                     "generate_annotations",
