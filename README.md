@@ -51,9 +51,9 @@ peekaboo see --app Finder --json
 
 That is the core loop: observe the current screen, choose an element from the result, and act on it.
 
-## What's new in 4.3.1
+## What's new in 4.3.2
 
-Peekaboo 4.3.1 captures exact popup and sheet extents, bounds screenshot reads without losing large annotations, and updates Sparkle with archive handling and signature validation security fixes. Scripted editor waits now support an optional timeout, graceful capture-action cancellation gets its full TERM window, and legacy Bridge clients retain compatible capability negotiation.
+Peekaboo 4.3.2 adds `type --accept-dispatched` for scripts that perform their own follow-up observation, preserving strict defaults, truthful counters, and unsafe-to-retry metadata. App installation recovers authenticated GUI Bridge identity more reliably, release recovery handles draft and npm metadata consistently, and binary verification treats paths literally.
 
 ## Automate an app
 
