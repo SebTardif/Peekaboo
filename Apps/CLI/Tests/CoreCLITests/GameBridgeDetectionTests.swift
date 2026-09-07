@@ -261,6 +261,43 @@ struct GameBridgeDetectionTests {
         #expect(result == nil)
     }
 
+    @available(macOS 14.0, *)
+    @Test
+    func `Oversized Firestaff manifest is ignored`() throws {
+        let padding = String(repeating: "x", count: GameBridgeDetectionService.maximumManifestBytes)
+        let json = """
+        {"version":1,"app":"firestaff","gameState":"huge",
+         "framebuffer":{"width":320,"height":200},"elements":[],
+         "padding":"\(padding)"}
+        """
+        #expect(json.utf8.count > GameBridgeDetectionService.maximumManifestBytes)
+
+        let manifestRootURL = try self.writeFirestaffManifest(json)
+        defer { try? FileManager.default.removeItem(at: manifestRootURL) }
+
+        let context = WindowContext(
+            applicationName: "firestaff",
+            applicationBundleId: nil,
+            applicationProcessId: nil,
+            windowTitle: nil,
+            windowID: nil,
+            windowBounds: nil,
+            shouldFocusWebContent: false,
+            traversalBudget: nil
+        )
+        let result = GameBridgeDetectionService.tryDetect(
+            windowContext: context,
+            snapshotId: "oversized-snapshot",
+            manifestRootURL: manifestRootURL
+        )
+
+        #expect(result == nil)
+        #expect(GameBridgeDetectionService.readManifest(
+            appName: "firestaff",
+            manifestRootURL: manifestRootURL
+        ) == nil)
+    }
+
     private func writeFirestaffManifest(_ json: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("peekaboo-gamebridge-tests-\(UUID().uuidString)")

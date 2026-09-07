@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- Bound Firestaff GameBridge accessibility.json reads and reject oversized manifests before decode.
+
 ## 4.3.2 - 2026-09-07
 
 **Highlights:** Explicit typing dispatch acceptance for scripts and more reliable release recovery.

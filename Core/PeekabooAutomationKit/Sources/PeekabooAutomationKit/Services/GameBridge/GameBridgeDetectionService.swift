@@ -20,6 +20,9 @@ public final class GameBridgeDetectionService: Sendable {
         "Firestaff": ".firestaff/accessibility.json",
     ]
 
+    /// Third-party Firestaff manifest cap. The game rewrites this file each frame.
+    public static let maximumManifestBytes = 1 * 1024 * 1024
+
     /// Manifest JSON structure matching Firestaff's accessibility output
     public struct GameManifest: Codable, Sendable {
         public let version: Int
@@ -113,7 +116,10 @@ public final class GameBridgeDetectionService: Sendable {
         let manifestURL = manifestRootURL.appendingPathComponent(relativePath)
 
         guard self.isFreshManifest(at: manifestURL, now: now, maxAge: maxManifestAge) else { return nil }
-        guard let data = try? Data(contentsOf: manifestURL) else { return nil }
+        guard let data = try? BoundedArtifactFile(
+            path: manifestURL.path,
+            maximumBytes: self.maximumManifestBytes).read()
+        else { return nil }
         return try? JSONDecoder().decode(GameManifest.self, from: data)
     }
 
