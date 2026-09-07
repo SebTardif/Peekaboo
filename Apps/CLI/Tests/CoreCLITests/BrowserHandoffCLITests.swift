@@ -707,7 +707,9 @@ struct BrowserHandoffCLITests {
             _ = try BrowserHandoffReceiptStore(resolvingAbsolutePath: "relative.json")
         }
     }
+}
 
+extension BrowserHandoffCLITests {
     @Test(Self.cleanMetadataFixture)
     @MainActor
     func `MCP input loads canonical bytes`() async throws {
