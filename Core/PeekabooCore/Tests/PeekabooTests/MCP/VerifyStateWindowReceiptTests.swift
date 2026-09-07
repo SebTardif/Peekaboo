@@ -28,13 +28,15 @@ struct VerifyStateWindowReceiptTests {
             "pid": Int(fixture.application.processIdentifier),
             "window_id": fixture.window.windowID,
             "predicates": [["kind": "window_exists", "expected": true]],
-            "timeout_ms": 250,
+            // Allow scheduling slack so receipt drift, rather than a missed second poll, is exercised.
+            "timeout_ms": 1000,
         ]))
 
         #expect(Self.stringMeta("status", response) == "unknown")
         #expect(Self.stringMeta("reason", response)?.contains("verification receipt changed") == true)
         #expect(Self.stringMeta("reason", response)?.contains("no stronger window-incarnation token") == true)
         #expect(Self.intMeta("stable_samples", response) == 0)
+        #expect(windows.callCount >= 2)
     }
 
     @Test
