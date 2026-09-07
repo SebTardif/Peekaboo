@@ -42,7 +42,7 @@ struct CLIDesktopFixtureTests {
 
         try await fixture.laneCoordinator.run(scope: .global, access: .write) {
             do {
-                try await borrowed.run(scope: .global, access: .write) {
+                _ = try await borrowed.run(scope: .global, access: .write) {
                     Issue.record("A second coordinator must not bypass the same-root lane")
                 }
                 Issue.record("Expected nested same-root acquisition to fail")

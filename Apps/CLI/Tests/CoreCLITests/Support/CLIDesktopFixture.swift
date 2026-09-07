@@ -14,10 +14,13 @@ struct CLIDesktopFixture {
     init() throws {
         // Keep UNIX socket paths below sockaddr_un's limit, including on Darwin's long temporary paths.
         var template = Array("/tmp/pb-cli-XXXXXX".utf8CString)
-        guard mkdtemp(&template) != nil else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        let path = try template.withUnsafeMutableBufferPointer { buffer in
+            guard let directory = mkdtemp(buffer.baseAddress) else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            return String(cString: directory)
         }
-        let root = URL(fileURLWithPath: String(cString: template), isDirectory: true)
+        let root = URL(fileURLWithPath: path, isDirectory: true)
         self.root = root
         self.watermarkStore = DesktopMutationWatermarkStore(directoryURL: root)
         self.laneCoordinator = DesktopOperationLaneCoordinator(coordinationRootURL: root)
