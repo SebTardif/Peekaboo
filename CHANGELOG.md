@@ -2,9 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-- Bound Firestaff GameBridge accessibility.json reads, reject oversized manifests, and keep the opened frame when Firestaff atomically replaces the live path.
-
 ## 4.3.2 - 2026-09-07
 
 **Highlights:** Explicit typing dispatch acceptance for scripts, plus more reliable app installation and release recovery.

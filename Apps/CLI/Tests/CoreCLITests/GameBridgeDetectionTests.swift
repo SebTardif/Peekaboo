@@ -263,14 +263,15 @@ struct GameBridgeDetectionTests {
 
     @available(macOS 14.0, *)
     @Test
-    func `Oversized Firestaff manifest is ignored`() throws {
-        let padding = String(repeating: "x", count: GameBridgeDetectionService.maximumManifestBytes)
+    func `Firestaff manifest budget is opt in and enforced during detection`() throws {
+        let maximumBytes = 1024 * 1024
+        let padding = String(repeating: "x", count: maximumBytes)
         let json = """
         {"version":1,"app":"firestaff","gameState":"huge",
          "framebuffer":{"width":320,"height":200},"elements":[],
          "padding":"\(padding)"}
         """
-        #expect(json.utf8.count > GameBridgeDetectionService.maximumManifestBytes)
+        #expect(json.utf8.count > maximumBytes)
 
         let manifestRootURL = try self.writeFirestaffManifest(json)
         defer { try? FileManager.default.removeItem(at: manifestRootURL) }
@@ -288,14 +289,33 @@ struct GameBridgeDetectionTests {
         let result = GameBridgeDetectionService.tryDetect(
             windowContext: context,
             snapshotId: "oversized-snapshot",
-            manifestRootURL: manifestRootURL
+            manifestRootURL: manifestRootURL,
+            environment: ["PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES": String(maximumBytes)]
         )
 
         #expect(result == nil)
         #expect(GameBridgeDetectionService.readManifest(
             appName: "firestaff",
-            manifestRootURL: manifestRootURL
+            manifestRootURL: manifestRootURL,
+            environment: ["PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES": String(maximumBytes)]
         ) == nil)
+        #expect(GameBridgeDetectionService.readManifest(
+            appName: "firestaff",
+            manifestRootURL: manifestRootURL,
+            environment: [:]
+        )?.gameState == "huge")
+        #expect(GameBridgeDetectionService.readManifest(
+            appName: "firestaff",
+            manifestRootURL: manifestRootURL,
+            environment: ["PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES": String(json.utf8.count)]
+        )?.gameState == "huge")
+        for invalid in ["0", "-1", "abc", "999999999999999999999999999"] {
+            #expect(GameBridgeDetectionService.readManifest(
+                appName: "firestaff",
+                manifestRootURL: manifestRootURL,
+                environment: ["PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES": invalid]
+            ) == nil)
+        }
     }
 
     @available(macOS 14.0, *)
@@ -316,7 +336,7 @@ struct GameBridgeDetectionTests {
             .appendingPathComponent("accessibility.json")
         let file = try BoundedArtifactFile(
             path: path.path,
-            maximumBytes: GameBridgeDetectionService.maximumManifestBytes
+            maximumBytes: 1024 * 1024
         )
         try second.write(to: path, atomically: true, encoding: .utf8)
 

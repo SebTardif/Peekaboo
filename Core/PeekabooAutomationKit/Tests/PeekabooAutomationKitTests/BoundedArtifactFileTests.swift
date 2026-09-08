@@ -52,6 +52,40 @@ struct BoundedArtifactFileTests {
     }
 
     @Test
+    func `same size overwrite is refused even when path replacement is allowed`() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try BoundedArtifactFile(path: fixture.url.path, maximumBytes: 16)
+        let writer = try FileHandle(forWritingTo: fixture.url)
+        try writer.write(contentsOf: Data(repeating: 0x42, count: fixture.data.count))
+        try writer.close()
+        // Make the metadata difference deterministic even on coarse timestamp filesystems.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1)],
+            ofItemAtPath: fixture.url.path)
+        #expect(throws: BoundedArtifactFileError.changedDuringRead) {
+            try file.read(requireStablePath: false)
+        }
+    }
+
+    @Test
+    func `restoring mtime cannot hide an in place rewrite`() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        var originalInfo = stat()
+        #expect(Darwin.fstatat(AT_FDCWD, fixture.url.path, &originalInfo, 0) == 0)
+        let file = try BoundedArtifactFile(path: fixture.url.path, maximumBytes: 16)
+        let writer = try FileHandle(forWritingTo: fixture.url)
+        try writer.write(contentsOf: Data(repeating: 0x42, count: fixture.data.count))
+        try writer.close()
+        var times = [originalInfo.st_atimespec, originalInfo.st_mtimespec]
+        #expect(Darwin.utimensat(AT_FDCWD, fixture.url.path, &times, 0) == 0)
+        #expect(throws: BoundedArtifactFileError.changedDuringRead) {
+            try file.read(requireStablePath: false)
+        }
+    }
+
+    @Test
     func `truncation and in-budget growth after open are refused`() throws {
         for size in [0, 12] {
             let fixture = try Fixture()

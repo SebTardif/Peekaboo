@@ -38,12 +38,24 @@ Peekaboo resolves settings in this order (highest → lowest):
 | Log Level | `logging.level` | `PEEKABOO_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error`, `fatal` (default `info`). |
 | Log Path | `logging.path` | `PEEKABOO_LOG_FILE` | Custom log destination (default `/tmp/peekaboo-mcp.log` for MCP; CLI uses stderr). |
 | CLI Binary Path | - | `PEEKABOO_CLI_PATH` | Override bundled CLI when testing custom builds. |
+| GameBridge manifest budget | - | `PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES` | Optional positive byte limit for Firestaff accessibility manifests. Unset or empty preserves unlimited size; invalid values disable GameBridge detection. |
 | Auto daemon socket | - | `PEEKABOO_DAEMON_SOCKET` | Override the socket used for auto-started daemons (mainly tests/dev). |
 | Auto daemon idle timeout | - | `PEEKABOO_DAEMON_IDLE_TIMEOUT_SECONDS` | Seconds before an auto-started daemon exits while idle (default 300). |
 | Tool allow-list | `tools.allow` | `PEEKABOO_ALLOW_TOOLS` | CSV or space list. If set, only these tools are exposed (env replaces config). |
 | Tool deny-list | `tools.deny` | `PEEKABOO_DISABLE_TOOLS` | CSV or space list. Always removed; env list is additive with config. |
 | UI input strategy | `input.*` | `PEEKABOO_INPUT_STRATEGY` and per-verb variants | Choose action invocation versus synthetic input. Built-in policy uses `actionFirst` for click/scroll and `synthFirst` for type/hotkey. |
 | Element detection boxes | `visualizer.elementDetectionEnabled` | `PEEKABOO_VISUAL_ELEMENT_BOXES` | Draw a bounding box per accessibility element during `peekaboo see`. Default `false` (visually noisy); env var overrides config. The Peekaboo.app settings toggle writes the same config key. |
+
+## GameBridge manifest budget
+
+Set `PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES=1048576` to limit Firestaff manifests to 1 MiB.
+The limit is inclusive and applies before loading or decoding the file, including growth after opening.
+An oversized or invalid manifest is ignored and normal Accessibility detection can proceed.
+Firestaff must publish immutable frames by atomic rename; detected size or timestamp changes are refused.
+Unset or empty keeps the existing unlimited-size default.
+
+The environment belongs to the process performing detection. Use `--no-remote` for a standalone CLI invocation,
+or set the variable when starting the Bridge host. A CLI environment override is not forwarded to an already-running host.
 
 ## API Key Storage
 

@@ -4,7 +4,7 @@ import Foundation
 /// Detects UI elements in SDL/GPU-rendered game windows by reading a JSON
 /// accessibility manifest that the game writes each frame.
 ///
-/// Protocol: the game writes `~/.{appname}/accessibility.json` atomically.
+/// Protocol: the game publishes immutable frames at `~/.{appname}/accessibility.json` by atomic rename.
 /// Peekaboo reads this file during element detection when the target window
 /// belongs to a known game-bridge app.
 ///
@@ -19,9 +19,6 @@ public final class GameBridgeDetectionService: Sendable {
         "firestaff": ".firestaff/accessibility.json",
         "Firestaff": ".firestaff/accessibility.json",
     ]
-
-    /// Third-party Firestaff manifest cap. The game rewrites this file each frame.
-    public static let maximumManifestBytes = 1 * 1024 * 1024
 
     /// Manifest JSON structure matching Firestaff's accessibility output
     public struct GameManifest: Codable, Sendable {
@@ -110,15 +107,23 @@ public final class GameBridgeDetectionService: Sendable {
         appName: String,
         manifestRootURL: URL = FileManager.default.homeDirectoryForCurrentUser,
         now: Date = Date(),
-        maxManifestAge: TimeInterval = 5) -> GameManifest?
+        maxManifestAge: TimeInterval = 5,
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> GameManifest?
     {
         guard let relativePath = knownApps[appName] else { return nil }
         let manifestURL = manifestRootURL.appendingPathComponent(relativePath)
 
         guard self.isFreshManifest(at: manifestURL, now: now, maxAge: maxManifestAge) else { return nil }
+        let maximumBytes: Int
+        if let configured = environment["PEEKABOO_GAMEBRIDGE_MAX_MANIFEST_BYTES"], !configured.isEmpty {
+            guard let limit = Int(configured), limit > 0 else { return nil }
+            maximumBytes = limit
+        } else {
+            maximumBytes = Int.max
+        }
         guard let data = try? BoundedArtifactFile(
             path: manifestURL.path,
-            maximumBytes: self.maximumManifestBytes).read(requireStablePath: false)
+            maximumBytes: maximumBytes).read(requireStablePath: false)
         else { return nil }
         return try? JSONDecoder().decode(GameManifest.self, from: data)
     }

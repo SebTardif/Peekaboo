@@ -44,10 +44,12 @@ public final class BoundedArtifactFile {
 
     deinit { Darwin.close(self.descriptor) }
 
-    /// Read once; refuse replacement or mutation rather than publishing bytes under a stale path.
+    /// Read once; by default require unchanged path identity and descriptor metadata.
     ///
-    /// Pass `requireStablePath: false` when the publisher replaces the path by atomic rename
-    /// (Firestaff frames). The opened descriptor is still checked for in-place mutation.
+    /// Atomic-only publishers of immutable frames may pass `requireStablePath: false`.
+    /// Size and mtime must still match; ctime may change only after the opened file is unlinked.
+    /// This is not snapshot isolation against a writer that mutates a published inode,
+    /// restores its timestamps, and then unlinks it. Such writers must use the default mode.
     public func read(requireStablePath: Bool = true) throws -> Data {
         var data = Data()
         data.reserveCapacity(self.byteCount)
@@ -79,20 +81,34 @@ public final class BoundedArtifactFile {
                   Darwin.fstatat(AT_FDCWD, self.path, &pathInfo, 0) == 0,
                   Self.unchanged(self.initialInfo, pathInfo)
             else { throw BoundedArtifactFileError.changedDuringRead }
-        } else if descriptorInfo.st_dev != self.initialInfo.st_dev
-            || descriptorInfo.st_ino != self.initialInfo.st_ino
-        {
-            throw BoundedArtifactFileError.changedDuringRead
+        } else if !Self.unchanged(self.initialInfo, descriptorInfo) {
+            guard Self.contentUnchanged(self.initialInfo, descriptorInfo),
+                  self.wasUnlinked(descriptorInfo)
+            else { throw BoundedArtifactFileError.changedDuringRead }
         }
         return data
     }
 
+    private func wasUnlinked(_ info: stat) -> Bool {
+        guard info.st_nlink < self.initialInfo.st_nlink else { return false }
+        var pathInfo = stat()
+        if Darwin.fstatat(AT_FDCWD, self.path, &pathInfo, 0) == 0 {
+            return pathInfo.st_dev != info.st_dev || pathInfo.st_ino != info.st_ino
+        }
+        return errno == ENOENT
+    }
+
     private static func unchanged(_ first: stat, _ second: stat) -> Bool {
+        self.contentUnchanged(first, second) &&
+            first.st_ctimespec.tv_sec == second.st_ctimespec.tv_sec &&
+            first.st_ctimespec.tv_nsec == second.st_ctimespec.tv_nsec
+    }
+
+    private static func contentUnchanged(_ first: stat, _ second: stat) -> Bool {
+        // Atomic replacement can change the retained inode's ctime when its link is removed.
         first.st_dev == second.st_dev && first.st_ino == second.st_ino &&
             first.st_mode == second.st_mode && first.st_size == second.st_size &&
             first.st_mtimespec.tv_sec == second.st_mtimespec.tv_sec &&
-            first.st_mtimespec.tv_nsec == second.st_mtimespec.tv_nsec &&
-            first.st_ctimespec.tv_sec == second.st_ctimespec.tv_sec &&
-            first.st_ctimespec.tv_nsec == second.st_ctimespec.tv_nsec
+            first.st_mtimespec.tv_nsec == second.st_mtimespec.tv_nsec
     }
 }

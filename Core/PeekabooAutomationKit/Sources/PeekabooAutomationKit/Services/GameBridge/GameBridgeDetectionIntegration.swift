@@ -20,7 +20,8 @@ extension GameBridgeDetectionService {
         windowContext: WindowContext?,
         snapshotId: String? = nil,
         manifestRootURL: URL = FileManager.default
-            .homeDirectoryForCurrentUser) -> ElementDetectionResult?
+            .homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> ElementDetectionResult?
     {
         guard let appName = windowContext?.applicationName,
               isGameBridgeApp(appName: appName)
@@ -28,7 +29,11 @@ extension GameBridgeDetectionService {
             return nil
         }
 
-        guard let manifest = readManifest(appName: appName, manifestRootURL: manifestRootURL) else {
+        guard let manifest = readManifest(
+            appName: appName,
+            manifestRootURL: manifestRootURL,
+            environment: environment)
+        else {
             return nil
         }
 
