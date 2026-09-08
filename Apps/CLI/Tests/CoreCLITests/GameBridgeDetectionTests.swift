@@ -1,9 +1,20 @@
 import Foundation
+import PeekabooFoundation
 import Testing
 @testable import PeekabooAutomationKit
 
 @Suite("GameBridge Detection Tests")
 struct GameBridgeDetectionTests {
+    @Test
+    func `Public method references retain their original signatures`() {
+        let read: (String, URL, Date, TimeInterval) -> GameBridgeDetectionService.GameManifest? =
+            GameBridgeDetectionService.readManifest
+        let detect: (WindowContext?, String?, URL) -> ElementDetectionResult? = GameBridgeDetectionService.tryDetect
+        let root = FileManager.default.temporaryDirectory
+        #expect(read("unknown", root, Date(), 5) == nil)
+        #expect(detect(nil, nil, root) == nil)
+    }
+
     @available(macOS 14.0, *)
     @Test
     func `Known app is recognized`() {
@@ -340,7 +351,7 @@ struct GameBridgeDetectionTests {
         )
         try second.write(to: path, atomically: true, encoding: .utf8)
 
-        let data = try file.read(requireStablePath: false)
+        let data = try file.readImmutableFrame()
         let opened = try JSONDecoder().decode(
             GameBridgeDetectionService.GameManifest.self,
             from: data

@@ -107,8 +107,22 @@ public final class GameBridgeDetectionService: Sendable {
         appName: String,
         manifestRootURL: URL = FileManager.default.homeDirectoryForCurrentUser,
         now: Date = Date(),
+        maxManifestAge: TimeInterval = 5) -> GameManifest?
+    {
+        self.readManifest(
+            appName: appName,
+            manifestRootURL: manifestRootURL,
+            now: now,
+            maxManifestAge: maxManifestAge,
+            environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func readManifest(
+        appName: String,
+        manifestRootURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        now: Date = Date(),
         maxManifestAge: TimeInterval = 5,
-        environment: [String: String] = ProcessInfo.processInfo.environment) -> GameManifest?
+        environment: [String: String]) -> GameManifest?
     {
         guard let relativePath = knownApps[appName] else { return nil }
         let manifestURL = manifestRootURL.appendingPathComponent(relativePath)
@@ -123,7 +137,7 @@ public final class GameBridgeDetectionService: Sendable {
         }
         guard let data = try? BoundedArtifactFile(
             path: manifestURL.path,
-            maximumBytes: maximumBytes).read(requireStablePath: false)
+            maximumBytes: maximumBytes).readImmutableFrame()
         else { return nil }
         return try? JSONDecoder().decode(GameManifest.self, from: data)
     }

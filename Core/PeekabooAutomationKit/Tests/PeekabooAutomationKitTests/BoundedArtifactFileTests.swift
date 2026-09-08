@@ -5,6 +5,15 @@ import Testing
 
 struct BoundedArtifactFileTests {
     @Test
+    func `strict reader retains its zero argument method reference`() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try BoundedArtifactFile(path: fixture.url.path, maximumBytes: fixture.data.count)
+        let read = file.read
+        #expect(try read() == fixture.data)
+    }
+
+    @Test
     func `inclusive limits and ordinary symlinks remain readable`() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -48,7 +57,7 @@ struct BoundedArtifactFileTests {
         defer { fixture.cleanup() }
         let file = try BoundedArtifactFile(path: fixture.url.path, maximumBytes: 16)
         try Data(repeating: 0x42, count: fixture.data.count).write(to: fixture.url, options: .atomic)
-        #expect(try file.read(requireStablePath: false) == fixture.data)
+        #expect(try file.readImmutableFrame() == fixture.data)
     }
 
     @Test
@@ -64,7 +73,7 @@ struct BoundedArtifactFileTests {
             [.modificationDate: Date(timeIntervalSince1970: 1)],
             ofItemAtPath: fixture.url.path)
         #expect(throws: BoundedArtifactFileError.changedDuringRead) {
-            try file.read(requireStablePath: false)
+            try file.readImmutableFrame()
         }
     }
 
@@ -81,7 +90,7 @@ struct BoundedArtifactFileTests {
         var times = [originalInfo.st_atimespec, originalInfo.st_mtimespec]
         #expect(Darwin.utimensat(AT_FDCWD, fixture.url.path, &times, 0) == 0)
         #expect(throws: BoundedArtifactFileError.changedDuringRead) {
-            try file.read(requireStablePath: false)
+            try file.readImmutableFrame()
         }
     }
 

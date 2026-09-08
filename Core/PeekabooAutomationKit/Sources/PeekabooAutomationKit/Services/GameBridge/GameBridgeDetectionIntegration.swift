@@ -19,9 +19,21 @@ extension GameBridgeDetectionService {
     public static func tryDetect(
         windowContext: WindowContext?,
         snapshotId: String? = nil,
+        manifestRootURL: URL = FileManager.default.homeDirectoryForCurrentUser) -> ElementDetectionResult?
+    {
+        self.tryDetect(
+            windowContext: windowContext,
+            snapshotId: snapshotId,
+            manifestRootURL: manifestRootURL,
+            environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func tryDetect(
+        windowContext: WindowContext?,
+        snapshotId: String? = nil,
         manifestRootURL: URL = FileManager.default
             .homeDirectoryForCurrentUser,
-        environment: [String: String] = ProcessInfo.processInfo.environment) -> ElementDetectionResult?
+        environment: [String: String]) -> ElementDetectionResult?
     {
         guard let appName = windowContext?.applicationName,
               isGameBridgeApp(appName: appName)

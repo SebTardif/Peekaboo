@@ -44,13 +44,20 @@ public final class BoundedArtifactFile {
 
     deinit { Darwin.close(self.descriptor) }
 
-    /// Read once; by default require unchanged path identity and descriptor metadata.
-    ///
-    /// Atomic-only publishers of immutable frames may pass `requireStablePath: false`.
+    /// Read once, requiring unchanged path identity and descriptor metadata.
+    public func read() throws -> Data {
+        try self.read(requireStablePath: true)
+    }
+
+    /// Read a frame from an atomic-only publisher without requiring its path to remain current.
     /// Size and mtime must still match; ctime may change only after the opened file is unlinked.
     /// This is not snapshot isolation against a writer that mutates a published inode,
-    /// restores its timestamps, and then unlinks it. Such writers must use the default mode.
-    public func read(requireStablePath: Bool = true) throws -> Data {
+    /// restores its timestamps, and then unlinks it. Such writers must use `read()`.
+    public func readImmutableFrame() throws -> Data {
+        try self.read(requireStablePath: false)
+    }
+
+    private func read(requireStablePath: Bool) throws -> Data {
         var data = Data()
         data.reserveCapacity(self.byteCount)
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
