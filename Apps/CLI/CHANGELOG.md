@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
-- Bound Firestaff GameBridge accessibility.json reads and reject oversized manifests before decode.
+- Bound Firestaff GameBridge accessibility.json reads, reject oversized manifests, and keep the opened frame when Firestaff atomically replaces the live path.
 
 ## 4.3.2 - 2026-09-07
 

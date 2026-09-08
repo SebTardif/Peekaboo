@@ -45,7 +45,10 @@ public final class BoundedArtifactFile {
     deinit { Darwin.close(self.descriptor) }
 
     /// Read once; refuse replacement or mutation rather than publishing bytes under a stale path.
-    public func read() throws -> Data {
+    ///
+    /// Pass `requireStablePath: false` when the publisher replaces the path by atomic rename
+    /// (Firestaff frames). The opened descriptor is still checked for in-place mutation.
+    public func read(requireStablePath: Bool = true) throws -> Data {
         var data = Data()
         data.reserveCapacity(self.byteCount)
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -67,13 +70,20 @@ public final class BoundedArtifactFile {
             data.append(contentsOf: buffer.prefix(count))
         }
         var descriptorInfo = stat()
-        var pathInfo = stat()
         guard Darwin.fstat(self.descriptor, &descriptorInfo) == 0,
-              Darwin.fstatat(AT_FDCWD, self.path, &pathInfo, 0) == 0,
-              Self.unchanged(self.initialInfo, descriptorInfo),
-              Self.unchanged(self.initialInfo, pathInfo),
               data.count == self.byteCount
         else { throw BoundedArtifactFileError.changedDuringRead }
+        if requireStablePath {
+            var pathInfo = stat()
+            guard Self.unchanged(self.initialInfo, descriptorInfo),
+                  Darwin.fstatat(AT_FDCWD, self.path, &pathInfo, 0) == 0,
+                  Self.unchanged(self.initialInfo, pathInfo)
+            else { throw BoundedArtifactFileError.changedDuringRead }
+        } else if descriptorInfo.st_dev != self.initialInfo.st_dev
+            || descriptorInfo.st_ino != self.initialInfo.st_ino
+        {
+            throw BoundedArtifactFileError.changedDuringRead
+        }
         return data
     }
 

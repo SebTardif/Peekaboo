@@ -118,7 +118,7 @@ public final class GameBridgeDetectionService: Sendable {
         guard self.isFreshManifest(at: manifestURL, now: now, maxAge: maxManifestAge) else { return nil }
         guard let data = try? BoundedArtifactFile(
             path: manifestURL.path,
-            maximumBytes: self.maximumManifestBytes).read()
+            maximumBytes: self.maximumManifestBytes).read(requireStablePath: false)
         else { return nil }
         return try? JSONDecoder().decode(GameManifest.self, from: data)
     }

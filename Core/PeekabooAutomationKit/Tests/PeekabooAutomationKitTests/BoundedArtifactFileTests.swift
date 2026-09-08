@@ -43,6 +43,15 @@ struct BoundedArtifactFileTests {
     }
 
     @Test
+    func `opened bytes stay readable when the path is atomically replaced`() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let file = try BoundedArtifactFile(path: fixture.url.path, maximumBytes: 16)
+        try Data(repeating: 0x42, count: fixture.data.count).write(to: fixture.url, options: .atomic)
+        #expect(try file.read(requireStablePath: false) == fixture.data)
+    }
+
+    @Test
     func `truncation and in-budget growth after open are refused`() throws {
         for size in [0, 12] {
             let fixture = try Fixture()
