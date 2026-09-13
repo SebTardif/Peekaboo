@@ -13,6 +13,8 @@
 
 - Clarify observation evidence failures and runtime refusal guidance so same-build verification errors do not imply that an update will fix them. #710.
 
+- Strengthen selected-CLI guidance checks, repair published guide links, restore the read-only clipboard example, run guidance checks in regular macOS CI, and make noncooperative detection timeout proof independent of scheduler timing.
+
 ## 4.3.4 - 2026-09-11
 
 **Highlights:** Restore provider-compatible MCP tools and frontmost daemon captures.

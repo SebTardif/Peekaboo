@@ -67,10 +67,14 @@ test('bundled skill never advertises app/PID-only background press', () => {
     );
   }
 
-  assert.equal(isTargetedRawPress('peekaboo press return --pid 1234'), true);
-  assert.equal(isTargetedRawPress('"$PB" press return --pid 1234'), true);
-  assert.equal(hasSafeRawPressRoute('peekaboo press return --pid 1234'), false);
-  assert.equal(hasSafeRawPressRoute('peekaboo press return --pid 1234 --window-id 42'), true);
+  for (const binary of ['peekaboo', '"$PB"']) {
+    for (const target of ['--app TextEdit', '--pid 1234']) {
+      const unsafe = `${binary} press return ${target}`;
+      assert.equal(isTargetedRawPress(unsafe), true);
+      assert.equal(hasSafeRawPressRoute(unsafe), false);
+      assert.equal(hasSafeRawPressRoute(`${unsafe} --window-id 42`), true);
+    }
+  }
 });
 
 test('bundled skill keeps routine management examples read-only', () => {
@@ -79,6 +83,7 @@ test('bundled skill keeps routine management examples read-only', () => {
   assert.doesNotMatch(skill, /^(?:peekaboo|"\$PB") clipboard (?:set|clear|restore)\b/m);
   assert.doesNotMatch(skill, /^(?:peekaboo|"\$PB") permissions request\b/m);
   assert.doesNotMatch(skill, /^(?:peekaboo|"\$PB") app focus\b/m);
+  assert.match(skill, /^(?:peekaboo|"\$PB") clipboard get --json$/m);
   assert.match(skill, /^(?:peekaboo|"\$PB") permissions status --all-sources --json$/m);
   assert.match(skill, /^(?:peekaboo|"\$PB") app list --include-hidden --include-background --json$/m);
 });
