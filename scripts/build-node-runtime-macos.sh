@@ -14,16 +14,18 @@ terminal_artifact_assert_build_env_is_clean || {
   exit 1
 }
 
-NODE_VERSION=24.15.0
-ARM64_URL=https://nodejs.org/dist/v24.15.0/node-v24.15.0-darwin-arm64.tar.gz
-X64_URL=https://nodejs.org/dist/v24.15.0/node-v24.15.0-darwin-x64.tar.gz
-ARM64_ARCHIVE_SHA=372331b969779ab5d15b949884fc6eaf88d5afe87bde8ba881d6400b9100ffc4
-X64_ARCHIVE_SHA=ffd5ee293467927f3ee731a553eb88fd1f48cf74eebc2d74a6babe4af228673b
-ARM64_BINARY_SHA=3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32
-X64_BINARY_SHA=2a249a6a7015b0555c3448a77d226c1f3c8f62bd133d89044a2e1518cd16c4b3
-LICENSE_SHA=4573185d56580da2b890ba34a85a409257640f1c5632eade4300137266194d18
-UNIVERSAL_BINARY_SHA=f638dd249d1df9ff89764a312a510c55250f23ce40e977ac8b68a295161d6f3a
-UNIVERSAL_BINARY_SIZE=242234784
+NODE_VERSION=26.8.2
+IFS=. read -r node_major node_minor node_patch <<< "$NODE_VERSION"
+NODE_BUILD_VERSION=$((node_major * 10000 + node_minor * 100 + node_patch))
+ARM64_URL=https://nodejs.org/dist/v26.8.2/node-v26.8.2-darwin-arm64.tar.gz
+X64_URL=https://nodejs.org/dist/v26.8.2/node-v26.8.2-darwin-x64.tar.gz
+ARM64_ARCHIVE_SHA=974b6d5fb2fc7c33ff2354db0902b4e91c2de01ec8acc6de48e543c97e18c9e1
+X64_ARCHIVE_SHA=adb8feb2d4987df3d72d2ec46f4fc4b58039c859b8c3f0e3cc2d3c6cbaf8629c
+ARM64_BINARY_SHA=3fbe98203f8f4a86ce5b0b573a1a30aa4253064c4c2a0299c436d259b68e54b0
+X64_BINARY_SHA=724b8ccb076a546d78d65752c80a0ee4e0270eeeb3d9fc1a5f3a265cacb0265f
+LICENSE_SHA=5888dbb9a1d2b18f2c3e6c5f6af1b39de658372b402a0577b002777f14c62ace
+UNIVERSAL_BINARY_SHA=5bc31d12f7015f15c6cf3abf800ecf239eeda16a3443d0701d1f30dbb8635efe
+UNIVERSAL_BINARY_SIZE=294194976
 ENTITLEMENTS_PATH="$ROOT_DIR/scripts/qualification-node.entitlements"
 OUTPUT_APP=""
 TEST_MODE="${PEEKABOO_TERMINAL_TEST_MODE:-0}"
@@ -128,7 +130,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 <key>CFBundleName</key><string>PeekabooQualificationNode</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$NODE_VERSION</string>
-<key>CFBundleVersion</key><string>241500</string>
+<key>CFBundleVersion</key><string>$NODE_BUILD_VERSION</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 </dict></plist>
 EOF
