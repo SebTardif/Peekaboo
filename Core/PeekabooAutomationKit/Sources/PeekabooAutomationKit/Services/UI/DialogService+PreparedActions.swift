@@ -10,11 +10,16 @@ extension DialogService {
         -> PreparedDialogActionReceipt
     {
         do {
-            return try await self.operationLaneCoordinator.run(scope: .global, access: .read) {
+            return try await self.runDialogOperation(scope: .global, access: .read) {
                 let candidates = try await self.preparedActionCandidates(for: request)
                 guard candidates.count == 1, let candidate = candidates.first else {
                     throw self.actionCandidateRefusal(request: request, candidates: candidates)
                 }
+                let buttonTitle = candidate.discoveryProof?.buttonTitle ??
+                    candidate.button.title() ?? request.buttonText ?? "Dismiss"
+                let buttonIdentifier = candidate.button.attribute(Attribute<String>("AXIdentifier"))
+                try Task.checkCancellation()
+                try DialogOperationDeadline.current?.check()
 
                 let receipt = PreparedDialogActionReceipt(
                     token: UUID(),
@@ -28,9 +33,8 @@ extension DialogService {
                     window: candidate.window,
                     dialog: candidate.dialog,
                     button: candidate.button,
-                    resolvedButtonTitle: candidate.discoveryProof?.buttonTitle ??
-                        candidate.button.title() ?? request.buttonText ?? "Dismiss",
-                    resolvedButtonIdentifier: candidate.button.attribute(Attribute<String>("AXIdentifier")),
+                    resolvedButtonTitle: buttonTitle,
+                    resolvedButtonIdentifier: buttonIdentifier,
                     createdAt: Date()))
                 return receipt
             }
@@ -50,7 +54,7 @@ extension DialogService {
     public func performPreparedDialogAction(_ receipt: PreparedDialogActionReceipt) async throws
         -> DialogActionResult
     {
-        try await self.operationLaneCoordinator.run(
+        try await self.runDialogOperation(
             scope: .window(receipt.target.identity),
             access: .write)
         {
@@ -73,6 +77,11 @@ extension DialogService {
             let leafOutcome: DesktopActionOutcome
             do {
                 try Task.checkCancellation()
+                do {
+                    try DialogOperationDeadline.current?.check()
+                } catch let PeekabooError.timeout(message) {
+                    throw self.targetUnavailable(message)
+                }
                 leafOutcome = try await self.discoveryReaders.press(entry.button)
                 sequence.record(.reportedOutcome(leafOutcome, defaultDispatchedUnitCount: .one))
                 try Task.checkCancellation()
@@ -149,7 +158,7 @@ extension DialogService {
     }
 
     public func listDialogElements(target: DialogTargetSelector) async throws -> DialogElements {
-        try await self.operationLaneCoordinator.run(scope: .global, access: .read) {
+        try await self.runDialogOperation(scope: .global, access: .read) {
             let dialogs = try await self.targetedDialogCandidates(
                 target: target,
                 membership: .readOnlyCompatible)
@@ -196,7 +205,6 @@ extension DialogService {
     struct FreshDialogElements {
         let structural: [Element]
         let legacy: [Element]
-        let readable: Bool
     }
 
     struct DialogTargetRevalidationObservation {
@@ -289,7 +297,10 @@ extension DialogService {
         }
         var structuralCandidates: [TargetedDialogCandidate] = []
         var legacyCandidates: [TargetedDialogCandidate] = []
+        let discoveryBudget = try DialogOperationDeadline.resolve(operationName: "dialog hierarchy discovery")
         for window in windows {
+            try Task.checkCancellation()
+            try discoveryBudget.check()
             guard let identity = window.mutationIdentity,
                   identity.processIdentity == processIdentity,
                   identity.windowID == window.windowID,
@@ -311,11 +322,10 @@ extension DialogService {
                 application: application,
                 window: window,
                 windowResolutionProof: windowResolutionProof)
-            let freshDialogs = self.freshDialogElements(in: handle.element)
-            guard freshDialogs.readable else {
-                throw self.targetUnavailable(
-                    "Dialog hierarchy became unreadable while preparing the exact target.")
-            }
+            let freshDialogs = try await self.freshDialogElements(
+                in: handle.element,
+                owner: processIdentity,
+                budget: discoveryBudget)
             for dialog in freshDialogs.structural {
                 guard dialog.pid() == processIdentity.processIdentifier else { continue }
                 structuralCandidates.append(TargetedDialogCandidate(
@@ -344,6 +354,7 @@ extension DialogService {
                 message: "Dialog owner changed process generation during planning.",
                 hint: "List the application and dialog again before retrying.")
         }
+        try Task.checkCancellation()
         return switch membership {
         case .structuralMutation:
             structuralCandidates
@@ -454,33 +465,37 @@ extension DialogService {
         return windows
     }
 
-    func freshDialogElements(in window: Element) -> FreshDialogElements {
+    func freshDialogElements(
+        in window: Element,
+        owner: ApplicationProcessIdentity,
+        budget suppliedBudget: DialogOperationDeadline? = nil) async throws -> FreshDialogElements
+    {
+        let budget = try suppliedBudget ?? DialogOperationDeadline.resolve(operationName: "dialog hierarchy discovery")
         var structuralDialogs: [Element] = []
         var legacyDialogs: [Element] = []
         var visited: Set<Element> = []
         var stack = [window]
-        var readable = true
 
         while let element = stack.popLast() {
+            try budget.check()
             guard visited.insert(element).inserted else { continue }
-            let evidence = DialogElementClassifier.evidence(for: element)
+            let node = try await self.discoveryReaders.hierarchyNode(element, owner, budget)
+            try budget.check()
+            let evidence = node.evidence
             if DialogElementClassifier.isStructuralDialog(evidence) {
                 structuralDialogs.append(element)
             } else if DialogElementClassifier.permitsLegacyReadHeuristics(evidence),
-                      self.isDialogElement(element, matching: nil)
+                      DialogElementClassifier.isDialog(evidence)
             {
                 legacyDialogs.append(element)
             }
-            let traversal = Self.traversalChildren(of: element)
-            readable = readable && traversal.readable
-            stack.append(contentsOf: traversal.elements.reversed())
+            stack.append(contentsOf: node.children.reversed())
         }
         return FreshDialogElements(
             structural: DialogTraversal.preferredStructuralDialogs(
                 in: window,
                 candidates: structuralDialogs),
-            legacy: legacyDialogs,
-            readable: readable)
+            legacy: legacyDialogs)
     }
 
     func semanticButtons(in dialog: Element, request: DialogActionPreparationRequest) -> [Element] {
@@ -564,7 +579,9 @@ extension DialogService {
             throw self.targetUnavailable("Dialog window receipt changed before \(operation).")
         }
 
-        let freshDialogs = self.freshDialogElements(in: currentWindow.element)
+        let freshDialogs = try await self.freshDialogElements(
+            in: currentWindow.element,
+            owner: expected.identity.processIdentity)
         guard Self.isValidDialogTargetRevalidation(
             expected: expected,
             observation: DialogTargetRevalidationObservation(
@@ -572,7 +589,7 @@ extension DialogService {
                 windowIdentity: window?.mutationIdentity,
                 windowBounds: window?.bounds,
                 retainedWindowMatches: Self.sameElement(currentWindow.element, retainedWindow),
-                hierarchyReadable: freshDialogs.readable,
+                hierarchyReadable: true,
                 structuralDialogCount: freshDialogs.structural.count,
                 retainedDialogMatches: freshDialogs.structural.first.map {
                     Self.sameElement($0, retainedDialog)
