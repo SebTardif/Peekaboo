@@ -13,6 +13,7 @@
 - Avoid reading geometry for unrelated Accessibility roles during exact-window keyboard focus checks, preserving per-character receiver validation.
 - Bound targeted dialog hierarchy discovery off the main actor using the caller's timeout, preserving large/deep trees and exact receipts; reject late candidates and report timeout or incomplete Accessibility evidence with specific error codes.
 - Exclude twice-confirmed absent processes from read-only application inventory while keeping denied, unavailable, and changing identities partial. Thanks @SkidCentrel! #784.
+- Limit ambiguous application suggestions to tied matching names and PIDs instead of exposing the entire running-app inventory, while keeping selector ambiguity fail-closed.
 - Let Agent and MCP automatic observations use proven classic capture on an explicitly selected ready Bridge while another process owns ScreenCaptureKit; keep explicit modern and raw SCK-only requests refused before transport. #778.
 - Restore reliable background scrolling by preferring owned numeric scrollbars, while keeping page fallback after definite value rejection and stopping after ambiguous input; eligible targets now use scrollbar increments instead of page distances.
 
