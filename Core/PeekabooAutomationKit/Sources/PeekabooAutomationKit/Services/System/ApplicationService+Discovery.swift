@@ -541,31 +541,20 @@ extension ApplicationService {
         return self.createApplicationInfo(from: app)
     }
 
+    /// Returns false only when no running application matches; ambiguity and lookup errors propagate.
     public func isApplicationRunning(identifier: String) async throws -> Bool {
         self.logger.debug("Checking if application is running: \(identifier)")
-        do {
-            _ = try await self.findApplication(identifier: identifier)
-            self.logger.debug("Application is running: \(identifier)")
-            return true
-        } catch {
-            return try Self.runningState(for: error)
-        }
-    }
-
-    /// A missing app is not running. A tie means at least one match is running, so callers must see the ambiguity
-    /// instead of a false "stopped" answer.
-    nonisolated static func runningState(for error: any Error) throws -> Bool {
-        guard let peekabooError = error as? PeekabooError else {
-            throw error
-        }
-        switch peekabooError {
-        case .appNotFound:
+        // Running state needs selector resolution, not window and presentation metadata.
+        guard let resolution = try ApplicationIdentifierMatcher.resolution(
+            for: identifier,
+            in: self.applicationSelectorCandidatesProvider())
+        else {
             return false
-        case .ambiguousAppIdentifier:
-            throw peekabooError
-        default:
-            throw peekabooError
         }
+        guard !resolution.hasWinningTie else {
+            throw PeekabooError.ambiguousAppIdentifier(identifier, suggestions: resolution.ambiguitySuggestions)
+        }
+        return true
     }
 
     func createApplicationInfo(from app: NSRunningApplication) -> ServiceApplicationInfo {
