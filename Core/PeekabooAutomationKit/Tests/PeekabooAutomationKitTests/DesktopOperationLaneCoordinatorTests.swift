@@ -2,6 +2,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 import PeekabooAutomationKitTestSupport
+import PeekabooFoundation
 import Testing
 @testable import PeekabooAutomationKit
 
@@ -354,12 +355,8 @@ struct DesktopOperationLaneCoordinatorTests {
                 dispatched = true
             }
             Issue.record("Expected the held lane lock to time out")
-        } catch let error as DesktopOperationLaneError {
-            guard case let .lockTimeout(path) = error else {
-                Issue.record("Expected lockTimeout, got \(error)")
-                return
-            }
-            #expect(path == lockURL.path)
+        } catch let failure as DesktopActionFailure {
+            Self.expectAdmissionTimeout(failure, path: lockURL.path)
         }
         let elapsed = clock.now - started
         #expect(elapsed >= .milliseconds(60))
@@ -469,7 +466,7 @@ struct DesktopOperationLaneCoordinatorTests {
         #expect(await laterReaderStarted.isOpen)
     }
 
-    private static func window(
+    static func window(
         windowID: Int,
         process: ApplicationProcessIdentity = .init(processIdentifier: 600, processStartIdentity: 10),
         bounds: CGRect = CGRect(x: 0, y: 0, width: 100, height: 100)) -> WindowMutationIdentity
@@ -482,7 +479,7 @@ struct DesktopOperationLaneCoordinatorTests {
             isMinimized: false)
     }
 
-    private static func temporaryDirectory(named name: String) -> URL {
+    static func temporaryDirectory(named name: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("peekaboo-operation-lanes-\(name)-\(UUID().uuidString)", isDirectory: true)
     }

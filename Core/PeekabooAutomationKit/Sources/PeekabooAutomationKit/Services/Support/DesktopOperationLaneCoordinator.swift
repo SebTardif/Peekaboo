@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import PeekabooFoundation
 
 /// The stable identity scope guarded while Peekaboo reads or mutates desktop state.
 ///
@@ -79,16 +80,27 @@ public actor DesktopOperationLaneCoordinator {
 
     private nonisolated let coordinationRootURL: URL
     private nonisolated let coordinationDomain: String
-    private let lockWait: Duration
+    private nonisolated let lockWait: Duration
+    private nonisolated let now: @Sendable () -> ContinuousClock.Instant
+    private let retrySleep: @Sendable () async throws -> Void
 
     public init() {
         self.init(coordinationRootURL: DesktopCoordinationRuntimeRoot.defaultURL)
     }
 
-    init(coordinationRootURL: URL, lockWait: Duration = DesktopOperationLaneCoordinator.maximumLockWait) {
+    init(
+        coordinationRootURL: URL,
+        lockWait: Duration = DesktopOperationLaneCoordinator.maximumLockWait,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
+        retrySleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .milliseconds(10))
+        })
+    {
         self.coordinationRootURL = coordinationRootURL.standardizedFileURL
         self.coordinationDomain = coordinationRootURL.standardizedFileURL.path
         self.lockWait = lockWait
+        self.now = now
+        self.retrySleep = retrySleep
     }
 
     public nonisolated func run<T: Sendable>(
@@ -110,10 +122,14 @@ public actor DesktopOperationLaneCoordinator {
         access: DesktopOperationAccess,
         operation: () async throws -> T) async throws -> T
     {
+        let deadline = self.now().advanced(by: self.lockWait)
         let claims = await self.claims(scope: scope, access: access)
-        let heldClaims = try await self.acquire(claims)
+        let deadlinePath = self.coordinationRootURL
+            .appendingPathComponent(claims[claims.count - 1].fileName).path
+        try self.checkLockDeadline(deadline, path: deadlinePath)
+        let heldClaims = try await self.acquire(claims, deadline: deadline)
         do {
-            try Task.checkCancellation()
+            try self.checkLockDeadline(deadline, path: deadlinePath)
             let result = try await operation()
             await self.release(heldClaims)
             return result
@@ -147,9 +163,8 @@ public actor DesktopOperationLaneCoordinator {
         }
     }
 
-    private func acquire(_ claims: [Claim]) async throws -> [HeldClaim] {
+    private func acquire(_ claims: [Claim], deadline: ContinuousClock.Instant) async throws -> [HeldClaim] {
         try self.prepareCoordinationRoot()
-        let deadline = ContinuousClock.now.advanced(by: self.lockWait)
         var heldClaims: [HeldClaim] = []
         do {
             for claim in claims {
@@ -210,11 +225,19 @@ public actor DesktopOperationLaneCoordinator {
             guard code == EWOULDBLOCK || code == EAGAIN || code == EINTR else {
                 throw DesktopOperationLaneError.systemCall(operation: "flock", path: path, code: code)
             }
-            try Task.checkCancellation()
-            guard ContinuousClock.now < deadline else {
-                throw DesktopOperationLaneError.lockTimeout(path: path)
-            }
-            try await Task.sleep(for: .milliseconds(10))
+            try self.checkLockDeadline(deadline, path: path)
+            try await self.retrySleep()
+        }
+        try self.checkLockDeadline(deadline, path: path)
+    }
+
+    private nonisolated func checkLockDeadline(_ deadline: ContinuousClock.Instant, path: String) throws {
+        try Task.checkCancellation()
+        guard self.now() < deadline else {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .targetUnavailable,
+                message: DesktopOperationLaneError.lockTimeout(path: path).localizedDescription,
+                standardErrorCode: .timeout)
         }
     }
 

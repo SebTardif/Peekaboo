@@ -190,6 +190,21 @@ test("hosted See proof fails closed on absent or incomplete evidence", () => {
   assert.match(local.stderr, /restricted to the secretless GitHub-hosted CI runner/);
 });
 
+test("desktop lane lock CI executes the safe named suite and rejects empty proof", () => {
+  const workflow = readFileSync(`${repositoryRoot}/.github/workflows/macos-ci.yml`, "utf8");
+  const marker = "      - name: Run desktop operation lane lock contracts\n";
+  assert.equal(workflow.split(marker).length, 2, "Expected exactly one desktop lane proof step");
+  const step = workflow.split(marker)[1].split("\n      - name: ")[0];
+  assert.match(step, /working-directory: Core\/PeekabooAutomationKit/);
+  assert.match(step, /set -euo pipefail/);
+  assert.ok(step.includes("swift test --no-parallel --filter 'DesktopOperationLaneCoordinatorTests'"));
+  assert.ok(step.includes('2>&1 | tee "$test_log"'));
+  assert.ok(step.includes("grep -Fq 'Suite DesktopOperationLaneCoordinatorTests passed after '"));
+  assert.ok(step.includes("grep -Eq 'Test run with [1-9][0-9]* tests?( in [0-9]+ suites?)? passed after '"));
+  assert.doesNotMatch(step, /--skip-build/);
+  assert.doesNotMatch(step, /(?:RUN_AUTOMATION_ACTIONS|RUN_AUTOMATION_TESTS|RUN_LOCAL_TESTS|PEEKABOO_INCLUDE_AUTOMATION_TESTS|PEEKABOO_INCLUDE_AMBIENT_STATE_TESTS)\s*(?::|=)\s*["']?(?:true|1)\b/i);
+});
+
 test("See proof arguments agree with installed Swift help and parse without running discovery", {
   skip: process.platform !== "darwin",
 }, () => {
