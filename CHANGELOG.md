@@ -10,6 +10,8 @@
 - Keep Agent text-task dry-run previews independent of UI hosts, capture ownership, and permissions while preserving input validation and foreground-authority reporting. #776.
 - Honor MCP query-click waits with fresh, receipt-pinned Accessibility reads without screenshots; refuse changed targets and late matches while preserving the original modifier-click authority. Thanks @SebTardif! #785.
 - Bound paste clipboard-restoration waits to 10 seconds so excessive delays cannot monopolize the shared paste lock; CLI and MCP callers using longer delays must reduce them. Thanks @SebTardif! #759.
+- Bound clipboard-backed paste admission to one 15-second monotonic deadline across in-process and file-lock waits; refuse late acquisition with retry-safe `TIMEOUT` before clipboard or input changes, while preserving admitted settle and restoration. Thanks @SebTardif! #793.
+- Preserve typed desktop-action timeout, snapshot, and element error codes consistently across CLI JSON renderers without changing prior-effect or retry-safety metadata. #793.
 - Restore default MCP startup on explicitly selected GUI Bridge hosts that support isolated browser sessions, preserving capability checks and caller-owned session cleanup. Thanks @smhanov! #744.
 - Refuse ordinary CLI typing and MCP clicks, actions, value changes, snapshot-backed scrolling, typing, and key presses from consumed or pending snapshots before focus or input; centralize mutation-lease handling while preserving historical reads and existing modifier-click/pixel-focus ownership.
 - Avoid reading geometry for unrelated Accessibility roles during exact-window keyboard focus checks, preserving per-character receiver validation.

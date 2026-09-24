@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import PeekabooFoundation
 
 /// A Cmd+V request crossed the point where the receiver may have consumed it,
 /// but Peekaboo cannot truthfully claim a verified paste result.
@@ -87,21 +88,24 @@ public enum ClipboardPasteTransactionGate {
     public static func withExclusiveTransaction<T: Sendable>(
         _ operation: () async throws -> T) async throws -> T
     {
-        try await self.withExclusiveTransaction(lockPath: self.defaultLockPath, operation)
+        try await self.withExclusiveTransaction(lockPath: self.defaultLockPath, operation: operation)
     }
 
     @MainActor
     static func withExclusiveTransaction<T: Sendable>(
         lockPath: String,
         lockWait: Duration = Self.maximumLockWait,
-        _ operation: () async throws -> T) async throws -> T
+        now: @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now },
+        retrySleep: @MainActor () async throws -> Void = { try await Task.sleep(for: .milliseconds(10)) },
+        operation: () async throws -> T) async throws -> T
     {
-        let deadline = ContinuousClock.now.advanced(by: lockWait)
+        let deadline = now().advanced(by: lockWait)
         try Task.checkCancellation()
         while self.isActive {
-            try self.checkLockDeadline(deadline, path: lockPath)
-            try await Task.sleep(for: .milliseconds(10))
+            try self.checkLockDeadline(deadline, now: now(), path: lockPath)
+            try await retrySleep()
         }
+        try self.checkLockDeadline(deadline, now: now(), path: lockPath)
         self.isActive = true
         defer { self.isActive = false }
 
@@ -135,20 +139,27 @@ public enum ClipboardPasteTransactionGate {
                 throw GateError.systemCall(operation: "flock", path: standardizedLockPath, code: errno)
             }
 
-            try self.checkLockDeadline(deadline, path: standardizedLockPath)
-            try await Task.sleep(for: .milliseconds(10))
+            try self.checkLockDeadline(deadline, now: now(), path: standardizedLockPath)
+            try await retrySleep()
         }
         defer { flock(fd, LOCK_UN) }
 
-        try Task.checkCancellation()
+        try self.checkLockDeadline(deadline, now: now(), path: standardizedLockPath)
         return try await operation()
     }
 
     @MainActor
-    private static func checkLockDeadline(_ deadline: ContinuousClock.Instant, path: String) throws {
+    private static func checkLockDeadline(
+        _ deadline: ContinuousClock.Instant,
+        now: ContinuousClock.Instant,
+        path: String) throws
+    {
         try Task.checkCancellation()
-        guard ContinuousClock.now < deadline else {
-            throw GateError.lockTimeout(path: path)
+        guard now < deadline else {
+            throw DesktopActionFailure.preDispatchRefusal(
+                reason: .targetUnavailable,
+                message: GateError.lockTimeout(path: path).localizedDescription,
+                standardErrorCode: .timeout)
         }
     }
 
