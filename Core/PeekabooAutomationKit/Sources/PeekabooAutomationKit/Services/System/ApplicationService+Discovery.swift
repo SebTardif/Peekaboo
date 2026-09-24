@@ -541,15 +541,30 @@ extension ApplicationService {
         return self.createApplicationInfo(from: app)
     }
 
-    public func isApplicationRunning(identifier: String) async -> Bool {
+    public func isApplicationRunning(identifier: String) async throws -> Bool {
         self.logger.debug("Checking if application is running: \(identifier)")
         do {
             _ = try await self.findApplication(identifier: identifier)
             self.logger.debug("Application is running: \(identifier)")
             return true
         } catch {
-            self.logger.debug("Application is not running: \(identifier)")
+            return try Self.runningState(for: error)
+        }
+    }
+
+    /// A missing app is not running. A tie means at least one match is running, so callers must see the ambiguity
+    /// instead of a false "stopped" answer.
+    nonisolated static func runningState(for error: any Error) throws -> Bool {
+        guard let peekabooError = error as? PeekabooError else {
+            throw error
+        }
+        switch peekabooError {
+        case .appNotFound:
             return false
+        case .ambiguousAppIdentifier:
+            throw peekabooError
+        default:
+            throw peekabooError
         }
     }
 
