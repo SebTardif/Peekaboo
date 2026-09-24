@@ -58,6 +58,7 @@ public enum ClipboardPasteTransactionGate {
         case systemCall(operation: String, path: String, code: Int32)
         case unsafeDirectory(path: String)
         case unsafeLockFile(path: String)
+        case lockTimeout(path: String)
 
         var errorDescription: String? {
             switch self {
@@ -70,9 +71,14 @@ public enum ClipboardPasteTransactionGate {
                 return "Clipboard paste transaction lock directory is unsafe: \(path)"
             case let .unsafeLockFile(path):
                 return "Clipboard paste transaction lock is not a regular file owned by the current user: \(path)"
+            case let .lockTimeout(path):
+                return "Timed out waiting for the exclusive clipboard paste transaction lock at \(path)."
             }
         }
     }
+
+    /// Matches the exclusive ScreenCaptureKit and desktop-mutation flock waits.
+    static let maximumLockWait: Duration = .seconds(15)
 
     /// Serializes callers in a shared host before they enter the file-lock wait loop.
     @MainActor private static var isActive = false
@@ -87,11 +93,13 @@ public enum ClipboardPasteTransactionGate {
     @MainActor
     static func withExclusiveTransaction<T: Sendable>(
         lockPath: String,
+        lockWait: Duration = Self.maximumLockWait,
         _ operation: () async throws -> T) async throws -> T
     {
+        let deadline = ContinuousClock.now.advanced(by: lockWait)
         try Task.checkCancellation()
         while self.isActive {
-            try Task.checkCancellation()
+            try self.checkLockDeadline(deadline, path: lockPath)
             try await Task.sleep(for: .milliseconds(10))
         }
         self.isActive = true
@@ -127,13 +135,21 @@ public enum ClipboardPasteTransactionGate {
                 throw GateError.systemCall(operation: "flock", path: standardizedLockPath, code: errno)
             }
 
-            try Task.checkCancellation()
+            try self.checkLockDeadline(deadline, path: standardizedLockPath)
             try await Task.sleep(for: .milliseconds(10))
         }
         defer { flock(fd, LOCK_UN) }
 
         try Task.checkCancellation()
         return try await operation()
+    }
+
+    @MainActor
+    private static func checkLockDeadline(_ deadline: ContinuousClock.Instant, path: String) throws {
+        try Task.checkCancellation()
+        guard ContinuousClock.now < deadline else {
+            throw GateError.lockTimeout(path: path)
+        }
     }
 
     static var defaultLockPath: String {

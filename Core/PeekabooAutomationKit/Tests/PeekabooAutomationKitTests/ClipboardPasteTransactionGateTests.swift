@@ -99,6 +99,39 @@ struct ClipboardPasteTransactionGateTests {
 
     @Test
     @MainActor
+    func `Held lock wait fails at the deadline and never runs the transaction`() async throws {
+        let heldFD = try await self.holdPasteTransactionLock()
+        defer {
+            flock(heldFD, LOCK_UN)
+            close(heldFD)
+        }
+
+        var operationRan = false
+        let clock = ContinuousClock()
+        let started = clock.now
+        do {
+            try await ClipboardPasteTransactionGate.withExclusiveTransaction(
+                lockPath: ClipboardPasteTransactionGate.defaultLockPath,
+                lockWait: .milliseconds(80))
+            {
+                operationRan = true
+            }
+            Issue.record("Expected the held paste lock to time out")
+        } catch let error as ClipboardPasteTransactionGate.GateError {
+            guard case let .lockTimeout(path) = error else {
+                Issue.record("Expected lockTimeout, got \(error)")
+                return
+            }
+            #expect(path == ClipboardPasteTransactionGate.defaultLockPath)
+        }
+        let elapsed = clock.now - started
+        #expect(elapsed >= .milliseconds(60))
+        #expect(elapsed < .seconds(2))
+        #expect(operationRan == false)
+    }
+
+    @Test
+    @MainActor
     func `Cancellation while waiting never runs the transaction`() async throws {
         let heldFD = try await self.holdPasteTransactionLock()
         defer {
@@ -146,7 +179,7 @@ struct ClipboardPasteTransactionGateTests {
                 #expect(path == lockURL.path)
                 #expect(code == ELOOP)
                 #expect(error.localizedDescription.contains("Clipboard paste transaction lock failed"))
-            case .fileSystem, .unsafeDirectory, .unsafeLockFile:
+            case .fileSystem, .unsafeDirectory, .unsafeLockFile, .lockTimeout:
                 Issue.record("Expected lock-file symlink rejection from open")
             }
         }
