@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import PeekabooAutomationKitTestSupport
 import Testing
@@ -326,6 +327,44 @@ struct DesktopOperationLaneCoordinatorTests {
                 }
         }
         #expect(await !(hardlinkDispatch.isOpen))
+    }
+
+    @Test
+    func `Held lane lock fails at the deadline and never dispatches`() async throws {
+        let root = Self.temporaryDirectory(named: "lock-deadline")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let lockURL = root.appendingPathComponent("global.lock")
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        #expect(descriptor >= 0)
+        #expect(flock(descriptor, LOCK_EX) == 0)
+        defer {
+            flock(descriptor, LOCK_UN)
+            close(descriptor)
+        }
+
+        let coordinator = DesktopOperationLaneCoordinator(
+            coordinationRootURL: root,
+            lockWait: .milliseconds(80))
+        var dispatched = false
+        let clock = ContinuousClock()
+        let started = clock.now
+        do {
+            try await coordinator.run(scope: .global, access: .write) {
+                dispatched = true
+            }
+            Issue.record("Expected the held lane lock to time out")
+        } catch let error as DesktopOperationLaneError {
+            guard case let .lockTimeout(path) = error else {
+                Issue.record("Expected lockTimeout, got \(error)")
+                return
+            }
+            #expect(path == lockURL.path)
+        }
+        let elapsed = clock.now - started
+        #expect(elapsed >= .milliseconds(60))
+        #expect(elapsed < .seconds(2))
+        #expect(dispatched == false)
     }
 
     @Test

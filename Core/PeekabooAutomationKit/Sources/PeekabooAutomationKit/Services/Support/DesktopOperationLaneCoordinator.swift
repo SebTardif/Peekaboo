@@ -34,6 +34,7 @@ public enum DesktopOperationLaneError: LocalizedError, Sendable {
     case systemCall(operation: String, path: String, code: Int32)
     case unsafeDirectory(path: String)
     case unsafeLockFile(path: String)
+    case lockTimeout(path: String)
     case nestedAcquisition(domain: String)
 
     public var errorDescription: String? {
@@ -47,6 +48,8 @@ public enum DesktopOperationLaneError: LocalizedError, Sendable {
             "Desktop operation coordination directory is unsafe: \(path)"
         case let .unsafeLockFile(path):
             "Desktop operation coordination lock is not a regular file owned by the current user: \(path)"
+        case let .lockTimeout(path):
+            "Timed out waiting for the desktop operation lane lock at \(path)."
         case let .nestedAcquisition(domain):
             "Desktop operation attempted a nested lane acquisition in \(domain); " +
                 "the execution owner must acquire once and call an owned-leaf helper"
@@ -72,17 +75,20 @@ public actor DesktopOperationLaneCoordinator {
         let descriptor: Int32
     }
 
+    static let maximumLockWait: Duration = .seconds(15)
+
     private nonisolated let coordinationRootURL: URL
     private nonisolated let coordinationDomain: String
+    private let lockWait: Duration
 
     public init() {
-        self.coordinationRootURL = DesktopCoordinationRuntimeRoot.defaultURL
-        self.coordinationDomain = DesktopCoordinationRuntimeRoot.defaultURL.path
+        self.init(coordinationRootURL: DesktopCoordinationRuntimeRoot.defaultURL)
     }
 
-    init(coordinationRootURL: URL) {
+    init(coordinationRootURL: URL, lockWait: Duration = DesktopOperationLaneCoordinator.maximumLockWait) {
         self.coordinationRootURL = coordinationRootURL.standardizedFileURL
         self.coordinationDomain = coordinationRootURL.standardizedFileURL.path
+        self.lockWait = lockWait
     }
 
     public nonisolated func run<T: Sendable>(
@@ -143,6 +149,7 @@ public actor DesktopOperationLaneCoordinator {
 
     private func acquire(_ claims: [Claim]) async throws -> [HeldClaim] {
         try self.prepareCoordinationRoot()
+        let deadline = ContinuousClock.now.advanced(by: self.lockWait)
         var heldClaims: [HeldClaim] = []
         do {
             for claim in claims {
@@ -155,7 +162,8 @@ public actor DesktopOperationLaneCoordinator {
                     try await self.acquireFileLock(
                         descriptor: turnstileDescriptor,
                         path: turnstileURL.path,
-                        access: .write)
+                        access: .write,
+                        deadline: deadline)
                 } catch {
                     close(turnstileDescriptor)
                     throw error
@@ -172,7 +180,8 @@ public actor DesktopOperationLaneCoordinator {
                     try await self.acquireFileLock(
                         descriptor: descriptor,
                         path: url.path,
-                        access: claim.access)
+                        access: claim.access,
+                        deadline: deadline)
                     heldClaims.append(HeldClaim(descriptor: descriptor))
                     self.releaseDescriptor(turnstileDescriptor)
                 } catch {
@@ -192,7 +201,8 @@ public actor DesktopOperationLaneCoordinator {
     private func acquireFileLock(
         descriptor: Int32,
         path: String,
-        access: DesktopOperationAccess) async throws
+        access: DesktopOperationAccess,
+        deadline: ContinuousClock.Instant) async throws
     {
         let operation = (access == .read ? LOCK_SH : LOCK_EX) | LOCK_NB
         while flock(descriptor, operation) != 0 {
@@ -201,6 +211,9 @@ public actor DesktopOperationLaneCoordinator {
                 throw DesktopOperationLaneError.systemCall(operation: "flock", path: path, code: code)
             }
             try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else {
+                throw DesktopOperationLaneError.lockTimeout(path: path)
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
