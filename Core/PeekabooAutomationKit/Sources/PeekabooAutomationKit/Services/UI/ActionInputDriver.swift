@@ -663,14 +663,28 @@ extension ActionInputDriver {
         direction: PeekabooFoundation.ScrollDirection,
         pages: Int) throws -> UIInputExecutionResult.Action
     {
+        let scrollBar = self.findScrollBar(in: element, direction: direction)
+        if let scrollBar,
+           let change = Self.scrollBarValueChange(scrollBar, direction: direction, pages: pages)
+        {
+            // Some native scroll areas advertise page actions that fail even though their bar is writable.
+            // Choose the verifiable value route before dispatch; never retry an ambiguous action through it.
+            do {
+                return try self.performScrollbarValueScroll(scrollBar, change: change)
+            } catch let error as ActionInputError where Self.shouldContinueTryingScrollAction(after: error) {
+                // A definitively rejected value write leaves the page and increment routes available.
+            }
+        }
+
         do {
             return try self.performPageScrollActions(
                 element: element,
                 direction: direction,
                 pages: pages)
         } catch let error as ActionInputError where Self.shouldContinueTryingScrollAction(after: error) {
-            return try self.performScrollbarScroll(
-                element: element,
+            guard let scrollBar else { throw error }
+            return try self.performScrollbarActions(
+                scrollBar,
                 direction: direction,
                 pages: pages,
                 pageActionError: error)
@@ -745,19 +759,12 @@ extension ActionInputDriver {
             elementRole: element.role)
     }
 
-    /// Standard AppKit scroll areas commonly expose no page-scroll action on the container. Their
-    /// descendant AXScrollBar is nevertheless a settable native Accessibility control, so mutate
-    /// that value before declaring background scrolling unsupported.
-    private func performScrollbarScroll(
-        element: any AutomationElementRepresenting,
+    private func performScrollbarActions(
+        _ scrollBar: any AutomationElementRepresenting,
         direction: PeekabooFoundation.ScrollDirection,
         pages: Int,
         pageActionError: ActionInputError) throws -> UIInputExecutionResult.Action
     {
-        guard let scrollBar = self.findScrollBar(in: element, direction: direction) else {
-            throw Self.scrollFallbackError(from: pageActionError)
-        }
-
         let actionName: String = switch direction {
         case .down, .right:
             AXActionNames.kAXIncrementAction
@@ -804,21 +811,32 @@ extension ActionInputDriver {
             }
         }
 
+        throw Self.scrollFallbackError(from: pageActionError)
+    }
+
+    private struct ScrollBarValueChange {
+        let currentValue: Double
+        let requestedValue: Double
+    }
+
+    private static func scrollBarValueChange(
+        _ scrollBar: any AutomationElementRepresenting,
+        direction: PeekabooFoundation.ScrollDirection,
+        pages: Int) -> ScrollBarValueChange?
+    {
         guard scrollBar.isValueSettable,
-              let currentValue = Self.numericValue(scrollBar.value)
-        else {
-            throw Self.scrollFallbackError(from: pageActionError)
-        }
+              let currentValue = self.numericValue(scrollBar.value)
+        else { return nil }
 
         let minimumValue = scrollBar.doubleAttribute(AXAttributeNames.kAXMinValueAttribute) ?? 0
         let maximumValue = scrollBar.doubleAttribute(AXAttributeNames.kAXMaxValueAttribute) ?? 1
-        guard maximumValue > minimumValue else {
-            throw Self.scrollFallbackError(from: pageActionError)
-        }
-
         let range = maximumValue - minimumValue
+        guard minimumValue.isFinite, maximumValue.isFinite, range.isFinite, range > 0,
+              (minimumValue...maximumValue).contains(currentValue)
+        else { return nil }
+
         let advertisedIncrement = scrollBar.doubleAttribute(AXAttributeNames.kAXValueIncrementAttribute)
-        let singleStep = advertisedIncrement.flatMap { $0 > 0 ? min($0, range) : nil } ?? (range / 10)
+        let singleStep = advertisedIncrement.flatMap { $0.isFinite && $0 > 0 ? min($0, range) : nil } ?? (range / 10)
         let signedStep: Double = switch direction {
         case .down, .right:
             singleStep
@@ -828,8 +846,16 @@ extension ActionInputDriver {
         let requestedValue = min(
             maximumValue,
             max(minimumValue, currentValue + signedStep * Double(max(1, pages))))
+        return ScrollBarValueChange(currentValue: currentValue, requestedValue: requestedValue)
+    }
 
-        let alreadyMatched = abs(requestedValue - currentValue) < 1e-9
+    private func performScrollbarValueScroll(
+        _ scrollBar: any AutomationElementRepresenting,
+        change: ScrollBarValueChange) throws -> UIInputExecutionResult.Action
+    {
+        let currentValue = change.currentValue
+        let requestedValue = change.requestedValue
+        let alreadyMatched = requestedValue == currentValue
         if !alreadyMatched {
             do {
                 try scrollBar.setAutomationValue(.double(requestedValue))
@@ -848,7 +874,7 @@ extension ActionInputDriver {
         }
 
         let observedValue = Self.numericValue(scrollBar.value)
-        if requestedValue != currentValue, let observedValue, abs(observedValue - currentValue) < 1e-9 {
+        if !alreadyMatched, observedValue == currentValue {
             throw DesktopActionFailure.indeterminate(
                 delivery: Self.accessibilityValueDelivery,
                 evidence: .completionUnknown,
@@ -911,18 +937,34 @@ extension ActionInputDriver {
         _ element: any AutomationElementRepresenting,
         matches direction: PeekabooFoundation.ScrollDirection) -> Bool
     {
-        guard let frame = element.frame else { return true }
-        switch direction {
+        let wantsVertical = switch direction {
         case .up, .down:
-            return frame.height >= frame.width
+            true
         case .left, .right:
-            return frame.width >= frame.height
+            false
         }
+        switch element.stringAttribute(AXAttributeNames.kAXOrientationAttribute) {
+        case kAXVerticalOrientationValue:
+            return wantsVertical
+        case kAXHorizontalOrientationValue:
+            return !wantsVertical
+        default:
+            break
+        }
+
+        guard let frame = element.frame,
+              frame.origin.x.isFinite, frame.origin.y.isFinite,
+              frame.size.width.isFinite, frame.size.height.isFinite,
+              frame.size.width > 0, frame.size.height > 0,
+              frame.size.width != frame.size.height
+        else { return false }
+        return (frame.size.height > frame.size.width) == wantsVertical
     }
 
     private static func numericValue(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID()
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite
         else {
             return nil
         }

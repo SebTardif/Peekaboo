@@ -287,7 +287,9 @@ final class ActionInputMockAutomationElement: AutomationElementRepresenting, @un
     private let actionErrors: [String: any Error]
     private let actionFailureAfterSuccesses: Int?
     private let sequencedActionFailure: (any Error)?
+    private let valueSetterError: (any Error)?
     private let valueSetterDoesNotChange: Bool
+    private let valueSetterReadbackOverride: UIElementValue?
     private let focusSetterDoesNotChange: Bool
     var performedActions: [String] = []
     var attemptedActions: [String] = []
@@ -324,7 +326,9 @@ final class ActionInputMockAutomationElement: AutomationElementRepresenting, @un
         actionErrors: [String: any Error] = [:],
         actionFailureAfterSuccesses: Int? = nil,
         sequencedActionFailure: (any Error)? = nil,
+        valueSetterError: (any Error)? = nil,
         valueSetterDoesNotChange: Bool = false,
+        valueSetterReadbackOverride: UIElementValue? = nil,
         focusSetterDoesNotChange: Bool = false)
     {
         self.name = name
@@ -360,7 +364,9 @@ final class ActionInputMockAutomationElement: AutomationElementRepresenting, @un
         self.actionErrors = actionErrors
         self.actionFailureAfterSuccesses = actionFailureAfterSuccesses
         self.sequencedActionFailure = sequencedActionFailure
+        self.valueSetterError = valueSetterError
         self.valueSetterDoesNotChange = valueSetterDoesNotChange
+        self.valueSetterReadbackOverride = valueSetterReadbackOverride
         self.focusSetterDoesNotChange = focusSetterDoesNotChange
     }
 
@@ -386,8 +392,11 @@ final class ActionInputMockAutomationElement: AutomationElementRepresenting, @un
             throw AccessibilitySystemError(.attributeUnsupported)
         }
         self.setValues.append(value)
+        if let valueSetterError {
+            throw valueSetterError
+        }
         guard !self.valueSetterDoesNotChange else { return }
-        switch value {
+        switch self.valueSetterReadbackOverride ?? value {
         case let .bool(value):
             self.value = value
         case let .int(value):
